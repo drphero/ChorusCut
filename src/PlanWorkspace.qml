@@ -126,6 +126,13 @@ Rectangle {
                     Heading { text: "Concept" }
                     Note { text: "The treatment everything else follows. Changing it marks the shots written before as stale; nothing is rewritten for you." }
                     PlanField {
+                        kind: "concept"; field: "brief"; label: "Brief"; item: conceptPage.item
+                        hint: "Your direction in your own words: story, who performs, the look, what to avoid. Agents read it first and may add your answers from a conversation, but never rewrite it."
+                        PlanText { objectName: "conceptBrief"; multiline: true; lines: 4; value: parent.parent.value
+                                   placeholder: "e.g. One singer, me. Moody and nocturnal, mostly performance, a little story about someone who only exists on the radio. No cars."
+                                   onCommit: t => parent.parent.set(t) }
+                    }
+                    PlanField {
                         kind: "concept"; field: "logline"; label: "Logline"; item: conceptPage.item
                         PlanText { objectName: "conceptLogline"; value: parent.parent.value; placeholder: "One sentence: who, what, and the turn"; onCommit: t => parent.parent.set(t) }
                     }

@@ -151,7 +151,9 @@ int main(int argc, char** argv) {
     for (const auto& t : agent.request("tools/list").value("result").toObject()["tools"].toArray()) names << t.toObject()["name"].toString();
     if (names != QStringList{"get_guide", "get_project", "get_song", "get_plan", "get_checks", "get_schema", "view_reference", "apply_plan"})
         return fail(6, "unexpected tools: " + names.join(", "));
-    if (!textOf(agent.call("get_guide")).contains("Cast and locations pass")) return fail(6, "get_guide does not return the planning guide");
+    const QString guide = textOf(agent.call("get_guide"));
+    if (!guide.contains("Cast and locations pass") || !guide.contains("Intake") || !guide.contains("Just draft it all") || !guide.contains("pause"))
+        return fail(6, "get_guide does not offer the intake and the pause after the concept");
     const auto prompt = agent.request("prompts/get", {{"name", "plan"}, {"arguments", QJsonObject{{"direction", "noir, one singer"}}}});
     if (!prompt.value("result").toObject()["messages"].toArray()[0].toObject()["content"].toObject()["text"].toString().contains("noir, one singer"))
         return fail(6, "the planning prompt does not carry the user's direction");
@@ -176,6 +178,14 @@ int main(int argc, char** argv) {
     if (!pass["applied"].toBool() || pass["skipped"].toArray() != QJsonArray{"logline"} || plan->concept()["fields"].toMap()["logline"] != "The user's logline")
         return fail(8, "the user's locked logline was not protected: " + QString::fromUtf8(QJsonDocument(pass).toJson(QJsonDocument::Compact)));
     if (plan->concept()["prov"].toMap()["style"].toMap()["by"] != "agent") return fail(8, "the agent's fields are not marked as the agent's");
+    // The intake's answers go at the end of the brief; rewriting it fails the whole pass.
+    plan->run({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"brief", "One singer."}}}});
+    pass = agent.data("apply_plan", {{"label", "Record intake"}, {"commands", QJsonArray{
+        QJsonObject{{"op", "set"}, {"kind", "concept"}, {"fields", QJsonObject{{"brief", "One singer.\n- Mostly performance\n- 16:9"}}}}}}});
+    if (!pass["applied"].toBool() || !plan->concept()["fields"].toMap()["brief"].toString().endsWith("16:9")) return fail(8, "the agent could not add to the brief");
+    const auto rewrite = agent.call("apply_plan", {{"label", "Rewrite"}, {"commands", QJsonArray{
+        QJsonObject{{"op", "set"}, {"kind", "concept"}, {"mode", "replace"}, {"fields", QJsonObject{{"brief", "Something else"}}}}}}});
+    if (!rewrite["isError"].toBool() || !textOf(rewrite).contains("only add to the brief")) return fail(8, "rewriting the brief was not refused: " + textOf(rewrite));
     // A command claiming to be the user's is still the agent's.
     agent.data("apply_plan", {{"label", "Sneaky"}, {"commands", QJsonArray{
         QJsonObject{{"op", "set"}, {"kind", "concept"}, {"by", "user"}, {"fields", QJsonObject{{"era", "1980s"}}}}}}});

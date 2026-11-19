@@ -53,7 +53,7 @@ QString optionLabel(const QString& key, const QString& value) {
 // "who", "where", "shotref", "singers" or "prompts".
 const QMap<QString, QMap<QString, QString>>& fieldTable() {
     static const QMap<QString, QMap<QString, QString>> table = {
-        {"concept", {{"logline", "text"}, {"treatment", "text"}, {"videoKind", "enum"}, {"mix", "text"}, {"aspect", "enum"},
+        {"concept", {{"brief", "text"}, {"logline", "text"}, {"treatment", "text"}, {"videoKind", "enum"}, {"mix", "text"}, {"aspect", "enum"},
                      {"resolution", "text"}, {"style", "text"}, {"palette", "text"}, {"lighting", "text"}, {"era", "text"},
                      {"lens", "text"}, {"grade", "text"}, {"rules", "texts"}}},
         {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}}},
@@ -529,7 +529,17 @@ Plan::Result Plan::setFields(const QString& kind, int id, const QVariantMap& fie
         if (QString problem = checkField(kind, it.key(), v); !problem.isEmpty()) { r.ok = false; r.error = problem; return r; }
         const QJsonObject p = prov[it.key()].toObject();
         const QJsonValue old = values.value(it.key());
-        if (by == "agent") {
+        // The brief is the user's direction. An agent may add to it (the user's answers from a
+        // conversation) but never rewrite or remove what is there, in any mode.
+        if (by == "agent" && kind == "concept" && it.key() == "brief") {
+            const QString before = old.toString().trimmed(), after = v.toString().trimmed();
+            if (p["locked"].toBool()) { if (old != v) r.skipped.append(it.key()); continue; }
+            if (!before.isEmpty() && !after.startsWith(before)) {
+                r.ok = false;
+                r.error = "Agents can only add to the brief, after what is already there; ask the user to change the rest.";
+                return r;
+            }
+        } else if (by == "agent") {
             const bool filled = !empty(old);
             if (p["locked"].toBool() || (mode == "fill" && filled) || (mode == "agent" && filled && p["by"].toString() == "user")) {
                 if (old != v) r.skipped.append(it.key());

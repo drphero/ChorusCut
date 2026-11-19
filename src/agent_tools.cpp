@@ -59,15 +59,21 @@ QString instructions() {
         "The user watches the plan change live in the app; each apply_plan call is one undo step for them, and fields they wrote or "
         "locked are protected. Shot times are project frames (start inclusive, end exclusive); lyric times are milliseconds. "
         "You cannot hear the song: use the sections, line timings and the user's direction. Nothing is generated here yet; you are "
-        "planning what will be generated. When the user asks you to plan or rework the video, call get_guide first and follow it.");
+        "planning what will be generated. The concept's brief is the user's own direction; agents may add to it but never rewrite it. "
+        "When the user asks you to plan or rework the video, call get_guide first and follow it: it starts with a short intake "
+        "the user can skip, and pauses after the concept.");
 }
 
 QString guide() {
-    return QStringLiteral(R"(Plan the music video for the song open in Chorus Cut, top-down, through the Chorus Cut tools.
+    return QStringLiteral(R"(Plan the music video for the song open in Chorus Cut, top-down, through the Chorus Cut tools. The user decides how much to talk first; you never skip their part silently.
 
-1. Read: get_project, get_song, get_plan, get_checks and get_schema. Respect everything the user has already written; agent mode never overwrites it, and do not use mode "replace" unless they ask.
-2. Decide the structure for this song (performance-heavy, story-heavy or a mix) from the lyrics and the user's direction. Tell the user what you chose and why in two or three sentences before writing shots. If something essential is unknown (aspect ratio, who performs), ask.
-3. Concept pass: kind of video, logline, treatment, aspect ratio, visual style, palette, lighting, era, lens feel, grade, and rules (what must or must never appear).
+1. Read: get_project, get_song, get_plan, get_checks and get_schema. The concept's "brief" is the user's own direction: follow it. Respect everything the user has already written; agent mode never overwrites it, and do not use mode "replace" unless they ask.
+
+2. Intake. Work out what the brief and the user's request already settle among: structure (performance, story or a mix), who performs and what they look like, format (aspect ratio), story or look ideas, and anything to avoid. If something important is open, ask once, before writing anything: say in a sentence or two what you read, then ask at most five short questions, each with two to four concrete options and "you choose". If your client has a multiple-choice question tool, use it. Always include the option "Just draft it all, I'll react". Skip the intake when the brief or the request already answers these, or when the user says to just draft it.
+   Record what the user told you: add it to the end of the concept's brief (set kind "concept", fields {"brief": <the existing brief, then a short list of their answers in their own words>}). You can only add to the brief, never rewrite it, and only what the user said belongs there; your own inventions go in the concept fields.
+
+3. Concept pass: kind of video, logline, treatment, aspect ratio, visual style, palette, lighting, era, lens feel, grade, and rules (what must or must never appear). Then tell the user the structure you chose and why in two or three sentences, and pause: ask them to confirm or adjust the concept before you write cast and shots, since everything after depends on it. Continue without pausing only if they said to go all the way.
+
 4. Cast and locations pass: characters (role singer for whoever sings), concrete identity descriptions (face, hair, build, age), named looks per character, and locations with time of day and lighting. If they have reference pictures, view them and describe what you see.
 5. Arc and singers pass: one arc entry per section in order (kind "arc", id = section ordinal, include "section" with its label), with what happens, the emotional beat and cutting density. Then set the singer of every sung line with op "singers".
 6. Shots pass: cover every frame of the song. Cut on line boundaries using the frame times from get_song; keep each shot within its route's maxFrames; lip-sync shots only where words are sung, with the line's singer in frame and route "h3-lipsync"; vary framing and movement; put shots on V1 and V2 freely. Fill the required core of every shot: type, purpose, who, where, framing, move, route. A deliberate gap needs only type "gap" and a purpose (the reason).
@@ -87,7 +93,7 @@ QJsonArray promptMessages(const QString& name, const QJsonObject& arguments) {
     if (name != "plan") return {};
     QString text = guide();
     const QString direction = arguments.value("direction").toString().trimmed();
-    if (!direction.isEmpty()) text += "\n\nThe user's direction: " + direction;
+    if (!direction.isEmpty()) text += "\n\nThe user's direction (record it in the brief): " + direction;
     return {QJsonObject{{"role", "user"}, {"content", QJsonObject{{"type", "text"}, {"text", text}}}}};
 }
 }

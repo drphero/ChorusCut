@@ -117,6 +117,22 @@ int main(int argc, char** argv) {
         return fail(13, "replace mode should write the unlocked user field and skip the locked one");
     if (ok(run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "style"}, {"locked", false}, {"by", "agent"}}))))
         return fail(13, "an agent unlocked a field");
+    // The brief: agents may add the user's answers to the end, never rewrite or remove it.
+    run(cmd({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"brief", "Moody, nocturnal, one singer."}}}}));
+    r = run(cmd({{"op", "set"}, {"kind", "concept"}, {"by", "agent"}, {"mode", "fill"},
+                 {"fields", QVariantMap{{"brief", "Moody, nocturnal, one singer.\n- Format: 16:9"}}}}));
+    if (!ok(r) || !plan->concept()["fields"].toMap()["brief"].toString().endsWith("16:9")) return fail(13, "an agent could not add to the brief");
+    if (ok(run(cmd({{"op", "set"}, {"kind", "concept"}, {"by", "agent"}, {"mode", "replace"}, {"fields", QVariantMap{{"brief", "Bright daytime pop"}}}}))) ||
+        ok(run(cmd({{"op", "set"}, {"kind", "concept"}, {"by", "agent"}, {"fields", QVariantMap{{"brief", ""}}}}))) ||
+        !plan->concept()["fields"].toMap()["brief"].toString().startsWith("Moody"))
+        return fail(13, "an agent rewrote or cleared the brief");
+    run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "brief"}, {"locked", true}}));
+    r = run(cmd({{"op", "set"}, {"kind", "concept"}, {"by", "agent"}, {"fields", QVariantMap{{"brief", plan->concept()["fields"].toMap()["brief"].toString() + "\n- more"}}}}));
+    if (r["skipped"].toStringList() != QStringList{"brief"}) return fail(13, "an agent added to a locked brief");
+    run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "brief"}, {"locked", false}}));
+    run(cmd({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"brief", "The user's own brief"}}}}));
+    if (plan->concept()["fields"].toMap()["brief"] != "The user's own brief") return fail(13, "the user could not rewrite their brief");
+
     // Locking an empty field and unlocking it again leaves no provenance behind.
     run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "treatment"}, {"locked", true}}));
     if (!plan->concept()["prov"].toMap()["treatment"].toMap()["locked"].toBool()) return fail(13, "an empty field could not be locked");
@@ -420,6 +436,13 @@ int main(int argc, char** argv) {
     if (plan->concept()["fields"].toMap()["logline"] != "Two strangers share one radio frequency" ||
         plan->concept()["prov"].toMap()["logline"].toMap()["by"] != "user")
         return fail(42, "typed logline not saved as the user's: " + plan->concept()["fields"].toMap()["logline"].toString());
+    auto brief = find(window, "conceptBrief");
+    if (!brief) return fail(42, "no Brief on the Concept page");
+    click(brief); selectAll();
+    typeText("Nocturnal and moody");
+    QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+    QTest::qWait(100);
+    if (plan->concept()["fields"].toMap()["brief"] != "Nocturnal and moody") return fail(42, "the typed brief was not saved: " + plan->concept()["fields"].toMap()["brief"].toString());
     choose(find(window, "conceptAspect"), 2);
     if (plan->concept()["fields"].toMap()["aspect"] != "9:16") return fail(43, "aspect combo did not write 9:16, got " + plan->concept()["fields"].toMap()["aspect"].toString());
     capture("plan-concept");
