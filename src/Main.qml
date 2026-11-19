@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -6,7 +7,8 @@ import Chorus
 
 ApplicationWindow {
     id: win
-    visible: true
+    // Shown by restoreWindow(), at the size and place it had last time.
+    visible: false
     title: editor.ready ? editor.projectName + " — Chorus Cut" : "Chorus Cut"
     width: 1280; height: 820; minimumWidth: 900; minimumHeight: 640
     color: "#162027"
@@ -16,7 +18,43 @@ ApplicationWindow {
 
     // The Project Manager covers the editor at launch when no project is open, and on ⌘O.
     property bool managerOpen: false
-    Component.onCompleted: { if (!editor.ready) showManager(); editor.comfy.testConnection() }
+    Component.onCompleted: { restoreWindow(); if (!editor.ready) showManager(); editor.comfy.testConnection() }
+
+    // ---------------------------------------------------------------- window size and place
+    Settings {
+        id: windowState
+        category: "window"
+        property int x: -1
+        property int y: -1
+        property int width: 1280
+        property int height: 820
+        property bool maximized: false
+    }
+    function restoreWindow() {
+        const w = Math.max(minimumWidth, windowState.width), h = Math.max(minimumHeight, windowState.height)
+        // Only reuse the old position while part of the window is still on a connected screen.
+        let onScreen = false
+        for (const sc of Qt.application.screens)
+            onScreen = onScreen || windowState.x + w > sc.virtualX + 40 && windowState.x < sc.virtualX + sc.width - 40 &&
+                         windowState.y + 40 > sc.virtualY && windowState.y < sc.virtualY + sc.height - 40
+        width = w; height = h
+        if (windowState.x !== -1 && onScreen) { x = windowState.x; y = windowState.y }
+        if (windowState.maximized) showMaximized(); else show()
+    }
+    function saveWindow() {
+        if (visibility === Window.Windowed) {
+            windowState.x = x; windowState.y = y; windowState.width = width; windowState.height = height
+            windowState.maximized = false
+        } else if (visibility === Window.Maximized) windowState.maximized = true
+    }
+    // Save shortly after the user stops moving or resizing, so a crash or force-quit keeps it too.
+    Timer { id: saveSoon; interval: 400; onTriggered: win.saveWindow() }
+    onXChanged: saveSoon.restart()
+    onYChanged: saveSoon.restart()
+    onWidthChanged: saveSoon.restart()
+    onHeightChanged: saveSoon.restart()
+    onVisibilityChanged: saveSoon.restart()
+    onClosing: saveWindow()
     function showManager() { managerOpen = true; manager.show() }
 
     // The single selection shared by the timeline and the inspector.

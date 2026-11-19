@@ -354,53 +354,53 @@ FocusScope {
         width: Math.min(560, pm.width - 60)
         closePolicy: editor.importing ? Popup.NoAutoClose : Popup.CloseOnEscape
         property url master
-        property url performance
-        property url cutaway
         property string failure: ""
+        property string suggested: ""
         readonly property string problem: library.checkName(nameField.text)
         onOpened: {
-            failure = ""; master = ""; performance = ""; cutaway = ""
+            failure = ""; master = ""
             let name = "Untitled Project", n = 1
             while (library.checkName(name)) name = "Untitled Project " + (++n)
+            suggested = name
             nameField.text = name; nameField.selectAll(); nameField.forceActiveFocus()
         }
         onClosed: grid.forceActiveFocus()
-        readonly property bool complete: !problem && master.toString() && (!!performance.toString() === !!cutaway.toString())
-        function accept() { if (complete && !editor.importing) { failure = ""; library.create(nameField.text, master, performance, cutaway) } }
+        readonly property bool complete: !problem && master.toString().length > 0
+        function accept() { if (complete && !editor.importing) { failure = ""; library.create(nameField.text, master, "", "") } }
+        // Name the project after the song unless a name was already typed.
+        onMasterChanged: {
+            if (!master.toString() || nameField.text !== suggested) return
+            const title = pm.leaf(master).replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").trim()
+            if (title && !library.checkName(title)) { nameField.text = title; suggested = title }
+        }
         Connections {
             target: library
             function onCreated(success) {
                 if (success) { newProject.close(); pm.finished() } else newProject.failure = library.message
             }
         }
-        FileDialog { id: pick; property string role
-                     nameFilters: role === "master" ? ["Audio (*.wav *.aif *.aiff *.flac *.mp3 *.m4a)", "All files (*)"] : ["Video (*.mp4 *.mov *.m4v)", "All files (*)"]
-                     onAccepted: newProject[role] = selectedFile }
+        FileDialog { id: pick; title: "Choose the song"
+                     nameFilters: ["Audio (*.wav *.aif *.aiff *.flac *.mp3 *.m4a)", "All files (*)"]
+                     onAccepted: newProject.master = selectedFile }
         contentItem: ColumnLayout {
             spacing: 10
             enabled: !editor.importing
             Text { text: "New project"; color: pm.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
+            RowLayout {
+                Layout.fillWidth: true
+                Action { objectName: "chooseSong"; Layout.preferredWidth: 110; text: "Song…"; onClicked: pick.open() }
+                Text { Layout.fillWidth: true; elide: Text.ElideMiddle; font.pixelSize: 13
+                       readonly property string file: newProject.master.toString() ? pm.leaf(newProject.master) : ""
+                       text: file || "Choose the master recording"; color: file ? pm.ink : pm.faint }
+            }
             Field { id: nameField; objectName: "newProjectName"; Layout.fillWidth: true; placeholderText: "Project name"
                     Keys.onReturnPressed: newProject.accept(); Keys.onEnterPressed: newProject.accept() }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.amber; font.pixelSize: 12
                    visible: nameField.text.trim().length > 0 && newProject.problem.length > 0; text: newProject.problem }
             Text { Layout.fillWidth: true; elide: Text.ElideMiddle; color: pm.faint; font.pixelSize: 12
-                   text: "In " + (library.libraries.length ? library.libraries[library.current].shown : "") }
-            Repeater {
-                model: [{role: "master", label: "Song…", hint: "Required: the master recording"},
-                        {role: "performance", label: "Performance…", hint: "Optional, with a cutaway"},
-                        {role: "cutaway", label: "Cutaway…", hint: "Optional, with a performance"}]
-                RowLayout {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    Action { Layout.preferredWidth: 130; text: modelData.label; onClicked: { pick.role = modelData.role; pick.title = "Choose " + modelData.role; pick.open() } }
-                    Text { Layout.fillWidth: true; elide: Text.ElideMiddle; font.pixelSize: 13
-                           readonly property string file: newProject[modelData.role].toString() ? pm.leaf(newProject[modelData.role]) : ""
-                           text: file || modelData.hint; color: file ? pm.ink : pm.faint }
-                }
-            }
-            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.quiet; font.pixelSize: 12
-                   text: "Selected files are copied into the project folder, so it can be moved as one piece." }
+                   text: "Saved in " + (library.libraries.length ? library.libraries[library.current].shown : "") }
+            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.faint; font.pixelSize: 12
+                   text: "The song is copied into the project folder, so the project moves as one piece. Add lyrics once it opens." }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#f0a08f"; font.pixelSize: 12
                    visible: text.length > 0; text: newProject.failure }
             RowLayout {

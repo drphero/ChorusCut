@@ -182,6 +182,8 @@ int main(int argc, char** argv) {
     QTest::qWait(200);
 
     // 3. Align: upload, queue, import. The stub shifts every word by 40 ms so the import is visible.
+    const QDir jobs(QFileInfo(argv[1]).absoluteFilePath() + "/Jobs");
+    const auto savedBefore = jobs.entryList({"alignment-*.json"}).size();  // the copied project may have earlier jobs
     mode("finish", 40);
     if (!click("openLyrics") || !click("alignComfy")) return fail(6, "no Align button");
     if (!waitFor([&] { return !comfy->busy() && firstStart() == base + 40; }, 15000))
@@ -194,7 +196,7 @@ int main(int argc, char** argv) {
         prompt["1"].toObject()["inputs"].toObject()["audio"].toString() != log["uploads"].toArray().last().toObject()["name"].toString())
         return fail(7, "the queued graph does not match the song and lyrics");
     if (log["uploads"].toArray().last().toObject()["auth"].toString() != "Bearer secret-token") return fail(7, "token not sent");
-    if (jobState() != "done" || QDir(QFileInfo(argv[1]).absoluteFilePath() + "/Jobs").entryList({"alignment-*.json"}).size() != 1)
+    if (jobState() != "done" || jobs.entryList({"alignment-*.json"}).size() != savedBefore + 1)
         return fail(7, "job not recorded or result not saved in Jobs/");
 
     // 4. A job survives closing and reopening the project, and finishes afterwards.

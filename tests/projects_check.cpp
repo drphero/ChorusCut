@@ -182,10 +182,16 @@ int main(int argc, char** argv) {
     if (!clickNamed("newProject")) return fail(12, "no New Project button");
     auto field = find(window, "newProjectName");
     if (!field || field->property("text").toString() != "Untitled Project") return fail(12, "name not prefilled");
+    if (!find(window, "chooseSong")) return fail(12, "no Song… button");
+    if (find(window, "createProject")->isEnabled()) return fail(12, "Create needs a song");
+    // Choosing the song names the project after it while the default name is untouched.
+    window->findChild<QObject*>("newProjectSheet")->setProperty("master", QUrl::fromLocalFile(song));
+    if (!waitFor([&] { return field->property("text").toString() == QFileInfo(song).completeBaseName(); }, 2000))
+        return fail(12, "the project was not named after the song: " + field->property("text").toString());
+    shot("4-new-project");
+    click(field);
     QTest::keySequence(window, QKeySequence::SelectAll);
     typeText(window, "Gamma");
-    if (find(window, "createProject")->isEnabled()) return fail(12, "Create needs a song");
-    window->findChild<QObject*>("newProjectSheet")->setProperty("master", QUrl::fromLocalFile(song));
     if (!clickNamed("createProject")) return fail(12, "Create did not enable");
     if (!waitFor([&] { return editor.ready() && editor.projectName() == "Gamma" && !managerShown(); }, 20000))
         return fail(12, "Gamma was not created and opened: " + library.message());
@@ -214,10 +220,22 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_Return);
     if (!waitFor([&] { return editor.projectName() == "Gamma" && !managerShown(); })) return fail(15, "Return did not open Gamma");
 
+    // The window's size is remembered for the next launch.
+    window->resize(1111, 777);
+    QTest::qWait(1600);  // The window saves 0.4 s after a change; Settings writes it shortly after.
+    window->close();
+    QQmlApplicationEngine second;
+    second.rootContext()->setContextProperty("editor", &editor);
+    second.rootContext()->setContextProperty("library", &library);
+    second.load(QUrl("qrc:/src/Main.qml"));
+    auto reopened = qobject_cast<QQuickWindow*>(second.rootObjects().value(0));
+    if (!reopened || !QTest::qWaitForWindowExposed(reopened) || reopened->width() != 1111 || reopened->height() != 777)
+        return fail(16, QString("window size not remembered: %1x%2").arg(reopened ? reopened->width() : 0).arg(reopened ? reopened->height() : 0));
+
     // The library list is remembered.
     ProjectLibrary again(&editor);
     if (again.libraries().size() != 1 || again.libraries()[0].toMap()["path"] != lib || again.projects().size() != 2)
-        return fail(16, "library not remembered");
-    qInfo() << "PASS: launch, search, double-click, ⌘O, rename open project, name clash, duplicate, trash, trash open, create, Esc, Open, Return.";
+        return fail(17, "library not remembered");
+    qInfo() << "PASS: launch, search, double-click, ⌘O, rename open project, name clash, duplicate, trash, trash open, create (song only, named after it), Esc, Open, Return, window size.";
     return 0;
 }
