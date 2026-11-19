@@ -38,11 +38,36 @@ const QMap<QString, QVector<Option>>& optionTable() {
         {"move", {{"static", "Static"}, {"pan", "Pan"}, {"tilt", "Tilt"}, {"push", "Push in"}, {"pull", "Pull out"},
                   {"track", "Tracking"}, {"crane", "Crane"}, {"handheld", "Handheld"}, {"orbit", "Orbit"}, {"zoom", "Zoom"}}},
         {"energy", {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}}},
-        {"refRole", {{"face", "Face"}, {"body", "Full body"}, {"look", "Look"}, {"setting", "Setting"}, {"detail", "Detail"}, {"other", "Other"}}},
+        {"refRole", {{"face", "Face"}, {"body", "Full body"}, {"look", "Look"}, {"setting", "Setting"}, {"detail", "Detail"}, {"sheet", "Sheet"}, {"other", "Other"}}},
+        // How a view's pictures are made: drawn from the subject, or edited from pictures the user picks.
+        {"viewFrom", {{"prompt", "From the prompt"}, {"pictures", "From pictures"}}},
+        // What a look may change about its character (everything is kept unless listed).
+        {"lookChanges", {{"face", "Face"}, {"hair", "Hair"}, {"build", "Build"}, {"skin", "Skin"}}},
         {"route", {{"h3-lipsync", "H3 lip-sync with the song"}, {"i2v", "Still, then image-to-video"}, {"flf", "First and last frame"},
                    {"t2v", "Text-to-video"}, {"ref2v", "Reference-to-video"}, {"still", "Still only"}}},
     };
     return table;
+}
+// Which option list an enum field takes its values from.
+QString optionKey(const QString& kind, const QString& field) {
+    if ((kind == "reference" || kind == "view") && field == "role") return "refRole";
+    if (kind == "view" && field == "from") return "viewFrom";
+    return field;
+}
+// A new item's first view, and the one older projects' pictures move into.
+struct ViewSpec { const char* name; const char* framing; const char* role; const char* from; };
+ViewSpec firstView(const QString& kind) {
+    if (kind == "look") return {"Full body", "Full body, head to shoes, standing front-on, plain neutral grey backdrop, soft even light", "look", "pictures"};
+    if (kind == "location") return {"Wide", "Wide establishing view at eye level, empty of people, in the video's aspect ratio", "setting", "prompt"};
+    return {"Face", "Front view, face and shoulders, looking at the camera, plain neutral grey backdrop, soft even light", "face", "prompt"};
+}
+QString roleViewName(const QString& role) {
+    if (role == "face") return "Face";
+    if (role == "body" || role == "look") return "Full body";
+    if (role == "setting") return "Wide";
+    if (role == "detail") return "Detail";
+    if (role == "sheet") return "Sheet";
+    return "Other";
 }
 QString optionLabel(const QString& key, const QString& value) {
     for (const auto& o : optionTable().value(key)) if (value == o.value) return o.label;
@@ -50,22 +75,27 @@ QString optionLabel(const QString& key, const QString& value) {
 }
 
 // The fields each kind accepts: "text", "texts" (a list of strings), "enum" (named in optionTable),
-// "who", "where", "shotref", "singers" or "prompts".
+// "who", "where", "shotref", "singers", "prompts", "aspects" (a list of lookChanges), "refs"
+// (reference ids) or "views" (view ids).
 const QMap<QString, QMap<QString, QString>>& fieldTable() {
     static const QMap<QString, QMap<QString, QString>> table = {
         {"concept", {{"brief", "text"}, {"logline", "text"}, {"treatment", "text"}, {"videoKind", "enum"}, {"mix", "text"}, {"aspect", "enum"},
                      {"resolution", "text"}, {"style", "text"}, {"palette", "text"}, {"lighting", "text"}, {"era", "text"},
                      {"lens", "text"}, {"grade", "text"}, {"rules", "texts"}}},
         {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}, {"prompt", "text"}}},
-        {"look", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}}},
+        {"look", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}, {"changes", "aspects"}}},
         {"location", {{"name", "text"}, {"description", "text"}, {"timeOfDay", "enum"}, {"lighting", "text"}, {"prompt", "text"}}},
         {"arc", {{"happens", "text"}, {"beat", "text"}, {"density", "enum"}}},
         {"singer", {{"singers", "singers"}}},
         {"reference", {{"role", "enum"}, {"approved", "bool"}, {"notes", "text"}}},
+        // One way of seeing a character, look or location. Its pictures are its references; the
+        // approved one is its chosen picture. inputs: the pictures an edited view is made from, in
+        // order; panels: the views a composed sheet lays side by side.
+        {"view", {{"name", "text"}, {"framing", "text"}, {"role", "enum"}, {"from", "enum"}, {"inputs", "refs"}, {"panels", "views"}}},
         {"shot", {{"type", "enum"}, {"purpose", "text"}, {"who", "who"}, {"where", "where"}, {"timeOfDay", "enum"},
                   {"framing", "enum"}, {"angle", "enum"}, {"lens", "text"}, {"move", "enum"}, {"composition", "text"},
                   {"action", "text"}, {"emotion", "text"}, {"energy", "enum"}, {"follows", "shotref"}, {"route", "enum"},
-                  {"prompts", "prompts"}, {"notes", "text"}}},
+                  {"prompts", "prompts"}, {"pictures", "refs"}, {"notes", "text"}}},
     };
     return table;
 }
@@ -148,8 +178,92 @@ bool Plan::load(Project& next, QString& error) {
         }
     }
     project = &next;
+    if (!migrateViews(error) || !migrateAppearance(error)) { items.clear(); project = nullptr; return false; }
     invalidate(); say({}); emit changed();
     return true;
+}
+
+// Plans from before views (2026-11-19): every character, look and location gets views, and its
+// pictures move into them by role (face → Face, body and look → Full body, setting → Wide, detail
+// → Detail); the first approved picture of each view stays chosen. Runs once, with a copy of the
+// old rows kept in plan_items_before_views, and marks the plan with a meta row.
+// One description per item (Brent, 2026-11-19): a character's appearance (field "prompt") takes
+// the place of its identity, a look's and location's of their description. Where the appearance
+// is empty, the older text moves into it; where both were written, the older stays as notes.
+bool Plan::migrateAppearance(QString& error) {
+    if (items.isEmpty() || row("meta", 1)["appearance"].toInt() >= 1) return true;
+    pending.clear();
+    const QList<QPair<QString, QString>> moves = {{"character", "identity"}, {"look", "description"}, {"location", "description"}};
+    for (const auto& [kind, older] : moves) {
+        for (int id : items.value(kind).keys()) {
+            QJsonObject r = row(kind, id);
+            QJsonObject f = r["fields"].toObject(), prov = r["prov"].toObject();
+            if (empty(f.value(older)) || !empty(f.value("prompt"))) continue;
+            f["prompt"] = f.value(older);
+            f.remove(older);
+            if (prov.contains(older)) { prov["prompt"] = prov.value(older); prov.remove(older); }
+            r["fields"] = f;
+            r["prov"] = prov;
+            write(kind, id, r);
+        }
+    }
+    QJsonObject meta = row("meta", 1);
+    meta["appearance"] = 1;
+    if (!meta.contains("views")) meta["views"] = 1;
+    write("meta", 1, meta);
+    const bool ok = persist(pending, error);
+    pending.clear();
+    return ok;
+}
+
+bool Plan::migrateViews(QString& error) {
+    if (has("meta", 1) || items.isEmpty()) return true;
+    pending.clear();
+    for (const QString& kind : {QStringLiteral("character"), QStringLiteral("look"), QStringLiteral("location")}) {
+        for (int id : items.value(kind).keys()) {
+            const ViewSpec first = firstView(kind);
+            QMap<QString, int> byRole;
+            for (int v : viewIds(kind, id)) byRole[row("view", v)["fields"].toObject()["role"].toString()] = v;
+            QSet<int> chosen;
+            for (int ref : refIds(kind, id)) {
+                QJsonObject r = row("reference", ref);
+                if (r.contains("view") && has("view", r["view"].toInt())) continue;
+                const QString role = r["fields"].toObject()["role"].toString();
+                const QString viewRole = role == "body" && kind == "look" ? "look" : role.isEmpty() ? QString(first.role) : role;
+                if (!byRole.contains(viewRole)) {
+                    Result made;
+                    const bool isFirst = viewRole == first.role;
+                    byRole[viewRole] = addView(kind, id, {{"name", isFirst ? QString(first.name) : roleViewName(viewRole)},
+                                                          {"framing", isFirst ? QString(first.framing) : QString()},
+                                                          {"role", viewRole}, {"from", "prompt"}}, "user", made);
+                    if (!made.ok) { error = made.error; return false; }
+                }
+                const int view = byRole[viewRole];
+                r["view"] = view;
+                if (r["fields"].toObject()["approved"].toBool()) {
+                    if (chosen.contains(view)) {
+                        QJsonObject f = r["fields"].toObject();
+                        f["approved"] = false;
+                        r["fields"] = f;
+                    }
+                    chosen.insert(view);
+                }
+                write("reference", ref, r);
+            }
+            if (viewIds(kind, id).isEmpty()) {
+                Result made;
+                addView(kind, id, {{"name", first.name}, {"framing", first.framing}, {"role", first.role}, {"from", first.from}}, "user", made);
+                if (!made.ok) { error = made.error; return false; }
+            }
+        }
+    }
+    write("meta", 1, {{"views", 1}});
+    QSqlQuery q(project->db);
+    if (!project->db.tables().contains("plan_items_before_views") &&
+        !q.exec("CREATE TABLE plan_items_before_views AS SELECT * FROM plan_items")) { error = q.lastError().text(); pending.clear(); return false; }
+    const bool ok = persist(pending, error);
+    pending.clear();
+    return ok;
 }
 
 void Plan::unload() {
@@ -284,10 +398,49 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         label("Edit " + nameOf(kind, id));
         Result r = setFields(kind, id, c.value("fields").toMap(), by, mode);
         r.id = id;
+        // A view has one chosen picture: choosing one sets the others aside as alternatives.
+        if (r.ok && kind == "reference" && c.value("fields").toMap().value("approved").toBool()) {
+            const int view = row("reference", id)["view"].toInt();
+            for (int other : refIds(row("reference", id)["owner"].toString(), row("reference", id)["ownerId"].toInt()))
+                if (other != id && row("reference", other)["view"].toInt() == view && row("reference", other)["fields"].toObject()["approved"].toBool()) {
+                    Result off = setFields("reference", other, {{"approved", false}}, "user", "replace");
+                    if (!off.ok) return off;
+                }
+            if (c.value("fields").toMap().size() == 1) pendingLabel = "Choose " + row("reference", id)["name"].toString();
+        }
         return r;
     }
+    if (op == "add" && kind == "view") {
+        const QString owner = c.value("owner").toString();
+        const int ownerId = c.value("ownerId").toInt();
+        if ((owner != "character" && owner != "look" && owner != "location") || !has(owner, ownerId))
+            return error("A view belongs to an existing character, look or location.");
+        QVariantMap fields = c.value("fields").toMap();
+        if (fields.value("name").toString().trimmed().isEmpty()) return error("Give the view a name, such as Profile.");
+        if (!fields.contains("from")) fields["from"] = "prompt";
+        if (!fields.contains("role")) fields["role"] = "other";
+        label("Add view " + fields.value("name").toString().trimmed());
+        Result r;
+        r.id = addView(owner, ownerId, fields, by, r);
+        return r;
+    }
+    if (op == "view.move") {
+        const int id = c.value("id").toInt();
+        if (!has("view", id)) return error("There is no view " + QString::number(id) + ".");
+        QList<int> order = viewIds(row("view", id)["owner"].toString(), row("view", id)["ownerId"].toInt());
+        const int to = std::clamp(c.value("position").toInt(), 0, int(order.size()) - 1);
+        if (order.indexOf(id) == to) return {};
+        order.removeAll(id);
+        order.insert(to, id);
+        label("Reorder views");
+        for (int i = 0; i < order.size(); ++i) {
+            QJsonObject x = row("view", order[i]);
+            if (x["position"].toInt() != i) { x["position"] = i; write("view", order[i], x); }
+        }
+        return {};
+    }
     if (op == "add") {
-        if (kind != "character" && kind != "look" && kind != "location") return error("Add a character, look or location.");
+        if (kind != "character" && kind != "look" && kind != "location") return error("Add a character, look, location or view.");
         QJsonObject fresh{{"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
         if (kind == "look") {
             const int owner = c.value("character").toInt();
@@ -296,6 +449,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         }
         const int id = nextId(kind);
         write(kind, id, fresh);
+        if (!has("meta", 1)) write("meta", 1, {{"views", 1}, {"appearance", 1}});  // made with views and appearance from the start
         QVariantMap fields = c.value("fields").toMap();
         if (fields.value("name").toString().trimmed().isEmpty()) {
             const QString noun = kind == "character" ? "Character" : kind == "look" ? "Look" : "Location";
@@ -304,11 +458,18 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         label("Add " + kind);
         Result r = setFields(kind, id, fields, by, "replace");
         r.id = id;
+        // Every item starts with its first view: a character's face, a look's full body, a place's wide.
+        if (r.ok) {
+            const ViewSpec v = firstView(kind);
+            Result made;
+            addView(kind, id, {{"name", v.name}, {"framing", v.framing}, {"role", v.role}, {"from", v.from}}, by, made);
+            if (!made.ok) return made;
+        }
         return r;
     }
     if (op == "remove") {
         const int id = c.value("id").toInt();
-        if ((kind != "character" && kind != "look" && kind != "location" && kind != "shot" && kind != "reference") || !has(kind, id))
+        if ((kind != "character" && kind != "look" && kind != "location" && kind != "shot" && kind != "reference" && kind != "view") || !has(kind, id))
             return error("There is no " + kind + " " + QString::number(id) + " to remove.");
         if (by == "agent") {
             const auto prov = row(kind, id)["prov"].toObject();
@@ -321,6 +482,10 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
                 if (it.value()["character"].toInt() == id) { dropReferences("look", it.key()); write("look", it.key(), {}); }
         }
         if (kind == "character" || kind == "look" || kind == "location") dropReferences(kind, id);
+        // A view takes its pictures with it.
+        if (kind == "view")
+            for (int ref : refIds(row("view", id)["owner"].toString(), row("view", id)["ownerId"].toInt()))
+                if (row("reference", ref)["view"].toInt() == id) write("reference", ref, {});
         // The image stays in Media/References, so undo can bring the reference back.
         write(kind, id, {});
         return {};
@@ -380,7 +545,21 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     if (op == "ref.move") {
         const int id = c.value("id").toInt();
         if (!has("reference", id)) return error("There is no reference " + QString::number(id) + ".");
-        const auto r = row("reference", id);
+        auto r = row("reference", id);
+        // Into another view of the same item: it arrives as an alternative there.
+        if (c.contains("view") && c.value("view").toInt() != r["view"].toInt()) {
+            const int view = c.value("view").toInt();
+            if (!has("view", view) || row("view", view)["owner"] != r["owner"] || row("view", view)["ownerId"] != r["ownerId"])
+                return error("Move a picture to another view of the same item.");
+            r["view"] = view;
+            write("reference", id, r);
+            label("Move " + r["name"].toString() + " to " + row("view", view)["fields"].toObject()["name"].toString());
+            if (r["fields"].toObject()["approved"].toBool()) {
+                Result off = setFields("reference", id, {{"approved", false}}, "user", "replace");
+                if (!off.ok) return off;
+            }
+            if (!c.contains("position")) return {};
+        }
         QList<int> order = refIds(r["owner"].toString(), r["ownerId"].toInt());
         const int to = std::clamp(c.value("position").toInt(), 0, int(order.size()) - 1);
         if (order.indexOf(id) == to) return {};
@@ -460,7 +639,7 @@ QString Plan::checkField(const QString& kind, const QString& field, const QJsonV
     if (type == "text") return v.isString() ? QString() : field + " must be text.";
     if (type == "bool") return v.isBool() ? QString() : field + " must be true or false.";
     if (type == "enum") {
-        for (const auto& o : optionTable().value(kind == "reference" && field == "role" ? "refRole" : field)) if (v.toString() == o.value) return {};
+        for (const auto& o : optionTable().value(optionKey(kind, field))) if (v.toString() == o.value) return {};
         return QString("\"%1\" is not a known %2.").arg(v.toString(), field);
     }
     if (type == "texts") {
@@ -490,6 +669,25 @@ QString Plan::checkField(const QString& kind, const QString& field, const QJsonV
     if (type == "singers") {
         if (!v.isArray()) return "singers is a list of character ids.";
         for (const auto& e : v.toArray()) if (!has("character", e.toInt())) return "singers names a character that does not exist.";
+        return {};
+    }
+    if (type == "aspects") {
+        if (!v.isArray()) return field + " is a list: face, hair, build or skin.";
+        for (const auto& e : v.toArray()) {
+            bool known = false;
+            for (const auto& o : optionTable().value("lookChanges")) known |= e.toString() == o.value;
+            if (!known) return QString("\"%1\" is not something a look can change (face, hair, build, skin).").arg(e.toString());
+        }
+        return {};
+    }
+    if (type == "refs") {
+        if (!v.isArray()) return field + " is a list of reference picture ids.";
+        for (const auto& e : v.toArray()) if (!has("reference", e.toInt())) return field + " names a picture that does not exist.";
+        return {};
+    }
+    if (type == "views") {
+        if (!v.isArray()) return field + " is a list of view ids.";
+        for (const auto& e : v.toArray()) if (!has("view", e.toInt())) return field + " names a view that does not exist.";
         return {};
     }
     if (type == "prompts") {
@@ -527,6 +725,10 @@ Plan::Result Plan::setFields(const QString& kind, int id, const QVariantMap& fie
             v = a;
         }
         if (QString problem = checkField(kind, it.key(), v); !problem.isEmpty()) { r.ok = false; r.error = problem; return r; }
+        // Choosing a view's picture is the user's: an agent can add pictures, not choose them.
+        if (by == "agent" && kind == "reference" && it.key() == "approved" && v.toBool() && !values.value("approved").toBool()) {
+            r.ok = false; r.error = "Only the user chooses pictures; add it and tell the user which one you suggest."; return r;
+        }
         const QJsonObject p = prov[it.key()].toObject();
         const QJsonValue old = values.value(it.key());
         // The brief is the user's direction. An agent may add to it (the user's answers from a
@@ -578,6 +780,30 @@ QList<int> Plan::refIds(const QString& owner, int id) const {
 
 void Plan::dropReferences(const QString& owner, int id) {
     for (int ref : refIds(owner, id)) write("reference", ref, {});
+    for (int view : viewIds(owner, id)) write("view", view, {});
+}
+
+QList<int> Plan::viewIds(const QString& owner, int id) const {
+    QList<int> ids;
+    const auto& views = items.value("view");
+    for (auto it = views.begin(); it != views.end(); ++it)
+        if (it.value()["owner"].toString() == owner && it.value()["ownerId"].toInt() == id) ids.append(it.key());
+    std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+        const int pa = views[a]["position"].toInt(), pb = views[b]["position"].toInt();
+        return pa != pb ? pa < pb : a < b;
+    });
+    return ids;
+}
+
+int Plan::addView(const QString& owner, int ownerId, const QVariantMap& fields, const QString& by, Result& r) {
+    const QList<int> siblings = viewIds(owner, ownerId);
+    const int id = nextId("view");
+    write("view", id, {{"owner", owner}, {"ownerId", ownerId}, {"position", siblings.isEmpty() ? 0 : row("view", siblings.last())["position"].toInt() + 1},
+                       {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}});
+    Result set = setFields("view", id, fields, by, "replace");
+    if (!set.ok) { r = set; return 0; }
+    r.skipped += set.skipped;
+    return id;
 }
 
 Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
@@ -615,22 +841,48 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     const QList<int> siblings = refIds(owner, ownerId);
     for (int existing : siblings)
         if (row("reference", existing)["file"].toString() == relative) return fail(QFileInfo(source).fileName() + " is already a reference here.");
+    // Its view: the one named, else the item's first (made if it has none yet).
+    int view = c.value("view").toInt();
+    if (view) {
+        if (!has("view", view) || row("view", view)["owner"].toString() != owner || row("view", view)["ownerId"].toInt() != ownerId)
+            return fail("That view belongs to something else.");
+    } else if (const auto views = viewIds(owner, ownerId); !views.isEmpty()) {
+        view = views.first();
+    } else {
+        const ViewSpec v = firstView(owner);
+        view = addView(owner, ownerId, {{"name", v.name}, {"framing", v.framing}, {"role", v.role}, {"from", v.from}}, by, r);
+        if (!r.ok) return r;
+    }
     QString role = c.value("role").toString();
-    if (role.isEmpty()) role = owner == "location" ? "setting" : owner == "look" ? "look" : siblings.isEmpty() ? "face" : "body";
+    if (role.isEmpty()) role = row("view", view)["fields"].toObject()["role"].toString();
+    if (role.isEmpty() || role == "sheet") role = owner == "location" ? "setting" : owner == "look" ? "look" : "face";
+    bool viewHasChoice = false;
+    for (int other : siblings) viewHasChoice |= row("reference", other)["view"].toInt() == view && row("reference", other)["fields"].toObject()["approved"].toBool();
     const int id = nextId("reference");
     const int position = siblings.isEmpty() ? 0 : row("reference", siblings.last())["position"].toInt() + 1;
     // Generated pictures come from the app's own jobs (never an agent's command) and keep how
     // they were made: the workflow, prompt and seed.
     const bool generated = by == "user" && c.value("source").toString() == "generated";
-    QJsonObject entry{{"owner", owner}, {"ownerId", ownerId}, {"file", relative},
+    // A sheet Chorus Cut composed from the user's chosen pictures is chosen at once.
+    const bool composed = by == "user" && c.value("source").toString() == "composed";
+    QJsonObject entry{{"owner", owner}, {"ownerId", ownerId}, {"view", view}, {"file", relative},
                       {"name", c.value("name").toString().isEmpty() ? QFileInfo(source).fileName() : c.value("name").toString()},
                       {"width", size.width()}, {"height", size.height()}, {"position", position},
-                      {"source", generated ? "generated" : by == "user" ? "imported" : "agent"}, {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
-    if (generated) entry["generation"] = QJsonObject::fromVariantMap(c.value("generation").toMap());
+                      {"source", generated ? "generated" : composed ? "composed" : by == "user" ? "imported" : "agent"}, {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
+    if (generated || composed) entry["generation"] = QJsonObject::fromVariantMap(c.value("generation").toMap());
     write("reference", id, entry);
-    if (pendingLabel.isEmpty()) pendingLabel = generated ? "Add generated reference" : "Add reference";
-    // Pictures the user brings are approved; generated ones and ones an agent adds wait for the user.
-    r = setFields("reference", id, {{"role", role}, {"approved", by == "user" && !generated}}, generated ? "user" : by, "replace");
+    if (pendingLabel.isEmpty()) pendingLabel = generated ? "Add generated reference" : composed ? "Compose sheet" : "Add reference";
+    // A picture the user brings becomes the view's chosen one if it has none; generated ones and
+    // ones an agent adds wait for the user to choose them. A composed sheet replaces the choice.
+    if (composed)
+        for (int other : siblings)
+            if (row("reference", other)["view"].toInt() == view && row("reference", other)["fields"].toObject()["approved"].toBool()) {
+                Result off = setFields("reference", other, {{"approved", false}}, "user", "replace");
+                if (!off.ok) return off;
+            }
+    const bool choose = composed || (by == "user" && !generated && !viewHasChoice);
+    Result set = setFields("reference", id, {{"role", role}, {"approved", choose}}, (generated || composed) ? "user" : by, "replace");
+    if (!set.ok) return set;
     r.id = id;
     return r;
 }
@@ -727,6 +979,7 @@ QString Plan::nameOf(const QString& kind, int id) const {
     if (kind == "arc") return "arc for " + sections().value(id).toMap()["label"].toString();
     if (kind == "singer") return "singer";
     if (kind == "reference") return "reference " + r["name"].toString();
+    if (kind == "view") return nameOf(r["owner"].toString(), r["ownerId"].toInt()) + " · " + name;
     return name.isEmpty() ? kind : name;
 }
 
@@ -743,6 +996,7 @@ QVariantMap Plan::exported(const QString& kind, int id) const {
         m["approved"] = r["fields"].toObject()["approved"].toBool();
         m["role"] = r["fields"].toObject()["role"].toString();
         m["roleLabel"] = optionLabel("refRole", m["role"].toString());
+        m["viewName"] = row("view", r["view"].toInt())["fields"].toObject()["name"].toString();
     }
     return m;
 }
@@ -857,26 +1111,134 @@ QVariantList Plan::referencesFor(const QString& owner, int id) const {
     return out;
 }
 
-QVariantList Plan::shotReferences(int id) const {
+QVariantList Plan::viewsFor(const QString& owner, int id) const {
     QVariantList out;
-    if (!has("shot", id)) return out;
+    const QList<int> refs = refIds(owner, id);
+    for (int v : viewIds(owner, id)) {
+        QVariantMap m = exported("view", v);
+        const auto f = row("view", v)["fields"].toObject();
+        m["name"] = f["name"].toString();
+        m["framing"] = f["framing"].toString();
+        m["role"] = f["role"].toString();
+        m["from"] = f["from"].toString().isEmpty() ? QString("prompt") : f["from"].toString();
+        QVariantList pictures;
+        QVariantMap chosen;
+        for (int ref : refs) {
+            if (row("reference", ref)["view"].toInt() != v) continue;
+            const QVariantMap r = exported("reference", ref);
+            pictures.append(r);
+            if (r["approved"].toBool()) chosen = r;
+        }
+        m["pictures"] = pictures;
+        m["chosen"] = chosen;
+        // Picked inputs that were removed since.
+        int gone = 0;
+        for (const auto& i : f["inputs"].toArray()) gone += !has("reference", i.toInt());
+        m["missingInputs"] = gone;
+        out.append(m);
+    }
+    return out;
+}
+
+namespace {
+// How much a shot's framing wants a view of this role: 1 first, 3 still useful, 4+ left out.
+int framingWants(const QString& framing, const QString& role) {
+    const bool close = framing == "ecu" || framing == "cu" || framing == "mcu";
+    const bool wide = framing == "ws" || framing == "ews";
+    if (role == "face") return close ? 1 : wide ? 3 : 1;
+    if (role == "body" || role == "look") return close ? 4 : wide ? 1 : 2;
+    if (role == "sheet") return close ? 2 : wide ? 2 : 3;
+    if (role == "setting") return close ? 3 : wide ? 1 : 2;
+    if (role == "detail") return close ? 2 : wide ? 5 : 4;
+    return 5;
+}
+}
+
+QVariantMap Plan::shotPictures(int id) const {
+    constexpr int kLimit = 9;  // H3 reference-to-video takes nine pictures
+    QVariantList candidates;
+    if (!has("shot", id)) return {{"picked", QVariantList{}}, {"candidates", candidates}, {"overridden", false}, {"limit", kLimit}};
     const auto f = row("shot", id)["fields"].toObject();
-    auto add = [&](const QString& owner, int ownerId) {
-        for (int ref : refIds(owner, ownerId)) {
-            QVariantMap m = exported("reference", ref);
-            if (!m["approved"].toBool()) continue;
-            m["ownerName"] = nameOf(owner, ownerId);
-            out.append(m);
+    const QString framing = f["framing"].toString();
+    struct Pick { QVariantMap ref; int score; int order; QList<int> panels; };
+    QList<Pick> all;
+    int order = 0;
+    auto add = [&](const QString& owner, int ownerId, const QSet<QString>& leaveOut, const QString& why) {
+        for (const auto& v : viewsFor(owner, ownerId)) {
+            const auto view = v.toMap();
+            QVariantMap ref = view["chosen"].toMap();
+            if (ref.isEmpty()) continue;
+            const QString role = view["role"].toString();
+            ref["ownerName"] = nameOf(owner, ownerId);
+            ref["viewName"] = view["name"];
+            ref["viewRole"] = role;
+            int score = framingWants(framing, role);
+            if (leaveOut.contains(role)) { score = 9; ref["note"] = why; }
+            QList<int> panels;
+            for (const auto& p : row("view", view["id"].toInt())["fields"].toObject()["panels"].toArray()) panels << p.toInt();
+            all.append({ref, score, order++, panels});
         }
     };
     for (const auto& e : f["who"].toArray()) {
         const auto o = e.toObject();
-        if (o.contains("look") && !o["look"].isNull()) add("look", o["look"].toInt());
-        add("character", o["character"].toInt());
+        QSet<QString> leaveOut;
+        QString why;
+        if (o.contains("look") && !o["look"].isNull() && has("look", o["look"].toInt())) {
+            const int look = o["look"].toInt();
+            add("look", look, {}, {});
+            // What the look changes makes the character's own views of it wrong for this shot.
+            QStringList changed;
+            for (const auto& c : row("look", look)["fields"].toObject()["changes"].toArray()) changed << c.toString();
+            if (!changed.isEmpty()) {
+                leaveOut = {"face", "body", "sheet", "look"};
+                if (changed == QStringList{"build"}) leaveOut = {"body", "sheet", "look"};
+                why = "The look \u201c" + nameOf("look", look) + "\u201d changes " + changed.join(", ") + ".";
+            }
+        }
+        add("character", o["character"].toInt(), leaveOut, why);
     }
-    if (f["where"].isDouble()) add("location", f["where"].toInt());
-    return out;
+    if (f["where"].isDouble()) add("location", f["where"].toInt(), {}, {});
+    // The framing's picks: wanted views in order of how much the framing wants them; over the
+    // limit, a sheet stands in for the views it lays out, then the least wanted go.
+    QList<Pick> picks;
+    for (const auto& p : all) if (p.score <= 3) picks.append(p);
+    std::stable_sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.score != b.score ? a.score < b.score : a.order < b.order; });
+    if (picks.size() > kLimit) {
+        QSet<int> covered;
+        for (const auto& p : all) if (p.ref["viewRole"] == "sheet") for (int v : p.panels) covered.insert(v);
+        QList<Pick> kept;
+        for (const auto& p : picks) if (!covered.contains(p.ref["view"].toInt())) kept.append(p);
+        bool hasSheet = false;
+        for (const auto& p : kept) hasSheet |= p.ref["viewRole"] == "sheet";
+        if (!covered.isEmpty() && !hasSheet)
+            for (const auto& p : all) if (p.ref["viewRole"] == "sheet") kept.prepend(p);
+        picks = kept;
+    }
+    while (picks.size() > kLimit) picks.removeLast();
+    QSet<int> auto_;
+    for (const auto& p : picks) auto_.insert(p.ref["id"].toInt());
+    // The user's own choice for this shot, when there is one.
+    const QJsonArray override_ = f["pictures"].toArray();
+    QSet<int> chosen;
+    for (const auto& v : override_) chosen.insert(v.toInt());
+    const bool overridden = !override_.isEmpty();
+    QVariantList picked;
+    for (const auto& p : all) {
+        QVariantMap ref = p.ref;
+        const bool in = overridden ? chosen.contains(ref["id"].toInt()) : auto_.contains(ref["id"].toInt());
+        ref["picked"] = in;
+        candidates.append(ref);
+    }
+    if (overridden) {
+        for (const auto& v : override_)
+            for (const auto& c : candidates) if (c.toMap()["id"].toInt() == v.toInt()) picked.append(c);
+    } else {
+        for (const auto& p : picks) { QVariantMap ref = p.ref; ref["picked"] = true; picked.append(ref); }
+    }
+    return {{"picked", picked}, {"candidates", candidates}, {"overridden", overridden}, {"limit", kLimit}};
 }
+
+QVariantList Plan::shotReferences(int id) const { return shotPictures(id)["picked"].toList(); }
 
 QVariantList Plan::linesIn(int start, int end) const {
     QVariantList out;
@@ -1054,7 +1416,7 @@ QVariantMap Plan::schema() const {
             QVariantMap spec{{"type", f.value()}};
             if (f.value() == "enum") {
                 QVariantList values;
-                for (const auto& o : optionTable().value(k.key() == "reference" && f.key() == "role" ? "refRole" : f.key()))
+                for (const auto& o : optionTable().value(optionKey(k.key(), f.key())))
                     values.append(QVariantMap{{"value", o.value}, {"label", o.label}});
                 spec["options"] = values;
             }

@@ -4,7 +4,7 @@ import QtQuick.Layouts
 
 // Plan text. One line commits on Return or leaving the field; several lines commit on leaving
 // the field or ⌘Return. The shown text follows the plan unless the field is being edited.
-// With collapsedLines set, long text shows that many lines and a "Show all" line until the
+// With collapsedLines set, long text shows that many lines, fading out, and "Show all" until the
 // field is clicked into; it opens to its full length while being edited.
 Item {
     id: pt
@@ -68,7 +68,7 @@ Item {
         objectName: "showAll"
         visible: pt.collapsed
         y: pt.collapsedHeight + 2
-        text: pt.words + (pt.words === 1 ? " word" : " words") + "  ·  Show all"
+        text: "Show all"
         color: moreMouse.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
         MouseArea {
             id: moreMouse

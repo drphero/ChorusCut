@@ -20,18 +20,24 @@ Popup {
 
     property string owner
     property int ownerId
+    property int viewId: 0
     property int index: 0
     property bool zoomed: false
     property bool confirmRemove: false
-    readonly property var refs: (editor.plan.references, owner ? editor.plan.referencesFor(owner, ownerId) : [])
+    // The view's pictures: the chosen one and its alternatives.
+    readonly property var refs: (editor.plan.references, owner ? editor.plan.referencesFor(owner, ownerId).filter(r => !viewId || r.view === viewId) : [])
     readonly property var ref: refs.length ? refs[Math.max(0, Math.min(index, refs.length - 1))] : null
-    readonly property var gen: ref && ref.generation ? ref.generation : null
+    readonly property var gen: ref && ref.generation && ref.source === "generated" ? ref.generation : null
     property string ownerName
     // Generate again…: the window opens the Generate dialog with these.
     signal generateAgain(string owner, int ownerId, var prefill)
 
-    function show(owner, ownerId, index, name) {
-        viewer.owner = owner; viewer.ownerId = ownerId; viewer.index = index; viewer.ownerName = name
+    // Opens on one picture (by reference id) among its view's.
+    function show(owner, ownerId, refId, name) {
+        viewer.owner = owner; viewer.ownerId = ownerId; viewer.ownerName = name
+        const r = editor.plan.item("reference", refId)
+        viewer.viewId = r.view || 0
+        viewer.index = Math.max(0, refs.findIndex(x => x.id === refId))
         open()
     }
     function step(d) {
@@ -150,7 +156,7 @@ Popup {
                     Item { height: 6 }
                     RowLayout {
                         Layout.fillWidth: true
-                        Text { text: viewer.ownerName; color: "#9fe3d0"; font.pixelSize: 15; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                        Text { text: viewer.ownerName + (viewer.ref && viewer.ref.viewName ? " · " + viewer.ref.viewName : ""); color: "#9fe3d0"; font.pixelSize: 15; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
                         Small { objectName: "refViewerClose"; text: "Close"; onClicked: viewer.close() }
                     }
                     Text {
@@ -171,14 +177,14 @@ Popup {
                                 objectName: "refViewerState"
                                 anchors.centerIn: parent; font.pixelSize: 11
                                 color: viewer.ref && viewer.ref.approved ? "#87dec7" : "#e7b75f"
-                                text: viewer.ref ? (viewer.ref.approved ? "Approved" : "To approve") : ""
+                                text: viewer.ref ? (viewer.ref.approved ? "Chosen" : viewer.refs.some(r => r.approved) ? "Alternative" : "To choose") : ""
                             }
                         }
                         Item { Layout.fillWidth: true }
                         Small {
                             objectName: "refViewerApprove"
                             active: viewer.ref && !viewer.ref.approved
-                            text: viewer.ref && viewer.ref.approved ? "Unapprove" : "Approve"
+                            text: viewer.ref && viewer.ref.approved ? "Unchoose" : "Choose"
                             onClicked: viewer.set({approved: !viewer.ref.approved})
                         }
                     }
@@ -243,6 +249,22 @@ Popup {
                                 Text { text: viewer.shown(parent.modelData.value); color: "#edf1ef"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
                             }
                         }
+                        // The pictures it was edited from, in order.
+                        Flow {
+                            visible: !!viewer.gen && !!viewer.gen.inputs && viewer.gen.inputs.length > 0
+                            Layout.fillWidth: true; spacing: 4
+                            Text { text: "Made from"; color: "#8fa0a4"; font.pixelSize: 12; width: 92 }
+                            Repeater {
+                                model: viewer.gen && viewer.gen.inputs ? viewer.gen.inputs : []
+                                Rectangle {
+                                    required property var modelData
+                                    readonly property var r: (editor.plan.references, editor.plan.item("reference", modelData))
+                                    width: 34; height: 34; radius: 3; clip: true; color: "#0c1216"; border.color: "#5c7078"
+                                    Image { anchors.fill: parent; anchors.margins: 1; source: parent.r.url || ""; fillMode: Image.PreserveAspectCrop; asynchronous: true; sourceSize: Qt.size(68, 68) }
+                                    Text { anchors.centerIn: parent; visible: !parent.r.id; text: "gone"; color: "#6f8085"; font.pixelSize: 9 }
+                                }
+                            }
+                        }
                         Text { text: "Prompt"; color: "#8fa0a4"; font.pixelSize: 12 }
                         TextEdit {
                             objectName: "refViewerPrompt"
@@ -258,7 +280,9 @@ Popup {
                                 const settings = {}
                                 for (const s of (viewer.gen.settings || [])) settings[s.key] = s.value
                                 const o = viewer.owner, id = viewer.ownerId
-                                const prefill = {use: viewer.gen.use, workflow: viewer.gen.workflow, settings: settings}
+                                const prefill = {use: viewer.gen.use, workflow: viewer.gen.workflow, settings: settings, view: viewer.ref.view,
+                                                 instruction: viewer.gen.instruction !== undefined ? viewer.gen.instruction : undefined,
+                                                 inputs: viewer.gen.inputs}
                                 if (viewer.gen.seed !== undefined) prefill.seed = viewer.gen.seed
                                 viewer.close()
                                 viewer.generateAgain(o, id, prefill)
@@ -266,14 +290,14 @@ Popup {
                         }
                         Text {
                             Layout.fillWidth: true; wrapMode: Text.Wrap
-                            text: "Opens Generate with this workflow, seed and settings. Keep the seed and change the prompt or a setting to see what that does to the same picture."
+                            text: "Opens Generate with this workflow, seed, settings and pictures. Keep the seed and change the instruction or a setting to see what that does to the same picture."
                             color: "#6f8085"; font.pixelSize: 11
                         }
                     }
                     Text {
                         visible: viewer.gen === null && !!viewer.ref
                         Layout.fillWidth: true; wrapMode: Text.Wrap
-                        text: viewer.ref ? (viewer.ref.source === "agent" ? "Added by your agent." : "Added from a file.") : ""
+                        text: viewer.ref ? (viewer.ref.source === "agent" ? "Added by your agent." : viewer.ref.source === "composed" ? "Composed from other views' chosen pictures." : "Added from a file.") : ""
                         color: "#6f8085"; font.pixelSize: 12
                     }
                     Item { height: 12 }

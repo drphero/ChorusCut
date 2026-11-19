@@ -295,8 +295,40 @@ int main(int argc, char** argv) {
         return fail(31, "the same picture was added twice");
     if (ok(run(cmd({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", pictures.filePath("notes.png")}}))))
         return fail(31, "a file that is not a picture was accepted");
-    const int bodyRef = run(cmd({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", body}}))["id"].toInt();
-    if (plan->referencesFor("character", mara).value(1).toMap()["role"] != "body") return fail(31, "a second character picture should default to full body");
+    // Views: Mara starts with Face, which her first picture went into and is chosen in. A Full
+    // body view takes the body picture; a second picture in a view waits as an alternative.
+    auto viewsOf = [&](const char* owner, int id) { return plan->viewsFor(owner, id); };
+    auto viewNames = [&](const char* owner, int id) { QStringList n; for (const auto& v : viewsOf(owner, id)) n << v.toMap()["name"].toString(); return n.join(","); };
+    if (viewNames("character", mara) != "Face" || viewNames("look", coat) != "Full body" || viewNames("location", booth) != "Wide" ||
+        viewsOf("character", mara)[0].toMap()["chosen"].toMap()["id"].toInt() != faceRef || viewsOf("look", coat)[0].toMap()["from"] != "pictures")
+        return fail(31, "new items did not start with their first view: " + viewNames("character", mara) + " / " + viewNames("look", coat));
+    r = run(cmd({{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", mara},
+                 {"fields", QVariantMap{{"name", "Full body"}, {"framing", "Full body, front-on"}, {"role", "body"}, {"from", "pictures"}}}}));
+    const int bodyView = r["id"].toInt();
+    if (!ok(r) || editor.undoText() != "Add view Full body") return fail(31, "adding a view: " + plan->message() + " " + editor.undoText());
+    const int bodyRef = run(cmd({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", body}, {"view", bodyView}}))["id"].toInt();
+    if (plan->referencesFor("character", mara).value(1).toMap()["role"] != "body" || !plan->referencesFor("character", mara).value(1).toMap()["approved"].toBool())
+        return fail(31, "a picture added to the Full body view should be its chosen body picture");
+    const int altRef = run(cmd({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", stray}, {"view", bodyView}}))["id"].toInt();
+    if (plan->item("reference", altRef)["approved"].toBool()) return fail(31, "a second picture in a view should wait as an alternative");
+    // Choosing it sets the other aside; an agent cannot choose.
+    if (ok(run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", altRef}, {"by", "agent"}, {"fields", QVariantMap{{"approved", true}}}}))))
+        return fail(31, "an agent chose a picture");
+    run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", altRef}, {"fields", QVariantMap{{"approved", true}}}}));
+    if (!plan->item("reference", altRef)["approved"].toBool() || plan->item("reference", bodyRef)["approved"].toBool() ||
+        viewsOf("character", mara)[1].toMap()["chosen"].toMap()["id"].toInt() != altRef)
+        return fail(31, "choosing a picture did not set the view's other one aside");
+    editor.undo();
+    if (!plan->item("reference", bodyRef)["approved"].toBool() || plan->item("reference", altRef)["approved"].toBool()) return fail(31, "undo did not restore the choice");
+    // Into another view as an alternative, and removing a view takes its pictures (undo brings them back).
+    run(cmd({{"op", "ref.move"}, {"id", altRef}, {"view", viewsOf("character", mara)[0].toMap()["id"]}}));
+    if (plan->item("reference", altRef)["view"].toInt() != viewsOf("character", mara)[0].toMap()["id"].toInt() || plan->item("reference", altRef)["approved"].toBool())
+        return fail(31, "moving a picture to the Face view");
+    run(cmd({{"op", "remove"}, {"kind", "reference"}, {"id", altRef}}));
+    run(cmd({{"op", "remove"}, {"kind", "view"}, {"id", bodyView}}));
+    if (plan->item("reference", bodyRef).size() || viewNames("character", mara) != "Face") return fail(31, "removing a view did not take its pictures");
+    editor.undo();
+    if (!plan->item("reference", bodyRef)["approved"].toBool() || viewNames("character", mara) != "Face,Full body") return fail(31, "undo did not bring the view back");
     run(cmd({{"op", "ref.add"}, {"owner", "look"}, {"ownerId", coat}, {"path", coatPic}}));
     // An agent's picture waits for approval, so the booth still has none approved.
     r = run(cmd({{"op", "ref.add"}, {"owner", "location"}, {"ownerId", booth}, {"path", boothPic}, {"by", "agent"}}));
@@ -314,12 +346,30 @@ int main(int argc, char** argv) {
     }
     run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", boothRef}, {"fields", QVariantMap{{"approved", true}}}}));
     if (needing() != QStringList{"Leo"}) return fail(32, "approving the booth picture did not clear its to-do");
-    // A shot uses its look's pictures, then the character's, then the location's.
+    // A shot sends each view's chosen picture, picked by its framing: a close-up her face and the
+    // booth, a wide her coat's full body first.
     const int pieceId = v1.value(1).toInt();
-    const auto used = plan->shotReferences(pieceId);
-    QStringList usedNames;
-    for (const auto& u : used) usedNames << u.toMap()["name"].toString();
-    if (usedNames != QStringList{"red-coat.png", "mara-face.png", "mara-body.jpg", "booth.png"}) return fail(33, "shot references in the wrong order: " + usedNames.join(", "));
+    auto sent = [&] { QStringList n; for (const auto& u : plan->shotReferences(pieceId)) n << u.toMap()["name"].toString(); return n.join(", "); };
+    const QVariant framingBefore = plan->shot(pieceId)["fields"].toMap().value("framing");
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"framing", "cu"}}}}));
+    if (sent() != "mara-face.png, booth.png") return fail(33, "a close-up's pictures: " + sent());
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"framing", "ws"}}}}));
+    if (sent() != "red-coat.png, mara-body.jpg, booth.png, mara-face.png") return fail(33, "a wide shot's pictures: " + sent());
+    // A look that changes her hair leaves her own face and body out.
+    run(cmd({{"op", "set"}, {"kind", "look"}, {"id", coat}, {"fields", QVariantMap{{"changes", QVariantList{"hair"}}}}}));
+    if (sent() != "red-coat.png, booth.png") return fail(33, "a look that changes hair still sent her own pictures: " + sent());
+    QString note;
+    for (const auto& c : plan->shotPictures(pieceId)["candidates"].toList()) if (c.toMap()["name"] == "mara-face.png") note = c.toMap()["note"].toString();
+    if (!note.contains("changes hair")) return fail(33, "the left-out picture does not say why: " + note);
+    if (ok(run(cmd({{"op", "set"}, {"kind", "look"}, {"id", coat}, {"fields", QVariantMap{{"changes", QVariantList{"tail"}}}}}))))
+        return fail(33, "a look accepted an unknown change");
+    // The user's own pick for the shot, then back to the framing's.
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"pictures", QVariantList{boothRef, faceRef}}}}}));
+    if (sent() != "booth.png, mara-face.png" || !plan->shotPictures(pieceId)["overridden"].toBool()) return fail(33, "the shot's own pick: " + sent());
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"pictures", QVariantList{}}}}}));
+    if (sent() != "red-coat.png, booth.png") return fail(33, "clearing the pick did not go back to the framing's: " + sent());
+    run(cmd({{"op", "set"}, {"kind", "look"}, {"id", coat}, {"fields", QVariantMap{{"changes", QVariantList{}}}}}));
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"framing", framingBefore}}}}));
     // Reorder, remove and undo.
     run(cmd({{"op", "ref.move"}, {"id", bodyRef}, {"position", 0}}));
     if (plan->referencesFor("character", mara).value(0).toMap()["id"].toInt() != bodyRef) return fail(34, "move did not put the body picture first");
@@ -327,6 +377,7 @@ int main(int argc, char** argv) {
     if (plan->referencesFor("character", mara).value(0).toMap()["id"].toInt() != faceRef) return fail(34, "undo did not restore the order");
     run(cmd({{"op", "remove"}, {"kind", "character"}, {"id", mara}}));
     if (!plan->references().isEmpty() && plan->referencesFor("look", coat).size()) return fail(35, "removing Mara left her look's pictures");
+    if (!plan->viewsFor("character", mara).isEmpty() || !plan->viewsFor("look", coat).isEmpty()) return fail(35, "removing Mara left her views");
     editor.undo();
     if (plan->referencesFor("character", mara).size() != 2 || plan->referencesFor("look", coat).size() != 1) return fail(35, "undo did not bring Mara's pictures back");
     // A picture missing from the project folder is an error.
@@ -346,6 +397,33 @@ int main(int argc, char** argv) {
     if (!editor.openProject(project)) return fail(30, editor.status());
     if (plan->shots() != savedShots || plan->concept() != savedConcept || plan->singers() != savedSingers || plan->checks() != savedChecks)
         return fail(30, "the reopened plan differs");
+    // A plan from before views: its pictures move into views by role when it opens, once.
+    {
+        const auto before = plan->referencesFor("character", mara);
+        QSqlQuery q(editor.current()->db);
+        q.exec("DELETE FROM plan_items WHERE kind IN ('view','meta')");
+        q.exec("UPDATE plan_items SET data=json_remove(data,'$.view') WHERE kind='reference'");
+        // Both of Mara's pictures were approved under the old rules.
+        q.exec(QString("UPDATE plan_items SET data=json_set(data,'$.fields.role','face') WHERE kind='reference' AND id=%1").arg(bodyRef));
+        if (!editor.openProject(project)) return fail(37, editor.status());
+        // One description: Mara's identity became her appearance, since that was empty.
+        if (plan->item("character", mara)["fields"].toMap()["prompt"] != "Late twenties, cropped black hair" ||
+            plan->item("character", mara)["fields"].toMap().contains("identity"))
+            return fail(37, "the identity did not move into the empty appearance");
+        const auto views = plan->viewsFor("character", mara);
+        if (views.size() != 1 || views[0].toMap()["name"] != "Face" || views[0].toMap()["pictures"].toList().size() != 2 ||
+            views[0].toMap()["chosen"].toMap()["id"].toInt() != faceRef ||
+            plan->viewsFor("character", leo).size() != 1 || !editor.current()->db.tables().contains("plan_items_before_views"))
+            return fail(37, "the old plan's pictures did not move into views: " + QString::fromUtf8(QJsonDocument::fromVariant(views).toJson(QJsonDocument::Compact)));
+        // Put the Full body view back as it was, for what follows.
+        const int again = run(cmd({{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", mara},
+                                   {"fields", QVariantMap{{"name", "Full body"}, {"role", "body"}, {"from", "pictures"}}}}))["id"].toInt();
+        run(cmd({{"op", "ref.move"}, {"id", bodyRef}, {"view", again}}));
+        run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", bodyRef}, {"fields", QVariantMap{{"approved", true}, {"role", "body"}}}}));
+        if (!editor.openProject(project)) return fail(37, editor.status());
+        if (plan->viewsFor("character", mara).size() != 2) return fail(37, "reopening migrated again");
+        Q_UNUSED(before);
+    }
 
     // ---- D. The Plan workspace, with real input
     {
@@ -384,6 +462,8 @@ int main(int argc, char** argv) {
             settle();
             const QRectF r = item->mapRectToItem(view, QRectF(0, 0, item->width(), item->height()));
             if (r.top() >= 0 && r.bottom() <= view->height()) break;
+            // Taller than the view: its top in the upper part is as good as it gets.
+            if (r.height() > view->height() && r.top() >= 0 && r.top() < view->height() / 3) break;
             const QPoint at = center(view);
             QWheelEvent wheel(at, window->mapToGlobal(at), QPoint(0, r.top() < 0 ? 40 : -40), QPoint(0, r.top() < 0 ? 120 : -120),
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
@@ -393,7 +473,7 @@ int main(int argc, char** argv) {
         settle();
         if (view) {
             const QRectF r = item->mapRectToItem(view, QRectF(0, 0, item->width(), item->height()));
-            if (r.top() < 0 || r.bottom() > view->height())
+            if (r.top() < 0 || (r.bottom() > view->height() && r.height() <= view->height()))
                 qCritical() << "could not scroll" << item->objectName() << "into view:" << r << "view" << view->height() << view->property("contentY");
         }
     };
@@ -459,6 +539,9 @@ int main(int argc, char** argv) {
     // Drop two picture files from the Finder onto Mara's pictures: one undo step, both copied in.
     {
         auto maraCard = find(window, "characterCard0");
+        // Pictures are tiles until one is opened: open the Face view.
+        if (maraCard && findItem(maraCard, "refDrop_character")) return fail(47, "a view was open before its tile was clicked");
+        click(maraCard ? findItem(maraCard, "viewTile_character_0") : nullptr);
         auto dropArea = maraCard ? findItem(maraCard, "refDrop_character") : nullptr;
         if (!dropArea) return fail(47, "no picture strip on Mara's card");
         scrollIntoView(dropArea);
@@ -478,8 +561,11 @@ int main(int argc, char** argv) {
         QTest::qWait(200);
         if (plan->referencesFor("character", mara).size() != before + 2) return fail(47, "dropping two pictures did not add both: " + plan->message());
         if (editor.undoText() != "Add 2 references") return fail(47, "the drop was not one undo step: " + editor.undoText());
-        // Right-click the newest picture and turn its approval off from the menu.
-        auto thumb = findItem(maraCard, QString("ref_character_%1").arg(before + 1));
+        // They went into the Face view as alternatives; right-click the newest and choose it.
+        const auto faceView = plan->viewsFor("character", mara)[0].toMap();
+        if (faceView["pictures"].toList().size() != 3 || faceView["chosen"].toMap()["id"].toInt() != faceRef) return fail(47, "the dropped pictures did not arrive as alternatives");
+        const int newest = faceView["pictures"].toList().last().toMap()["id"].toInt();
+        auto thumb = findItem(maraCard, "ref_character_2");
         if (!thumb) return fail(48, "no thumbnail for the dropped picture");
         scrollIntoView(thumb);
         QTest::mouseClick(window, Qt::RightButton, {}, center(thumb));
@@ -494,10 +580,11 @@ int main(int argc, char** argv) {
                 .arg(window->contentItem()->childAt(c.x(), c.y()) ? window->contentItem()->childAt(c.x(), c.y())->metaObject()->className() : "none"));
         }
         click(approved);
-        if (plan->referencesFor("character", mara).value(before + 1).toMap()["approved"].toBool()) return fail(48, "the menu did not unapprove the picture");
+        if (!plan->item("reference", newest)["approved"].toBool() || plan->item("reference", faceRef)["approved"].toBool())
+            return fail(48, "the menu did not choose the picture over the old one");
         capture("plan-references");
         QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
-        if (!plan->referencesFor("character", mara).value(before + 1).toMap()["approved"].toBool()) return fail(48, "⌘Z did not re-approve it");
+        if (plan->item("reference", newest)["approved"].toBool() || !plan->item("reference", faceRef)["approved"].toBool()) return fail(48, "⌘Z did not restore the choice");
     }
     capture("plan-cast");
 
@@ -555,8 +642,22 @@ int main(int argc, char** argv) {
                        + " combo " + QString::number(find(window, "shotWhoAdd") ? find(window, "shotWhoAdd")->property("count").toInt() : -1));
 
     if (!find(window, "whoEntry0") || find(window, "whoEntry1")) return fail(52, "the inspector does not list Mara in frame");
-    for (const auto& ref : plan->referencesFor("character", mara))
+    // Each of Mara's views' chosen picture is offered; clicking one leaves it out of this shot.
+    const auto offered = plan->shotPictures(id)["candidates"].toList();
+    if (offered.size() != plan->viewsFor("character", mara).size()) return fail(52, "the shot is not offered one picture per view of Mara");
+    for (const auto& ref : offered)
         if (!find(window, QString("shotRef%1").arg(ref.toMap()["id"].toInt()))) return fail(52, "the inspector does not show Mara's pictures for the shot");
+    {
+        const int firstPicked = plan->shotReferences(id).value(0).toMap()["id"].toInt();
+        const int pickedBefore = plan->shotReferences(id).size();
+        click(find(window, QString("shotRef%1").arg(firstPicked)));
+        if (plan->shotReferences(id).size() != pickedBefore - 1 || !plan->shotPictures(id)["overridden"].toBool())
+            return fail(52, "clicking a picture in the inspector did not leave it out of the shot");
+        capture("inspector-pictures");
+        click(find(window, "shotPicReset"));
+        if (plan->shotPictures(id)["overridden"].toBool() || plan->shotReferences(id).size() != pickedBefore)
+            return fail(52, "Back to the framing's picks did not restore them");
+    }
 
     // Trim the end toward the next line's end: it snaps there.
     auto card = find(window, QString("shotCard%1").arg(id));
@@ -813,7 +914,7 @@ int main(int argc, char** argv) {
         scrollIntoView(field);
         auto more = findItem(field, "showAll");
         if (!field->property("collapsed").toBool() || !more || field->height() > 110 ||
-            more->property("text").toString() != QString("%1 words  ·  Show all").arg(words))
+            more->property("text").toString() != "Show all" || words < 300)
             return fail(72, QString("the long prompt is not folded (height %1, %2)").arg(field->height()).arg(more ? more->property("text").toString() : "no Show all"));
         capture("plan-prompt-folded");
         const double folded = field->height();
@@ -829,10 +930,9 @@ int main(int argc, char** argv) {
         auto editorText = find(window, "promptEditorText");
         if (!editorText || editorText->property("text") != longPrompt || find(window, "promptEditorTitle")->property("text") != "Mara")
             return fail(73, "the editor does not show Mara's prompt");
-        bool identity = false;
-        for (const auto& v : promptEditor->property("context").toList())
-            identity |= v.toMap()["label"] == "Identity" && v.toMap()["text"] == plan->item("character", mara)["fields"].toMap()["identity"];
-        if (!identity) return fail(73, "the editor does not show Mara's identity beside the prompt");
+        bool role = false;
+        for (const auto& v : promptEditor->property("context").toList()) role |= v.toMap()["label"] == "Role";
+        if (!role) return fail(73, "the editor does not show what the appearance follows (Mara's role)");
         capture("plan-prompt-editor");
         selectAll();
         typeText("Close up of a face");
@@ -849,9 +949,14 @@ int main(int argc, char** argv) {
         QTest::qWait(150);
         if (promptEditor->property("visible").toBool() || plan->item("character", mara)["fields"].toMap()["prompt"] != longPrompt)
             return fail(74, "Esc did not cancel the editor");
-        // A look's prompt wraps over several lines now.
+        // Looks are tiles; the one clicked opens in the card, and its appearance wraps.
+        if (find(window, QString("lookPrompt%1").arg(coat))) return fail(75, "a look was open before its tile was clicked");
+        click(find(window, QString("lookTile_%1").arg(coat)));
         auto lookPrompt = find(window, QString("lookPrompt%1").arg(coat));
-        if (!lookPrompt || !lookPrompt->property("multiline").toBool()) return fail(75, "the look's prompt is still one line");
+        if (!lookPrompt || !lookPrompt->property("multiline").toBool()) return fail(75, "the look's appearance did not open, or is one line");
+        capture("plan-look-open");
+        click(find(window, QString("lookTile_%1").arg(coat)));
+        if (find(window, QString("lookPrompt%1").arg(coat))) return fail(75, "clicking the open look's tile did not close it");
         click(find(window, "workspaceEdit"));
     }
 

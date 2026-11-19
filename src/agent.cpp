@@ -213,12 +213,28 @@ QJsonObject AgentBridge::planView() const {
         QJsonArray out;
         for (const auto& v : plan->referencesFor(owner, id)) {
             const auto r = v.toMap();
-            QJsonObject ref{{"id", r["id"].toInt()}, {"role", r["role"].toString()}, {"approved", r["approved"].toBool()},
+            QJsonObject ref{{"id", r["id"].toInt()}, {"view", r["view"].toInt()}, {"role", r["role"].toString()}, {"chosen", r["approved"].toBool()},
                             {"name", r["name"].toString()}, {"width", r["width"].toInt()}, {"height", r["height"].toInt()},
                             {"addedBy", r["source"].toString() == "agent" ? "agent" : "user"}};
             if (r["missing"].toBool()) ref["missing"] = true;
             if (!r["fields"].toMap().value("notes").toString().isEmpty()) ref["notes"] = r["fields"].toMap()["notes"].toString();
             out.append(ref);
+        }
+        return out;
+    };
+    // Each view: one way of seeing the item, with the pictures it is made from and its chosen one.
+    auto viewsOf = [&](const QString& owner, int id) {
+        QJsonArray out;
+        for (const auto& v : plan->viewsFor(owner, id)) {
+            const auto m = v.toMap();
+            QJsonObject o = fieldsOf(m);
+            o["id"] = m["id"].toInt();
+            const auto chosen = m["chosen"].toMap();
+            o["chosen"] = chosen.isEmpty() ? QJsonValue() : QJsonValue(chosen["id"].toInt());
+            QJsonArray pictures;
+            for (const auto& p : m["pictures"].toList()) pictures.append(p.toMap()["id"].toInt());
+            o["pictures"] = pictures;
+            out.append(o);
         }
         return out;
     };
@@ -237,10 +253,12 @@ QJsonObject AgentBridge::planView() const {
             QJsonObject lo = fieldsOf(l);
             lo["id"] = l["id"].toInt();
             lo["references"] = refsOf("look", l["id"].toInt());
+            lo["views"] = viewsOf("look", l["id"].toInt());
             myLooks.append(lo);
         }
         o["looks"] = myLooks;
         o["references"] = refsOf("character", id);
+        o["views"] = viewsOf("character", id);
         characters.append(o);
     }
     QJsonArray locations;
@@ -249,6 +267,7 @@ QJsonObject AgentBridge::planView() const {
         QJsonObject o = fieldsOf(l);
         o["id"] = l["id"].toInt();
         o["references"] = refsOf("location", l["id"].toInt());
+        o["views"] = viewsOf("location", l["id"].toInt());
         locations.append(o);
     }
     QJsonArray arc;
@@ -278,7 +297,19 @@ QJsonObject AgentBridge::planView() const {
         if (s["problems"].toInt()) o["openChecks"] = s["problems"].toInt();
         shots.append(o);
     }
-    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"arc", arc}, {"shots", shots}};
+    // The user's image workflows, so prompts and instructions suit the model that will read them.
+    QJsonArray workflows;
+    auto flows = editor->workflows();
+    for (const auto& v : flows->list()) {
+        const auto w = v.toMap();
+        if (!w["ready"].toBool()) continue;
+        QJsonObject o{{"name", w["name"].toString()}, {"use", w["useLabel"].toString()}, {"isDefault", w["isDefault"].toBool()},
+                      {"maxPictures", flows->pictureCount(w["id"].toString())},
+                      {"picturesAreCalled", editor->generator()->pictureLabel(w["id"].toString(), 1) + ", " + editor->generator()->pictureLabel(w["id"].toString(), 2) + ", …"}};
+        if (!flows->notes(w["id"].toString()).isEmpty()) o["userNotes"] = flows->notes(w["id"].toString());
+        workflows.append(o);
+    }
+    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"arc", arc}, {"shots", shots}, {"imageWorkflows", workflows}};
 }
 
 QJsonObject AgentBridge::checks() const {

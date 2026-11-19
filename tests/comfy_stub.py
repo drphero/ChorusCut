@@ -110,6 +110,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"system": {"comfyui_version": "stub"}, "devices": [{"name": "cuda:0 Stub GPU"}]})
             if self.path == "/object_info/ChorusCutAlignLyrics":
                 return self.send({"ChorusCutAlignLyrics": {"input": {}}})
+            # Node types of the test workflows: which inputs are optional, and how one names its pictures.
+            infos = {
+                "TextEncodeQwenImageEditPlus": {"input": {"required": {"clip": ["CLIP", {}], "prompt": ["STRING", {}]},
+                                                           "optional": {"vae": ["VAE", {}], "image1": ["IMAGE", {}], "image2": ["IMAGE", {}], "image3": ["IMAGE", {}]}}},
+                "ImageConditioning": {"description": "Text to image, or an edit guided by pictures. The prompt refers to them as <Picture 1>, <Picture 2>, ...",
+                                      "input": {"required": {"clip": ["CLIP", {}], "prompt": ["STRING", {}], "width": ["INT", {}], "height": ["INT", {}]},
+                                                "optional": {"vae": ["VAE", {}], "images": ["COMFY_AUTOGROW_V3", {"template": {"input": {"required": {"image": ["IMAGE", {}]}}}, "prefix": "image_", "min": 0, "max": 100}]}}},
+                "ComfySwitchNode": {"input": {"required": {"switch": ["BOOLEAN", {}]}, "optional": {"on_false": ["*", {}], "on_true": ["*", {}]}}},
+            }
+            name = self.path[len("/object_info/"):] if self.path.startswith("/object_info/") else ""
+            if name in infos:
+                state.setdefault("object_info", []).append(name)
+                return self.send({name: infos[name]})
             if self.path == "/object_info/KSampler":
                 state.setdefault("object_info", []).append("KSampler")
                 return self.send({"KSampler": {"input": {"required": {

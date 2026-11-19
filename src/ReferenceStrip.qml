@@ -3,23 +3,27 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
-// Reference pictures of a character, look or location, in order. Add them with the button or
-// by dropping image files on the strip; they are copied into the project. Generate makes new
-// ones through the user's ComfyUI workflows; they appear here while they run and arrive waiting
-// for approval. Click a picture to see it large (and approve it, set its role, move it or take
-// it off there); right-click for the same in a menu. Every change is one undo step.
+// One view's pictures (a character's, look's or location's), in order: the chosen one (what the
+// video model gets) and alternatives. Add them with the button or by dropping image files on the
+// strip; they are copied into the project. Generate makes new ones through the user's ComfyUI
+// workflows, from the prompt or from picked pictures as the view says; they appear here while
+// they run and arrive waiting to be chosen. Click a picture to see it large (and choose it there);
+// right-click for a menu. Every change is one undo step.
 Item {
     id: strip
     property string owner
     property int ownerId
+    property int viewId: 0
     property int size: 84
-    readonly property var refs: (editor.plan.references, editor.plan.referencesFor(owner, ownerId))
-    // Generation: what can be made here, and the jobs running for it.
-    readonly property var gen: (editor.generator.jobs, editor.generator.options(owner, ownerId))
-    readonly property var pending: editor.generator.jobs.filter(j => j.owner === owner && j.ownerId === ownerId)
+    readonly property var allRefs: (editor.plan.references, editor.plan.referencesFor(owner, ownerId))
+    readonly property var refs: viewId ? allRefs.filter(r => r.view === viewId) : allRefs
+    readonly property var views: (editor.plan.revision, editor.plan.viewsFor(owner, ownerId))
+    // Generation: what this view can make now, and the jobs running for it.
+    readonly property var gen: (editor.generator.jobs, editor.workflows.list, editor.plan.revision, viewId ? editor.generator.viewOptions(viewId) : ({ready: false, why: ""}))
+    readonly property var pending: editor.generator.jobs.filter(j => j.owner === owner && j.ownerId === ownerId && (!viewId || j.view === viewId))
     property string note: ""
-    function generate(use) {
-        note = editor.generator.generate(owner, ownerId, use)
+    function generate() {
+        note = editor.generator.generateWith(owner, ownerId, "", {view: viewId})
     }
     readonly property var imageTypes: ["png", "jpg", "jpeg", "webp", "heic", "heif", "tif", "tiff", "bmp", "gif"]
     Layout.fillWidth: true
@@ -31,7 +35,7 @@ Item {
         for (const u of urls) {
             const path = u.toString()
             if (imageTypes.indexOf(path.split(".").pop().toLowerCase()) >= 0)
-                commands.push({op: "ref.add", owner: owner, ownerId: ownerId, path: path})
+                commands.push(viewId ? {op: "ref.add", owner: owner, ownerId: ownerId, path: path, view: viewId} : {op: "ref.add", owner: owner, ownerId: ownerId, path: path})
         }
         if (commands.length === 0) return false
         return editor.plan.run(commands.length === 1 ? commands[0]
@@ -77,14 +81,15 @@ Item {
                     width: strip.size; height: strip.size
                     radius: 4; clip: true
                     color: "#0c1216"
-                    border.color: thumb.modelData.missing ? "#e07f6f" : thumb.modelData.approved ? "#3f9c84" : "#e0a24a"
+                    border.color: thumb.modelData.missing ? "#e07f6f" : thumb.modelData.approved ? "#3f9c84" : strip.refs.some(r => r.approved) ? "#34434a" : "#e0a24a"
+                    border.width: thumb.modelData.approved ? 2 : 1
                     Image {
                         anchors.fill: parent; anchors.margins: 1
                         source: thumb.modelData.missing ? "" : thumb.modelData.url
                         fillMode: Image.PreserveAspectCrop
                         asynchronous: true
                         sourceSize: Qt.size(strip.size * 2, strip.size * 2)
-                        opacity: thumb.modelData.approved ? 1 : 0.55
+                        opacity: thumb.modelData.approved ? 1 : 0.6
                     }
                     Text {
                         visible: thumb.modelData.missing
@@ -96,8 +101,8 @@ Item {
                 Text {
                     y: strip.size + 2; width: strip.size
                     elide: Text.ElideRight
-                    text: thumb.modelData.approved ? thumb.modelData.roleLabel : "To approve"
-                    color: thumb.modelData.approved ? "#adb8ba" : "#e0a24a"; font.pixelSize: 10
+                    text: thumb.modelData.approved ? "Chosen" : strip.refs.some(r => r.approved) ? "Alternative" : "To choose"
+                    color: thumb.modelData.approved ? "#87dec7" : strip.refs.some(r => r.approved) ? "#6f8085" : "#e0a24a"; font.pixelSize: 10
                 }
                 MouseArea {
                     id: thumbMouse
@@ -107,13 +112,13 @@ Item {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: m => {
                         if (m.button === Qt.RightButton) menu.popup()
-                        else strip.Window.window.viewReference(strip.owner, strip.ownerId, thumb.index)
+                        else strip.Window.window.viewReference(strip.owner, strip.ownerId, thumb.modelData.id)
                     }
                 }
                 ToolTip.visible: thumbMouse.containsMouse && !menu.visible
                 ToolTip.delay: 500
                 ToolTip.text: thumb.modelData.name + "  ·  " + thumb.modelData.width + "×" + thumb.modelData.height
-                              + "\nClick to view large; right-click for options"
+                              + "\nClick to view large and choose; right-click for options"
 
                 Menu {
                     id: menu
@@ -139,10 +144,23 @@ Item {
                     }
                     MenuItem {
                         objectName: "refApproved"
-                        text: "Approved"
+                        text: "Chosen for this view"
                         checkable: true
                         checked: thumb.modelData.approved
                         onTriggered: menu.set({approved: !thumb.modelData.approved})
+                    }
+                    Menu {
+                        title: "Move to view"
+                        enabled: strip.views.length > 1
+                        palette.window: "#1d2930"; palette.windowText: "#edf1ef"; palette.light: "#2f4a52"; palette.mid: "#34434a"; palette.dark: "#87dec7"
+                        Repeater {
+                            model: strip.views.filter(v => v.id !== thumb.modelData.view)
+                            MenuItem {
+                                required property var modelData
+                                text: modelData.name
+                                onTriggered: editor.plan.run({op: "ref.move", id: thumb.modelData.id, view: modelData.id})
+                            }
+                        }
                     }
                     MenuSeparator {}
                     MenuItem {
@@ -257,21 +275,23 @@ Item {
                 palette.window: "#1d2930"; palette.windowText: "#edf1ef"; palette.light: "#2f4a52"; palette.mid: "#34434a"; palette.dark: "#87dec7"
                 palette.disabled.windowText: "#6f8085"
                 MenuItem {
-                    objectName: "genFromPrompt"
-                    enabled: strip.gen.text.ready
-                    text: "From the picture prompt" + (strip.gen.text.workflow ? "  ·  " + strip.gen.text.workflow : "")
-                    onTriggered: strip.generate("ref-text")
+                    objectName: "genQuick"
+                    enabled: strip.gen.ready
+                    text: (strip.gen.use === "ref-edit" ? "From the picked pictures" : "From the prompt")
+                          + (strip.gen.workflowName ? "  ·  " + strip.gen.workflowName : "")
+                    onTriggered: strip.generate()
                 }
                 MenuItem {
-                    objectName: "genFromPictures"
-                    enabled: strip.gen.edit.ready
-                    text: "From approved pictures" + (strip.gen.edit.workflow ? "  ·  " + strip.gen.edit.workflow : "")
-                    onTriggered: strip.generate("ref-edit")
+                    objectName: "genMenuWhy"
+                    visible: !strip.gen.ready && strip.gen.why !== ""
+                    height: visible ? implicitHeight : 0
+                    enabled: false
+                    text: strip.gen.why || ""
                 }
                 MenuItem {
                     objectName: "genOptions"
                     text: "With options…  (seed, how many, settings)"
-                    onTriggered: strip.Window.window.openGenerate(strip.owner, strip.ownerId, null)
+                    onTriggered: strip.Window.window.openGenerate(strip.owner, strip.ownerId, {view: strip.viewId})
                 }
                 MenuSeparator {}
                 MenuItem {

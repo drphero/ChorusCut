@@ -19,7 +19,7 @@ set_source_files_properties(alignment/align.py PROPERTIES MACOSX_PACKAGE_LOCATIO
 set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManager.qml src/PlanWorkspace.qml
                src/PlanField.qml src/PlanText.qml src/PlanCombo.qml src/Checks.qml src/ReferenceStrip.qml
                src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml
-               src/ReferenceViewer.qml src/GeneratePopup.qml)
+               src/ReferenceViewer.qml src/GeneratePopup.qml src/ReferenceViews.qml)
 qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py)
 qt_add_resources(ChorusCut ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCut PRIVATE chorus_editor Qt6::QuickControls2)

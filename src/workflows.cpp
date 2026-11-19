@@ -15,7 +15,8 @@ struct Named { const char* value; const char* label; const char* hint; };
 const QList<Named>& useTable() {
     static const QList<Named> table = {
         {"ref-text", "Reference picture from a prompt", "Text to image: a character, look or location from its picture prompt."},
-        {"ref-edit", "Reference picture from pictures", "Image editing: a new picture from approved ones and the prompt, such as a look on the character's face."},
+        {"ref-edit", "Reference picture from pictures", "Image editing: a new picture from pictures you pick and an instruction, such as a look on the character's face."},
+        {"ref-any", "Reference picture, from a prompt or from pictures", "Both: a model that draws from text alone or edits from any number of pictures (its picture inputs must be optional)."},
     };
     return table;
 }
@@ -56,8 +57,14 @@ QPair<QString, QString> textFor(const QJsonObject& graph, const QJsonValue& link
         const auto inputs = inputsOf(graph, node);
         for (const char* name : {"text", "prompt", "text_g"})
             if (inputs[name].isString()) return {node, name};
+        // A prompt typed into a string primitive (as ComfyUI's own templates do).
+        if (classOf(graph, node).startsWith("PrimitiveString") && inputs["value"].isString()) return {node, "value"};
+        // Never into a prompt enhancer's instructions: the user's words are elsewhere.
         for (auto it = inputs.begin(); it != inputs.end(); ++it)
-            if (isLink(it.value()) && it.key() != "model" && it.key() != "vae") queue << it.value().toArray()[0].toString();
+            if (isLink(it.value()) && it.key() != "model" && it.key() != "vae" && it.key() != "system_prompt" && it.key() != "string")
+                queue << it.value().toArray()[0].toString();
+        // A template's own words (StringReplace's string) last, so a user's text is found first.
+        if (isLink(inputs["string"])) queue << inputs["string"].toArray()[0].toString();
     }
     return {};
 }
@@ -80,6 +87,8 @@ bool usualSetting(const QString& cls, const QString& input, const QJsonValue& va
     if (cls == "BasicScheduler") return input == "steps" || input == "scheduler" || input == "denoise";
     if (cls == "CFGGuider") return input == "cfg";
     if (cls == "FluxGuidance") return input == "guidance";
+    // Shape and size pickers: aspect ratio and megapixel choices, whatever node offers them.
+    if (input == "aspect_ratio" || input == "megapixels") return true;
     return false;
 }
 QString slug(const QString& name) {
@@ -261,7 +270,7 @@ QStringList Workflows::problems(const QString& id) const {
         pictures += s.toObject()["slot"] == "picture";
     }
     if (!prompts) out << "Choose the input that takes the prompt.";
-    if (use == "ref-edit" && !pictures) out << "Choose the Load Image input that takes the first picture.";
+    if ((use == "ref-edit" || use == "ref-any") && !pictures) out << "Choose the Load Image input that takes the first picture.";
     if (use == "ref-text" && pictures) out << "This workflow takes pictures: use it for “Reference picture from pictures”, or let its Load Image inputs keep their values.";
     if (adapter["outputs"].toArray().isEmpty()) out << "Add a Save Image node, so Chorus Cut can collect the result.";
     const auto graph = graphOf(id);
@@ -320,7 +329,8 @@ QVariantMap Workflows::get(const QString& id) const {
     for (const auto& o : adapter["outputs"].toArray()) outs << QString("%1 (%2)").arg(o.toString(), classOf(graph, o.toString()));
     return {{"id", id}, {"name", nameOf(id)}, {"use", use}, {"useLabel", useLabel(use)}, {"source", adapter["source"].toString()},
             {"isDefault", library()["defaults"].toObject()[use].toString() == id}, {"ready", issues.isEmpty()}, {"problems", issues},
-            {"outputs", outs}, {"inputs", inputs}, {"pictures", pictureCount(id)}};
+            {"outputs", outs}, {"inputs", inputs}, {"pictures", pictureCount(id)},
+            {"pictureName", adapter["pictureName"].toString()}, {"notes", adapter["notes"].toString()}};
 }
 
 bool Workflows::setSlot(const QString& id, const QString& node, const QString& input, const QString& slot, int index) {
@@ -371,7 +381,7 @@ bool Workflows::rename(const QString& id, const QString& name) {
 }
 
 bool Workflows::setDefault(const QString& use, const QString& id) {
-    if (!ids().contains(id) || adapterOf(id)["use"].toString() != use) return false;
+    if (!ids().contains(id) || !serves(id, use)) return false;
     auto lib = library();
     auto defaults = lib["defaults"].toObject();
     defaults[use] = id;
@@ -395,13 +405,24 @@ bool Workflows::remove(const QString& id) {
     return true;
 }
 
+bool Workflows::serves(const QString& id, const QString& use) const {
+    const QString own = adapterOf(id)["use"].toString();
+    return own == use || (own == "ref-any" && (use == "ref-text" || use == "ref-edit"));
+}
+
 QString Workflows::forUse(const QString& use) const {
     const QString chosen = library()["defaults"].toObject()[use].toString();
-    if (ids().contains(chosen) && adapterOf(chosen)["use"].toString() == use && problems(chosen).isEmpty()) return chosen;
-    QStringList ready;
-    for (const QString& id : ids())
-        if (adapterOf(id)["use"].toString() == use && problems(id).isEmpty()) ready << id;
-    return ready.size() == 1 ? ready[0] : QString();
+    if (ids().contains(chosen) && serves(chosen, use) && problems(chosen).isEmpty()) return chosen;
+    // A workflow made for this use first, then one that does both.
+    QStringList own, both;
+    for (const QString& id : ids()) {
+        if (!problems(id).isEmpty()) continue;
+        if (adapterOf(id)["use"].toString() == use) own << id;
+        else if (serves(id, use)) both << id;
+    }
+    if (own.size() == 1) return own[0];
+    if (own.isEmpty() && both.size() == 1) return both[0];
+    return {};
 }
 
 int Workflows::pictureCount(const QString& id) const {
@@ -415,7 +436,7 @@ QVariantList Workflows::ready(const QString& use) const {
     QVariantList out;
     const QString chosen = forUse(use);
     for (const QString& id : ids())
-        if (adapterOf(id)["use"].toString() == use && problems(id).isEmpty())
+        if (serves(id, use) && problems(id).isEmpty())
             out.append(QVariantMap{{"id", id}, {"name", nameOf(id)}, {"isDefault", id == chosen}});
     return out;
 }
@@ -491,6 +512,72 @@ QString Workflows::setValues(const QString& id, const QJsonObject& values) {
     return saveAdapter(id, adapter) ? QString() : "Could not save the workflow's settings.";
 }
 
+QString Workflows::prune(QJsonObject& graph, const QSet<QString>& start, const QJsonArray& outs, const OptionalInputs& optional) {
+    // Nodes that cannot run without the removed ones join them, unless the link they lose goes
+    // into an optional input (a growing list like images.image_3 counts by its base name).
+    QSet<QString> gone = start;
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (auto it = graph.begin(); it != graph.end(); ++it) {
+            if (gone.contains(it.key())) continue;
+            const QString cls = it.value().toObject()["class_type"].toString();
+            QJsonObject inputs = it.value().toObject()["inputs"].toObject();
+            for (auto in = inputs.begin(); in != inputs.end(); ++in) {
+                if (!isLink(in.value()) || !gone.contains(in.value().toArray()[0].toString())) continue;
+                // "mode.images.image_0" is optional when it, "mode.images" or "mode" is.
+                const QSet<QString> opt = optional.value(cls);
+                bool isOptional = false;
+                for (QString key = in.key(); !key.isEmpty() && !isOptional; key = key.contains('.') ? key.section('.', 0, -2) : QString())
+                    isOptional = opt.contains(key);
+                if (!isOptional) { gone.insert(it.key()); grew = true; break; }
+            }
+        }
+    }
+    for (const auto& o : outs)
+        if (gone.contains(o.toString())) return "a picture it needs would be left out.";
+    for (const QString& node : gone) graph.remove(node);
+    for (auto it = graph.begin(); it != graph.end(); ++it) {
+        QJsonObject n = it.value().toObject();
+        QJsonObject inputs = n["inputs"].toObject();
+        for (const QString& key : inputs.keys())
+            if (isLink(inputs[key]) && gone.contains(inputs[key].toArray()[0].toString())) inputs.remove(key);
+        n["inputs"] = inputs;
+        *it = n;
+    }
+    return {};
+}
+
+int Workflows::minPictures(const QString& id, const OptionalInputs& optional) const {
+    const int most = pictureCount(id);
+    for (int n = 0; n <= most; ++n) {
+        QJsonObject graph = graphOf(id);
+        QSet<QString> unused;
+        for (const auto& s : adapterOf(id)["slots"].toArray())
+            if (s.toObject()["slot"] == "picture" && s.toObject()["index"].toInt() >= n) unused << s.toObject()["node"].toString();
+        if (unused.isEmpty() || prune(graph, unused, outputs(id), optional).isEmpty()) return n;
+    }
+    return most;
+}
+
+QStringList Workflows::classes(const QString& id) const {
+    QSet<QString> out;
+    const auto graph = graphOf(id);
+    for (auto it = graph.begin(); it != graph.end(); ++it) out.insert(it.value().toObject()["class_type"].toString());
+    return QStringList(out.begin(), out.end());
+}
+
+QString Workflows::pictureName(const QString& id) const { return adapterOf(id)["pictureName"].toString(); }
+QString Workflows::notes(const QString& id) const { return adapterOf(id)["notes"].toString(); }
+
+bool Workflows::setConventions(const QString& id, const QString& pictureName, const QString& notes) {
+    if (!ids().contains(id)) return false;
+    auto adapter = adapterOf(id);
+    if (pictureName.trimmed().isEmpty()) adapter.remove("pictureName"); else adapter["pictureName"] = pictureName.trimmed();
+    if (notes.trimmed().isEmpty()) adapter.remove("notes"); else adapter["notes"] = notes.trimmed();
+    return saveAdapter(id, adapter);
+}
+
 QSize Workflows::size(const QString& id) const {
     const auto graph = graphOf(id);
     int w = 0, h = 0;
@@ -508,12 +595,26 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
     const auto issues = problems(id);
     if (!issues.isEmpty()) { error = nameOf(id) + ": " + issues.first(); return {}; }
     const int pictures = pictureCount(id);
-    if (v.pictures.size() < pictures) {
-        error = QString("%1 takes %2 pictures; %3 %4 approved.").arg(nameOf(id)).arg(pictures).arg(v.pictures.size())
-                    .arg(v.pictures.size() == 1 ? "is" : "are");
+    if (v.pictures.size() > pictures) {
+        error = QString("%1 takes at most %2 %3.").arg(nameOf(id)).arg(pictures).arg(pictures == 1 ? "picture" : "pictures");
         return {};
     }
     QJsonObject graph = graphOf(id);
+    // Fewer pictures than the workflow has Load Image inputs: the unused ones come out, with what
+    // only they feed, where ComfyUI says the inputs they reach are optional.
+    if (v.pictures.size() < pictures) {
+        QSet<QString> unused;
+        for (const auto& s : adapterOf(id)["slots"].toArray())
+            if (s.toObject()["slot"] == "picture" && s.toObject()["index"].toInt() >= v.pictures.size()) unused << s.toObject()["node"].toString();
+        const QString why = prune(graph, unused, outputs(id), v.optional);
+        if (!why.isEmpty()) {
+            const int need = minPictures(id, v.optional);
+            error = need > v.pictures.size()
+                ? QString("%1 needs at least %2 %3 here.").arg(nameOf(id)).arg(need).arg(need == 1 ? "picture" : "pictures")
+                : nameOf(id) + ": " + why;
+            return {};
+        }
+    }
     auto put = [&](const QString& node, const QString& input, const QJsonValue& value) {
         auto n = graph[node].toObject();
         auto inputs = n["inputs"].toObject();
@@ -529,7 +630,7 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         if (s.toObject()["slot"] == "setting") adjustable << s.toObject()["node"].toString() + "/" + s.toObject()["input"].toString();
     for (auto it = chosen.begin(); it != chosen.end(); ++it) {
         const QString node = it.key().section('/', 0, 0), input = it.key().section('/', 1);
-        if (adjustable.contains(it.key()) && inputsOf(graph, node).contains(input)) put(node, input, it.value());
+        if (adjustable.contains(it.key()) && graph.contains(node) && inputsOf(graph, node).contains(input)) put(node, input, it.value());
     }
     for (const auto& s : adapterOf(id)["slots"].toArray()) {
         const auto o = s.toObject();
@@ -537,12 +638,13 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         QJsonValue value;
         if (slot == "prompt") value = v.prompt;
         else if (slot == "negative") { if (v.negative.isNull()) continue; value = v.negative; }
-        else if (slot == "picture") value = v.pictures.value(o["index"].toInt());
+        else if (slot == "picture") { if (o["index"].toInt() >= v.pictures.size()) continue; value = v.pictures.value(o["index"].toInt()); }
         else if (slot == "seed") { if (v.seed < 0) continue; value = double(v.seed); }
         else if (slot == "width") { if (v.width <= 0) continue; value = v.width; }
         else if (slot == "height") { if (v.height <= 0) continue; value = v.height; }
         else if (slot == "prefix") { if (v.prefix.isEmpty()) continue; value = v.prefix; }
         else continue;
+        if (!graph.contains(node)) continue;  // pruned with an unused picture
         put(node, input, value);
     }
     return graph;

@@ -394,27 +394,59 @@ Rectangle {
                     kind: "shot"; itemId: ins.hasShot ? ins.shot.id : 0; field: "route"; label: "Route"; item: ins.shot; required: true
                     PlanCombo { objectName: "shotRoute"; options: ins.opts.route; value: parent.parent.value; onPicked: v => parent.parent.set(v) }
                 }
-                // The approved pictures this shot will be generated from, from who is in frame and where.
+                // The pictures this shot sends to the video model (nine at most): each view's chosen
+                // picture of who and where, picked by the framing; click one to send it or not.
                 ColumnLayout {
+                    id: shotPics
                     visible: ins.shotFields.type !== "gap" && ins.hasShot
                     Layout.fillWidth: true
                     spacing: 4
-                    readonly property var refs: ins.hasShot ? (ins.plan.references, ins.plan.shots, ins.plan.shotReferences(ins.shot.id)) : []
-                    Caption { text: parent.refs.length ? "References (" + parent.refs.length + ")" : "References: none approved yet" }
+                    readonly property var pics: ins.hasShot ? (ins.plan.references, ins.plan.shots, ins.plan.revision, ins.plan.shotPictures(ins.shot.id))
+                                                            : ({picked: [], candidates: [], overridden: false, limit: 9})
+                    function toggle(id) {
+                        const now = pics.picked.map(r => r.id)
+                        const i = now.indexOf(id)
+                        if (i >= 0) now.splice(i, 1); else now.push(id)
+                        ins.plan.run({op: "set", kind: "shot", id: ins.shot.id, fields: {pictures: now.length ? now : []}})
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Caption {
+                            objectName: "shotPicCount"
+                            text: shotPics.pics.candidates.length ? "Pictures for the video model: " + shotPics.pics.picked.length + " of " + shotPics.pics.limit
+                                                                  : "Pictures: none chosen yet for who and where"
+                            color: shotPics.pics.picked.length > shotPics.pics.limit ? "#f0a08f" : "#8fa0a4"
+                        }
+                        Text {
+                            objectName: "shotPicReset"
+                            visible: shotPics.pics.overridden
+                            text: "Back to the framing's picks"; color: resetPics.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
+                            MouseArea { id: resetPics; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: ins.plan.run({op: "set", kind: "shot", id: ins.shot.id, fields: {pictures: []}}) }
+                        }
+                    }
                     Flow {
                         Layout.fillWidth: true
                         spacing: 4
                         Repeater {
-                            model: parent.parent.refs
-                            Rectangle {
+                            model: shotPics.pics.candidates
+                            Item {
+                                id: cand
                                 required property var modelData
                                 objectName: "shotRef" + modelData.id
-                                width: 44; height: 44; radius: 3; clip: true; color: "#0c1216"; border.color: "#34434a"
-                                Image { anchors.fill: parent; anchors.margins: 1; source: parent.modelData.url; fillMode: Image.PreserveAspectCrop
-                                        asynchronous: true; sourceSize: Qt.size(88, 88) }
-                                MouseArea { id: refHover; anchors.fill: parent; hoverEnabled: true }
+                                width: 48; height: 62
+                                Rectangle {
+                                    width: 48; height: 48; radius: 3; clip: true; color: "#0c1216"
+                                    border.color: cand.modelData.picked ? "#3f9c84" : "#34434a"; border.width: cand.modelData.picked ? 2 : 1
+                                    Image { anchors.fill: parent; anchors.margins: 2; source: cand.modelData.url; fillMode: Image.PreserveAspectCrop
+                                            asynchronous: true; sourceSize: Qt.size(96, 96); opacity: cand.modelData.picked ? 1 : 0.35 }
+                                }
+                                Text { y: 50; width: 48; elide: Text.ElideRight; text: cand.modelData.viewName; font.pixelSize: 9
+                                       color: cand.modelData.picked ? "#adb8ba" : "#5d6c71" }
+                                MouseArea { id: refHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: shotPics.toggle(cand.modelData.id) }
                                 ToolTip.visible: refHover.containsMouse
-                                ToolTip.text: modelData.ownerName + " · " + modelData.roleLabel
+                                ToolTip.text: cand.modelData.ownerName + " · " + cand.modelData.viewName + (cand.modelData.picked ? " (sent)" : " (left out)")
+                                              + (cand.modelData.note ? "\n" + cand.modelData.note : "")
                             }
                         }
                     }

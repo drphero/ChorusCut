@@ -278,6 +278,32 @@ int main(int argc, char** argv) {
     if (picture["isError"].toBool() || content[0].toObject()["type"] != "image" || seen.size() != QSize(600, 800) || !content[1].toObject()["text"].toString().contains("Mara"))
         return fail(14, "view_reference did not return the picture");
     if (!agent.call("view_reference", {{"id", 999}})["isError"].toBool()) return fail(14, "an unknown reference id was not an error");
+    // Views: get_plan lists them with the chosen picture; the agent adds one and a look's
+    // changes, but cannot choose a picture.
+    {
+        const auto again = agent.data("get_plan");
+        const auto maraViews = again["characters"].toArray()[0].toObject()["views"].toArray();
+        if (maraViews.size() != 1 || maraViews[0].toObject()["fields"].toObject()["name"] != "Face" || maraViews[0].toObject()["chosen"].toInt() != refId ||
+            again["characters"].toArray()[0].toObject()["looks"].toArray()[0].toObject()["views"].toArray().size() != 1 || !again.contains("imageWorkflows"))
+            return fail(15, "get_plan does not list views: " + QString::fromUtf8(QJsonDocument(maraViews).toJson(QJsonDocument::Compact)));
+        const int maraId = mara["id"].toInt(), coatId = mara["looks"].toArray()[0].toObject()["id"].toInt();
+        const auto added = agent.data("apply_plan", {{"label", "Views"}, {"commands", QJsonArray{
+            QJsonObject{{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", maraId},
+                        {"fields", QJsonObject{{"name", "Profile"}, {"framing", "Side profile facing left, plain grey backdrop"}, {"role", "face"}, {"from", "pictures"}}}},
+            QJsonObject{{"op", "set"}, {"kind", "look"}, {"id", coatId}, {"fields", QJsonObject{{"changes", QJsonArray{"hair"}}}}}}}});
+        if (!added["applied"].toBool() || plan->viewsFor("character", maraId).size() != 2 ||
+            plan->item("look", coatId)["fields"].toMap()["changes"].toList() != QVariantList{"hair"})
+            return fail(15, "the agent could not add a view or a look's changes: " + QString::fromUtf8(QJsonDocument(added).toJson(QJsonDocument::Compact)));
+        QImage other(300, 400, QImage::Format_RGB32);
+        other.fill(QColor("#405060"));
+        other.save(scratch.filePath("face3.png"));
+        const int altId = plan->run({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", maraId}, {"path", scratch.filePath("face3.png")}})["id"].toInt();
+        if (!agent.call("apply_plan", {{"label", "Pick"}, {"commands", QJsonArray{
+                QJsonObject{{"op", "set"}, {"kind", "reference"}, {"id", altId}, {"fields", QJsonObject{{"approved", true}}}}}}})["isError"].toBool())
+            return fail(15, "an agent chose a picture");
+        if (!textOf(agent.call("get_guide")).contains("Nothing about a person is locked"))
+            return fail(15, "the guide does not explain subjects, views and looks' changes");
+    }
 
     // 7. The Agent sheet shows the setup commands and who is connected.
     click(find(window, "agentButton"));
@@ -307,6 +333,32 @@ int main(int argc, char** argv) {
         auto popup = window->findChild<QObject*>("askPopup");
         if (!popup || !waitFor([&] { return popup->property("opened").toBool(); }, 1500)) return fail(21, "ask did not open the request");
         if (find(window, "askLabel")->property("text") != "Concept · Logline") return fail(21, "the request is not labelled with what it is about");
+        // Suggestions for the field: clicking one fills the box and sends nothing.
+        auto suggestion = find(window, "askSuggestion0");
+        if (!suggestion || suggestion->property("modelData") != "Make it more visual: what we would actually see.")
+            return fail(21, "the filled logline is not offered its suggestions");
+        click(suggestion);
+        if (find(window, "askText")->property("text") != suggestion->property("modelData") || !editor.requests()->list().isEmpty())
+            return fail(21, "clicking a suggestion did not just fill the box");
+        capture("ask-suggestions");
+        // Picture prompts are steered towards references the video model can hold steady.
+        auto suggest = [&](const char* kind, const char* field, bool empty) {
+            QVariant out;
+            QMetaObject::invokeMethod(popup, "suggestionsFor", Q_RETURN_ARG(QVariant, out), Q_ARG(QVariant, kind), Q_ARG(QVariant, field), Q_ARG(QVariant, empty));
+            return out.toStringList();
+        };
+        const auto faceEmpty = suggest("character", "prompt", true), face = suggest("character", "prompt", false);
+        const auto place = suggest("location", "prompt", false), outfit = suggest("look", "prompt", false), wholePlan = suggest("", "", true);
+        const auto framing = suggest("view", "framing", false);
+        if (faceEmpty.size() != 1 || !faceEmpty[0].contains("no framing, pose or backdrop") || face.size() != 4 || !face.join(" ").contains("hair while it stays the same") ||
+            !face.join(" ").contains("belong to the views") || !place.join(" ").contains("Remove people") || !outfit.join(" ").contains("what this look changes") ||
+            !framing.join(" ").contains("turnaround sheet") || wholePlan.size() != 4)
+            return fail(21, "picture prompt suggestions: " + face.join(" | ") + " / " + place.join(" | "));
+        for (const auto* k : {"character", "look", "location", "view", "arc", "concept", ""})
+            for (const auto* f : {"", "prompt", "identity", "description", "lighting", "style", "rules", "brief", "logline", "happens", "beat", "name", "framing"})
+                for (bool e : {true, false})
+                    if (suggest(k, f, e).size() > 4) return fail(21, QString("more than four suggestions for %1.%2").arg(k, f));
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
         typeText("Make it punchier");
         capture("ask-popup");
         QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);

@@ -27,7 +27,7 @@ Popup {
         return d && d.id ? d : null
     }
     onOpened: { note = ""; if (!selected && flows.list.length) selected = flows.list[0].id }
-    onSelectedChanged: { confirmRemove = false; allInputs = false }
+    onSelectedChanged: { confirmRemove = false; allInputs = false; if (selected) editor.generator.fetchChoices(selected) }
 
     // The file dialog sets this; tests call it the same way.
     function importUrl(url) {
@@ -203,6 +203,36 @@ Popup {
                     visible: sheet.detail !== null && sheet.detail.ready
                     text: sheet.detail ? "Ready. Results are collected from " + (sheet.detail.outputs.join(", ") || "its outputs") + "." : ""
                     color: "#87dec7"
+                }
+                // How this model wants to be written to: what it calls its pictures, and notes for the agent.
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 10
+                    visible: sheet.detail !== null
+                    Text { text: "Pictures are called"; color: "#8fa0a4"; font.pixelSize: 12 }
+                    TextField {
+                        id: nameField2
+                        objectName: "workflowPictureName"
+                        Layout.preferredWidth: 160
+                        text: sheet.detail ? sheet.detail.pictureName : ""
+                        placeholderText: sheet.detail ? (editor.generator.choices, editor.generator.pictureLabel(sheet.selected, 1)).replace(/1/, "{n}") : ""
+                        placeholderTextColor: "#6f8085"
+                        color: "#edf1ef"; font.pixelSize: 12; selectByMouse: true
+                        background: Rectangle { color: "#162027"; radius: 4; border.color: nameField2.activeFocus ? "#87dec7" : "#34434a" }
+                        onEditingFinished: if (sheet.detail && text !== sheet.detail.pictureName) sheet.flows.setConventions(sheet.selected, text, sheet.detail.notes)
+                    }
+                    Caption { text: "{n} is the number. Empty: as ComfyUI's nodes describe it, else \u201cpicture {n}\u201d." }
+                }
+                TextField {
+                    id: notesField
+                    objectName: "workflowNotes"
+                    visible: sheet.detail !== null
+                    Layout.fillWidth: true
+                    text: sheet.detail ? sheet.detail.notes : ""
+                    placeholderText: "Notes for your agent on writing for this model, e.g. Write edit instructions, not descriptions; under 150 words"
+                    placeholderTextColor: "#6f8085"
+                    color: "#edf1ef"; font.pixelSize: 12; selectByMouse: true
+                    background: Rectangle { color: "#162027"; radius: 4; border.color: notesField.activeFocus ? "#87dec7" : "#34434a" }
+                    onEditingFinished: if (sheet.detail && text !== sheet.detail.notes) sheet.flows.setConventions(sheet.selected, sheet.detail.pictureName, text)
                 }
                 RowLayout {
                     Layout.fillWidth: true

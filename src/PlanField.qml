@@ -2,8 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// One planned field: its label, who wrote it (an agent's value is tagged) and a lock that keeps
-// agent passes away from it. The editor goes inside; it calls set(value) to write through the
+// One planned field: its label, who wrote it (a dot marks an agent's value) and its tools (ask,
+// the large editor, lock), which stay out of sight until the pointer is on the field so a page of
+// fields reads as its content. The editor goes inside; it calls set(value) to write through the
 // plan's command layer, which records the change as one undo step.
 ColumnLayout {
     id: pf
@@ -25,6 +26,10 @@ ColumnLayout {
     default property alias content: holder.data
     Layout.fillWidth: true
     spacing: 3
+    HoverHandler { id: hover }
+    // Tools show while pointed at (they stay clickable, only faded out otherwise).
+    readonly property bool showTools: hover.hovered
+    readonly property bool locked: prov !== undefined && prov.locked === true
 
     function set(next) {
         const fields = {}
@@ -35,10 +40,22 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         spacing: 6
+        // The hint is the label's tooltip, so it never moves the page.
         Text {
-            text: pf.label + (pf.required ? " *" : "")
+            text: pf.label + (pf.required ? " *" : "") + (pf.hint.length ? "  ⓘ" : "")
             color: pf.required && pf.empty ? "#e0a24a" : "#adb8ba"
             font.pixelSize: 11
+            MouseArea { id: labelMouse; anchors.fill: parent; hoverEnabled: true; enabled: pf.hint.length > 0 }
+            ToolTip.visible: labelMouse.containsMouse && pf.hint.length > 0; ToolTip.delay: 300
+            ToolTip.text: pf.hint
+        }
+        // Written by an agent.
+        Rectangle {
+            objectName: "agentDot_" + pf.kind + "_" + pf.field
+            visible: pf.prov !== undefined && pf.prov.by === "agent"
+            width: 6; height: 6; radius: 3; color: "#8a9bd6"
+            MouseArea { id: dotMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true }
+            ToolTip.visible: dotMouse.containsMouse; ToolTip.delay: 300; ToolTip.text: "Written by your agent"
         }
         Item { Layout.fillWidth: true }
         // Open requests to the agent about this field; click to see them.
@@ -55,6 +72,7 @@ ColumnLayout {
         }
         Text {
             objectName: "ask_" + pf.kind + "_" + pf.field
+            opacity: pf.showTools ? 1 : 0
             text: "ask"
             color: askMouse.containsMouse ? "#adb8ba" : "#5d6c71"
             font.pixelSize: 9
@@ -65,20 +83,17 @@ ColumnLayout {
         Text {
             objectName: "expand_" + pf.kind + "_" + pf.field
             visible: pf.expandable
+            opacity: pf.showTools ? 1 : 0
             text: "⤢ Editor"
             color: expandMouse.containsMouse ? "#9fe3d0" : "#7f9a9f"
             font.pixelSize: 10
             MouseArea { id: expandMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pf.expandRequested() }
             ToolTip.visible: expandMouse.containsMouse; ToolTip.delay: 500; ToolTip.text: "Read and edit it in a large editor, with what it should follow"
         }
-        Rectangle {
-            visible: pf.prov !== undefined && pf.prov.by === "agent"
-            implicitWidth: agentText.implicitWidth + 8; implicitHeight: 14; radius: 3; color: "#2f3d5c"
-            Text { id: agentText; anchors.centerIn: parent; text: "agent"; color: "#b6c4ef"; font.pixelSize: 9 }
-        }
         Text {
             objectName: "lock_" + pf.kind + "_" + pf.field
-            readonly property bool locked: pf.prov !== undefined && pf.prov.locked === true
+            readonly property bool locked: pf.locked
+            opacity: pf.showTools || locked ? 1 : 0
             text: locked ? "locked" : "lock"
             color: locked ? "#87dec7" : lockMouse.containsMouse ? "#adb8ba" : "#5d6c71"
             font.pixelSize: 9
@@ -94,9 +109,5 @@ ColumnLayout {
         }
     }
     ColumnLayout { id: holder; Layout.fillWidth: true; spacing: 0 }
-    Text {
-        visible: pf.hint.length > 0
-        Layout.fillWidth: true; wrapMode: Text.Wrap
-        text: pf.hint; color: "#6f8085"; font.pixelSize: 10
-    }
+
 }

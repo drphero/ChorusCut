@@ -59,7 +59,11 @@ public:
     //   ref.add    {owner, ownerId, path, role} copies a prepared image into Media/References and
     //                                          lists it on a character, look or location (approved
     //                                          when the user adds it, awaiting approval from an agent)
-    //   ref.move   {id, position}              reorders a reference among its owner's
+    //   ref.move   {id, position, view}        reorders a reference among its owner's, or moves it to
+    //                                          another view of the same item (as an alternative)
+    //   add        {kind: "view", owner, ownerId, fields}   a view: name, framing, role, from
+    //   view.move  {id, position}              reorders a view among its owner's
+    //   set/remove {kind: "view", ...}         a view's fields; removing it takes its pictures
     //   set/remove {kind: "reference", ...}    role, approved and notes; or take it off the list
     //   batch      {label, commands: [...]}    all or nothing, one undo step. A command may carry
     //                                          "ref": "name"; later commands write "$name" for the
@@ -81,7 +85,14 @@ public:
     QVariantList references() const;
     // A character's, look's or location's references, in order.
     Q_INVOKABLE QVariantList referencesFor(const QString& owner, int id) const;
-    // What a shot will be generated from: approved references of its looks, characters and location.
+    // A character's, look's or location's views, in order, each with its fields (name, framing,
+    // role, from, inputs, panels), its pictures and its chosen picture (empty map when none).
+    Q_INVOKABLE QVariantList viewsFor(const QString& owner, int id) const;
+    // The pictures a shot sends to the video model (nine at most): the chosen picture of each view
+    // of who and where it shows, picked by its framing, or the user's own pick (shot field
+    // "pictures"). {picked, candidates (each with picked, ownerName, viewName, note), overridden, limit}.
+    Q_INVOKABLE QVariantMap shotPictures(int shot) const;
+    // shotPictures' picked list.
     Q_INVOKABLE QVariantList shotReferences(int shot) const;
     QVariantList checks() const;
     QVariantList gates() const;
@@ -142,6 +153,10 @@ private:
     Result shotSplit(int id, const QVector<int>& cuts);
     Result refAdd(const QVariantMap& c, const QString& by);
     QList<int> refIds(const QString& owner, int id) const;
+    QList<int> viewIds(const QString& owner, int id) const;
+    int addView(const QString& owner, int ownerId, const QVariantMap& fields, const QString& by, Result& r);
+    bool migrateViews(QString& error);
+    bool migrateAppearance(QString& error);
     void dropReferences(const QString& owner, int id);
     QJsonObject row(const QString& kind, int id) const { return items.value(kind).value(id); }
     bool has(const QString& kind, int id) const { return items.value(kind).contains(id); }

@@ -256,6 +256,7 @@ ApplicationWindow {
         if (kind === "concept") return "Concept"
         if (kind === "arc") return (plan.arc[id] || {}).label || "Section"
         if (kind === "shot") return "Shot " + plan.shot(id).number
+        if (kind === "view") { const v = plan.item("view", id); return v.owner ? aboutName(v.owner, v.ownerId) + " · " + ((v.fields || {}).name || "View") : "View" }
         const item = plan.item(kind, id)
         const name = item.fields && item.fields.name ? item.fields.name : "Unnamed " + kind
         if (kind === "look") { const c = plan.item("character", item.character); return ((c.fields && c.fields.name) || "Unnamed character") + " · " + name }

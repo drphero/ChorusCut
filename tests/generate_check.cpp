@@ -52,7 +52,92 @@ static bool waitFor(const std::function<bool()>& ready, int timeout = 10000) {
 static int fail(int code, const QString& why) { qCritical().noquote() << "FAIL" << code << why; return code; }
 static QString json(const QVariant& v) { return QString::fromUtf8(QJsonDocument::fromVariant(v).toJson(QJsonDocument::Compact)); }
 
+// --live URL PROJECT_COPY TEXT_WORKFLOW EDIT_WORKFLOW OUT_DIR: the real thing on a ComfyUI with
+// models: a character's Face from its subject, chosen; a Three-quarter view edited from it; a
+// composed sheet of both. Pictures are copied to OUT_DIR. Uses its own workflow library.
+static int live(int argc, char** argv) {
+    if (argc != 7) { qCritical() << "usage: ChorusCutGenerateCheck --live URL PROJECT_COPY TEXT_WORKFLOW EDIT_WORKFLOW OUT_DIR"; return 1; }
+    QTemporaryDir scratch;
+    qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
+    qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
+    qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
+    QGuiApplication app(argc, argv);
+    app.setOrganizationName("Chorus Cut Tests");
+    app.setApplicationName("Generate Live");
+    Mlt::Factory::init();
+    Editor editor;
+    if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[3]).absoluteFilePath()))) return fail(2, editor.status());
+    editor.comfy()->configure(argv[2], {}, true);
+    auto flows = editor.workflows();
+    auto gen = editor.generator();
+    auto plan = editor.plan();
+    const QDir out(QFileInfo(argv[6]).absoluteFilePath());
+    QDir().mkpath(out.path());
+    QElapsedTimer clock;
+    auto importAs = [&](const char* file, const QString& use) {
+        auto r = flows->importFile(QUrl::fromLocalFile(QFileInfo(file).absoluteFilePath()), use);
+        QStringList mapped;
+        for (const auto& v : flows->get(r["id"].toString())["inputs"].toList())
+            if (!v.toMap()["slot"].toString().isEmpty()) mapped << v.toMap()["node"].toString() + "/" + v.toMap()["input"].toString() + "=" + v.toMap()["slot"].toString();
+        qInfo().noquote() << "imported" << file << r["id"].toString() << "ready" << flows->get(r["id"].toString())["ready"].toBool() << mapped.join(" ")
+                          << flows->get(r["id"].toString())["problems"].toStringList().join(" ");
+        return r["id"].toString();
+    };
+    const QString textId = importAs(argv[4], "ref-text"), editId = importAs(argv[5], "ref-edit");
+    const QString megapixels = [&] { for (const auto& v : flows->settings(textId)) if (v.toMap()["input"] == "megapixels") return v.toMap()["key"].toString(); return QString(); }();
+    const QVariantMap small = megapixels.isEmpty() ? QVariantMap{} : QVariantMap{{megapixels, 4}};
+    const int mara = plan->run({{"op", "add"}, {"kind", "character"}, {"fields", QVariantMap{{"name", "Mara"}, {"role", "singer"},
+        {"prompt", "A woman in her late twenties, warm brown skin, oval face, dark brown eyes, tight black curls cropped to the jaw, a small gap in her front teeth, a thin silver hoop in her left ear, a charcoal crew-neck sweater."}}}})["id"].toInt();
+    auto wait = [&](int count, const char* what) {
+        clock.restart();
+        while (clock.elapsed() < 600000) {
+            QTest::qWait(500);
+            if (plan->referencesFor("character", mara).size() >= count && gen->jobs().isEmpty()) {
+                qInfo().noquote() << what << "arrived after" << clock.elapsed() / 1000.0 << "s";
+                return true;
+            }
+            for (const auto& j : gen->jobs()) if (j.toMap()["state"] == "failed") { qCritical().noquote() << what << "failed:" << j.toMap()["text"].toString(); return false; }
+        }
+        qCritical() << what << "timed out" << QJsonDocument::fromVariant(gen->jobs()).toJson(QJsonDocument::Compact);
+        return false;
+    };
+    // 1. Face, from the subject.
+    QString why = gen->generateWith("character", mara, "", {{"settings", small}});
+    if (!why.isEmpty()) return fail(201, why);
+    if (!wait(1, "Face")) return 201;
+    const auto face = plan->referencesFor("character", mara)[0].toMap();
+    qInfo().noquote() << "Face" << face["width"].toInt() << "x" << face["height"].toInt() << "settings" << QJsonDocument::fromVariant(face["generation"].toMap()["settings"]).toJson(QJsonDocument::Compact);
+    plan->run({{"op", "set"}, {"kind", "reference"}, {"id", face["id"]}, {"fields", QVariantMap{{"approved", true}}}});
+    // 2. Three-quarter, edited from the chosen Face.
+    const int quarter = plan->run({{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", mara},
+        {"fields", QVariantMap{{"name", "Three-quarter"}, {"role", "face"}, {"from", "pictures"},
+                               {"framing", "The woman from " + gen->pictureLabel(editId, 1) + ", turned 45 degrees to her left, face and shoulders, plain neutral grey backdrop, soft even light. Keep her face, hair, skin and earring exactly the same."}}}})["id"].toInt();
+    qInfo().noquote() << "edit workflow names pictures" << gen->pictureLabel(editId, 1) << "guessed inputs" << QJsonDocument::fromVariant(gen->viewOptions(quarter)["inputs"]).toJson(QJsonDocument::Compact);
+    const QString editMp = [&] { for (const auto& v : flows->settings(editId)) if (v.toMap()["input"] == "megapixels") return v.toMap()["key"].toString(); return QString(); }();
+    why = gen->generateWith("character", mara, "", {{"view", quarter}, {"settings", editMp.isEmpty() ? QVariantMap{} : QVariantMap{{editMp, 4}}}});
+    if (!why.isEmpty()) return fail(202, why);
+    if (!wait(2, "Three-quarter")) return 202;
+    const auto side = plan->viewsFor("character", mara)[1].toMap()["pictures"].toList()[0].toMap();
+    plan->run({{"op", "set"}, {"kind", "reference"}, {"id", side["id"]}, {"fields", QVariantMap{{"approved", true}}}});
+    // 3. A sheet of both, composed here.
+    const int sheet = plan->run({{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", mara},
+                                 {"fields", QVariantMap{{"name", "Turnaround sheet"}, {"role", "sheet"}, {"from", "pictures"}}}})["id"].toInt();
+    why = gen->composeSheet(sheet, {plan->viewsFor("character", mara)[0].toMap()["id"], quarter});
+    if (!why.isEmpty()) return fail(203, why);
+    const QDir project(QFileInfo(argv[3]).absoluteFilePath());
+    for (const auto& v : plan->viewsFor("character", mara)) {
+        const auto chosen = v.toMap()["chosen"].toMap();
+        const QString target = out.filePath(v.toMap()["name"].toString().replace(' ', '-').toLower() + "." + QFileInfo(chosen["file"].toString()).suffix());
+        QFile::remove(target);
+        QFile::copy(project.filePath(chosen["file"].toString()), target);
+        qInfo().noquote() << v.toMap()["name"].toString() << chosen["width"].toInt() << "x" << chosen["height"].toInt() << "->" << target;
+    }
+    qInfo() << "PASS live";
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && QString(argv[1]) == "--live") return live(argc, argv);
     if (argc != 4) { qCritical() << "usage: ChorusCutGenerateCheck PROJECT_COPY STUB_SCRIPT FIXTURES_DIR"; return 1; }
     qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
@@ -197,6 +282,15 @@ int main(int argc, char** argv) {
         waitFor([&] { return !popup || !popup->property("visible").toBool(); }, 1500);
         QTest::qWait(150);
     };
+    // A menu item the menu makes itself (a Repeater's), clicked where it is drawn.
+    auto clickPopupItem = [&](const QString& name) -> bool {
+        QQuickItem* item = nullptr;
+        waitFor([&] { item = find(window, name); return item != nullptr && item->height() > 0; }, 1500);
+        if (!item) return false;
+        QTest::mouseClick(window, Qt::LeftButton, {}, center(item));
+        QTest::qWait(150);
+        return true;
+    };
     // A menu item is clicked where it is drawn.
     auto clickMenuItem = [&](QQuickItem* owner, const QString& name) -> QQuickItem* {
         QQuickItem* item = nullptr;
@@ -242,6 +336,8 @@ int main(int argc, char** argv) {
     QTest::qWait(150);
     if (plan->item("character", mara)["fields"].toMap()["prompt"] != portrait) return fail(30, "the typed picture prompt was not saved");
     auto refs = find(window, "characterRefs0");
+    // Open the Face view by its tile.
+    click(refs ? findItem(refs, "viewTile_character_0") : nullptr);
     auto genTile = refs ? findItem(refs, "genRef_character") : nullptr;
     if (!genTile) return fail(31, "no Generate tile on the character's pictures");
     mode("hold");
@@ -249,16 +345,18 @@ int main(int argc, char** argv) {
     click(genTile);
     auto menu = genTile->findChild<QObject*>("genMenu");
     if (!menu || !waitFor([&] { return menu->property("opened").toBool(); }, 1500)) return fail(31, "Generate did not open its menu");
-    auto fromPictures = clickMenuItem(genTile, "genFromPictures");
-    if (!fromPictures || fromPictures->property("enabled").toBool()) return fail(31, "From approved pictures was offered without any approved pictures");
-    if (!clickMenuItem(genTile, "genFromPrompt")) return fail(31, "no From the picture prompt item");
+    // The Face view is drawn from the prompt: its framing, then the subject.
+    const QString faceFraming = plan->viewsFor("character", mara)[0].toMap()["framing"].toString();
+    const QString facePrompt = faceFraming + "\n\n" + portrait;
+    auto quick = clickMenuItem(genTile, "genQuick");
+    if (!quick || !quick->property("text").toString().startsWith("From the prompt")) return fail(31, "no From the prompt item on the Face view");
     if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["state"] == "running"; }))
         return fail(32, "the job did not start running: " + json(gen->jobs()));
     if (!find(window, "genJob_character_0")) return fail(32, "the running job has no tile on the strip");
     capture("generate-running");
     auto graph = lastGraph();
     const double seed = input(graph, "3", "seed").toDouble();
-    if (input(graph, "6", "text") != portrait || input(graph, "7", "text") != "blurry, text" || seed == 42 || seed < 0 ||
+    if (input(graph, "6", "text") != facePrompt || input(graph, "7", "text") != "blurry, text" || seed == 42 || seed < 0 ||
         input(graph, "5", "width").toInt() != 768 || input(graph, "5", "height").toInt() != 1024 ||
         input(graph, "9", "filename_prefix") != "ChorusCut/reference" || input(graph, "4", "ckpt_name") != "model.safetensors")
         return fail(33, "the queued graph is wrong: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
@@ -266,7 +364,8 @@ int main(int argc, char** argv) {
     if (!waitFor([&] { return plan->referencesFor("character", mara).size() == 1; })) return fail(34, "the picture did not arrive: " + json(gen->jobs()));
     auto ref = plan->referencesFor("character", mara)[0].toMap();
     if (ref["source"] != "generated" || ref["approved"].toBool() || ref["generation"].toMap()["seed"].toDouble() != seed ||
-        ref["generation"].toMap()["prompt"] != portrait || ref["generation"].toMap()["workflow"] != textId || ref["missing"].toBool())
+        ref["generation"].toMap()["prompt"] != facePrompt || ref["generation"].toMap()["workflow"] != textId || ref["missing"].toBool() ||
+        ref["view"].toInt() != plan->viewsFor("character", mara)[0].toMap()["id"].toInt())
         return fail(34, "the generated reference: " + json(ref));
     if (editor.undoText() != "Add generated reference") return fail(34, "not one undo step: " + editor.undoText());
     if (!gen->jobs().isEmpty() || !QDir(projectDir.filePath("Jobs")).entryList({"*.png"}).isEmpty()) return fail(34, "the job or its download was left behind");
@@ -276,7 +375,7 @@ int main(int argc, char** argv) {
     {
         QSqlQuery q(editor.current()->db);
         if (!q.exec("SELECT state, detail FROM jobs WHERE kind='reference'") || !q.next() || q.value(0).toString() != "done" ||
-            QJsonDocument::fromJson(q.value(1).toString().toUtf8()).object().value("graph").toObject().value("6").toObject().value("inputs").toObject().value("text") != portrait)
+            QJsonDocument::fromJson(q.value(1).toString().toUtf8()).object().value("graph").toObject().value("6").toObject().value("inputs").toObject().value("text") != facePrompt)
             return fail(35, "the job record does not keep the graph it queued");
     }
 
@@ -291,12 +390,12 @@ int main(int argc, char** argv) {
             return fail(40, QString("the large picture is small: %1×%2").arg(picture ? picture->width() : 0).arg(picture ? picture->height() : 0));
     }
     if (find(window, "refViewerSeed")->property("text").toString() != QString::number(qint64(seed)) ||
-        find(window, "refViewerPrompt")->property("text") != portrait || find(window, "refViewerState")->property("text") != "To approve")
+        find(window, "refViewerPrompt")->property("text") != facePrompt || find(window, "refViewerState")->property("text") != "To choose")
         return fail(40, "the viewer does not show how the picture was made");
     capture("reference-viewer");
     click(find(window, "refViewerApprove"));
-    if (!plan->referencesFor("character", mara)[0].toMap()["approved"].toBool()) return fail(40, "Approve in the viewer did not approve the picture");
-    if (find(window, "refViewerState")->property("text") != "Approved") return fail(40, "the viewer did not show the approval");
+    if (!plan->referencesFor("character", mara)[0].toMap()["approved"].toBool()) return fail(40, "Choose in the viewer did not choose the picture");
+    if (find(window, "refViewerState")->property("text") != "Chosen") return fail(40, "the viewer did not show the choice");
     // Click the picture for full size, click again to fit; Esc closes.
     click(find(window, "refViewerPicture"));
     if (!viewer->property("zoomed").toBool()) return fail(40, "clicking the large picture did not show it at full size");
@@ -312,19 +411,68 @@ int main(int argc, char** argv) {
     if (!approve) return fail(40, "right-clicking a picture did not open its menu");
     QTest::keyClick(window, Qt::Key_Escape);
     QTest::qWait(150);
-    if (!plan->run({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", samplePath}})["ok"].toBool()) return fail(40, plan->message());
+    // A second picture in the Face view waits as an alternative.
+    const int faceChosen = plan->referencesFor("character", mara)[0].toMap()["id"].toInt();
+    const int sampleRef = plan->run({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", samplePath}})["id"].toInt();
+    if (!sampleRef || plan->item("reference", sampleRef)["approved"].toBool()) return fail(40, "the second Face picture should be an alternative: " + plan->message());
+    // Add the suggested Three-quarter view: edited from pictures, starting from the chosen Face.
+    click(findItem(refs, "addViewTile_character"));
+    if (!clickPopupItem("suggestView_character_Three-quarter")) {
+        return fail(41, "no Three-quarter in the + view menu");
+    }
+    if (plan->viewsFor("character", mara).size() != 2) return fail(41, "the Three-quarter suggestion did not add a view");
+    const auto quarter = plan->viewsFor("character", mara)[1].toMap();
+    const int quarterView = quarter["id"].toInt();
+    if (quarter["from"] != "pictures" || gen->viewOptions(quarterView)["inputs"].toList() != QVariantList{faceChosen})
+        return fail(41, "the new view does not start from the chosen Face: " + json(gen->viewOptions(quarterView)));
+    auto quarterStrip = find(window, "viewRefs_character_1");
+    auto quarterTile = quarterStrip ? findItem(quarterStrip, "genRef_character") : nullptr;
+    if (!quarterTile) return fail(41, "no Generate tile on the Three-quarter view");
     mode("finish");
     pause();
-    click(genTile);
-    if (!clickMenuItem(genTile, "genFromPictures") || !waitFor([&] { return plan->referencesFor("character", mara).size() == 3; }))
-        return fail(41, "the edit did not arrive: " + json(gen->jobs()) + " " + json(gen->options("character", mara)));
+    click(quarterTile);
+    quick = clickMenuItem(quarterTile, "genQuick");
+    if (!quick || !waitFor([&] { return plan->viewsFor("character", mara)[1].toMap()["pictures"].toList().size() == 1 && gen->jobs().isEmpty(); }))
+        return fail(41, "the edit did not arrive: " + json(gen->jobs()) + " " + json(gen->viewOptions(quarterView)));
     graph = lastGraph();
-    const auto uploads = stubLog()["uploads"].toArray();
-    if (uploads.size() < 2 || input(graph, "10", "image") != uploads[uploads.size() - 2].toObject().value("name") ||
-        input(graph, "11", "image") != uploads.last().toObject().value("name") || input(graph, "20", "prompt") != portrait ||
-        input(graph, "30", "width").toInt() != 768 || input(graph, "60", "filename_prefix") != "ChorusCut/reference")
-        return fail(41, "the edit graph is wrong: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
-    if (plan->referencesFor("character", mara)[2].toMap()["generation"].toMap()["use"] != "ref-edit") return fail(41, "the edit was not recorded as one");
+    const QString quarterPrompt = quarter["framing"].toString() + "\n\n" + portrait;
+    // One picture into a workflow with two Load Image inputs: the unused one is taken out, since
+    // ComfyUI says the encoder's second image is optional.
+    auto uploads = stubLog()["uploads"].toArray();
+    const QJsonObject encoder = graph.value("20").toObject().value("inputs").toObject();
+    if (input(graph, "10", "image") != uploads.last().toObject().value("name") || graph.contains("11") || encoder.contains("image2") ||
+        !encoder.contains("image1") || encoder.value("prompt") != quarterPrompt || input(graph, "60", "filename_prefix") != "ChorusCut/reference")
+        return fail(41, "the one-picture edit graph is wrong: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+    auto made = plan->viewsFor("character", mara)[1].toMap()["pictures"].toList()[0].toMap();
+    if (made["generation"].toMap()["use"] != "ref-edit" || made["generation"].toMap()["inputs"].toList() != QVariantList{faceChosen} || made["approved"].toBool())
+        return fail(41, "the edit was not recorded with its picture: " + json(made));
+    // With options: pick the second Face picture too; a third is refused (the workflow takes two).
+    pause();
+    click(quarterTile);
+    if (!clickMenuItem(quarterTile, "genOptions")) return fail(42, "no With options… item on the view");
+    auto dialog = window->findChild<QObject*>("generatePopup");
+    if (!dialog || !waitFor([&] { return dialog->property("opened").toBool(); }, 1500)) return fail(42, "With options… did not open the Generate dialog");
+    if (dialog->property("use") != "ref-edit" || dialog->property("view").toInt() != quarterView || dialog->property("inputs").toList() != QVariantList{faceChosen})
+        return fail(42, "the dialog did not open on the view's pictures: " + json(dialog->property("inputs")));
+    click(find(window, QString("genPick_%1").arg(sampleRef)));
+    if (dialog->property("inputs").toList() != QVariantList{faceChosen, sampleRef} || !find(window, "genPickCount")->property("text").toString().startsWith("2 of 2"))
+        return fail(42, "picking the second picture: " + json(dialog->property("inputs")));
+    click(find(window, QString("genPick_%1").arg(made["id"].toInt())));
+    if (dialog->property("inputs").toList().size() != 2 || !dialog->property("note").toString().contains("takes 2")) return fail(42, "a third picture was not refused");
+    capture("generate-made-from");
+    click(find(window, "genGo"));
+    if (!waitFor([&] { return plan->viewsFor("character", mara)[1].toMap()["pictures"].toList().size() == 2 && gen->jobs().isEmpty(); }))
+        return fail(43, "the two-picture edit did not arrive: " + json(gen->jobs()));
+    graph = lastGraph();
+    uploads = stubLog()["uploads"].toArray();
+    if (input(graph, "10", "image") != uploads[uploads.size() - 2].toObject().value("name") || input(graph, "11", "image") != uploads.last().toObject().value("name"))
+        return fail(43, "the pictures did not go in the order picked: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+    if (plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{faceChosen, sampleRef})
+        return fail(43, "the picked pictures did not stay with the view");
+    if (plan->referencesFor("character", mara).size() != 4) return fail(43, "expected four pictures of Mara by now");
+    // Back to the Face view: its strip, and Generate tile, are new ones.
+    click(findItem(refs, "viewTile_character_0"));
+    genTile = findItem(find(window, "viewRefs_character_0"), "genRef_character");
 
     // ---- D2. Generate with options: a fixed seed, two pictures, changed settings, a sampler
     //          from ComfyUI's list; then Generate again… from the viewer keeps the seed
@@ -334,7 +482,6 @@ int main(int argc, char** argv) {
         pause();
         click(genTile);
         if (!clickMenuItem(genTile, "genOptions")) return fail(42, "no With options… item");
-        auto dialog = window->findChild<QObject*>("generatePopup");
         if (!dialog || !waitFor([&] { return dialog->property("opened").toBool(); }, 1500)) return fail(42, "With options… did not open the Generate dialog");
         if (dialog->property("use") != "ref-text" || dialog->property("workflow") != textId) return fail(42, "the dialog did not start on the prompt and its workflow");
         click(find(window, "genSeedFixed"));
@@ -382,9 +529,13 @@ int main(int argc, char** argv) {
         if (!gen->generateWith("character", mara, "ref-text", {{"settings", QVariantMap{{"3/steps", "many"}}}}).contains("Steps must be a number"))
             return fail(45, "a setting that is not a number was not refused");
         // Generate again… from the viewer: the same workflow, seed and settings, ready to change.
-        const int seeded = before;  // the picture with seed 1234 or 1235
-        const double seedOf = plan->referencesFor("character", mara)[seeded].toMap()["generation"].toMap()["seed"].toDouble();
-        click(findItem(refs, QString("ref_character_%1").arg(seeded)));
+        // The first picture with seed 1234 or 1235, where it sits in the Face view's strip.
+        const auto seededRef = plan->referencesFor("character", mara)[before].toMap();
+        const double seedOf = seededRef["generation"].toMap()["seed"].toDouble();
+        int seeded = 0;
+        const auto facePictures = plan->viewsFor("character", mara)[0].toMap()["pictures"].toList();
+        for (int k = 0; k < facePictures.size(); ++k) if (facePictures[k].toMap()["id"] == seededRef["id"]) seeded = k;
+        click(findItem(find(window, "viewRefs_character_0"), QString("ref_character_%1").arg(seeded)));
         if (!waitFor([&] { return viewer->property("opened").toBool(); }, 1500)) return fail(46, "the viewer did not open");
         click(find(window, "refViewerNext"));
         click(find(window, "refViewerPrev"));
@@ -414,7 +565,7 @@ int main(int argc, char** argv) {
     mode("error");
     pause();
     click(genTile);
-    clickMenuItem(genTile, "genFromPrompt");
+    clickMenuItem(genTile, "genQuick");
     if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["state"] == "failed"; })) return fail(50, "the failure was not shown");
     if (!gen->jobs()[0].toMap()["text"].toString().contains("Stub failure")) return fail(50, "the failure lost ComfyUI's reason: " + json(gen->jobs()));
     capture("generate-failed");
@@ -423,13 +574,13 @@ int main(int argc, char** argv) {
     mode("finish");
     pause();
     click(failedTile);
-    if (!clickMenuItem(failedTile, "genRetry") || !waitFor([&] { return plan->referencesFor("character", mara).size() == 7 && gen->jobs().isEmpty(); }))
+    if (!clickMenuItem(failedTile, "genRetry") || !waitFor([&] { return plan->referencesFor("character", mara).size() == 8 && gen->jobs().isEmpty(); }))
         return fail(51, "Try again did not generate the picture: " + json(gen->jobs()));
     if (input(lastGraph(), "3", "seed") != failedSeed) return fail(51, "Try again did not keep the seed");
     mode("error");
     pause();
     click(genTile);
-    clickMenuItem(genTile, "genFromPrompt");
+    clickMenuItem(genTile, "genQuick");
     if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["state"] == "failed"; })) return fail(52, "the second failure was not shown");
     failedTile = find(window, "genJob_character_0");
     pause();
@@ -441,7 +592,7 @@ int main(int argc, char** argv) {
     mode("wait");
     pause();
     click(genTile);
-    clickMenuItem(genTile, "genFromPrompt");
+    clickMenuItem(genTile, "genQuick");
     if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["text"].toString().startsWith("Queued"); })) return fail(60, "the waiting job is not shown queued: " + json(gen->jobs()));
     const auto waitingId = stubLog()["jobs"].toObject().keys();
     auto waitingTile = find(window, "genJob_character_0");
@@ -461,13 +612,13 @@ int main(int argc, char** argv) {
     if (!editor.openProject(project)) return fail(70, editor.status());
     if (gen->jobs().size() != 1) return fail(70, "the job was not picked up again after reopening: " + json(gen->jobs()));
     call("/_stub/release", {}, true);
-    if (!waitFor([&] { return plan->referencesFor("character", mara).size() == 8 && gen->jobs().isEmpty(); })) return fail(71, "the resumed job did not finish: " + json(gen->jobs()));
+    if (!waitFor([&] { return plan->referencesFor("character", mara).size() == 9 && gen->jobs().isEmpty(); })) return fail(71, "the resumed job did not finish: " + json(gen->jobs()));
 
     // ---- H. Undo takes the generated picture off again
     click(find(window, "planPage_cast"));
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
     QTest::qWait(150);
-    if (plan->referencesFor("character", mara).size() != 7) return fail(80, "⌘Z did not remove the generated picture");
+    if (plan->referencesFor("character", mara).size() != 8) return fail(80, "⌘Z did not remove the generated picture");
 
     // ---- I. A location is generated in the video's frame
     plan->run({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"aspect", "16:9"}}}});
@@ -479,6 +630,84 @@ int main(int argc, char** argv) {
     if (input(graph, "5", "width").toInt() != 1024 || input(graph, "5", "height").toInt() != 576)
         return fail(90, QString("the location was not 16:9: %1×%2").arg(input(graph, "5", "width").toInt()).arg(input(graph, "5", "height").toInt()));
     if (plan->referencesFor("location", booth)[0].toMap()["role"] != "setting") return fail(90, "the location's picture is not a setting");
+
+    // ---- K. Any model, through its workflow: one that draws from text or edits from up to three
+    //          pictures (shaped like ComfyUI's own H3 image template)
+    {
+        auto added = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("workflow_any_api.json")));
+        if (!added["ok"].toBool()) return fail(100, added["error"].toString());
+        const QString anyId = added["id"].toString();
+        // The prompt is the user's text node, not the enhancer's instructions.
+        if (slotsOf(anyId) != "10/value=prompt 20/image=picture0 21/image=picture1 22/image=picture2 40/cfg=setting 40/denoise=setting "
+                              "40/sampler_name=setting 40/scheduler=setting 40/seed=seed 40/steps=setting 60/filename_prefix=prefix")
+            return fail(100, "the H3-shaped workflow's adapter: " + slotsOf(anyId));
+        if (!flows->setUse(anyId, "ref-any") || !flows->serves(anyId, "ref-text") || !flows->serves(anyId, "ref-edit"))
+            return fail(100, "a workflow could not be used for both");
+        // From the prompt: no pictures, so all three Load Image nodes come out and the conditioning
+        // loses its optional images.
+        mode("finish");
+        const int before = plan->referencesFor("character", mara).size();
+        QString why = gen->generateWith("character", mara, "ref-text", {{"workflow", anyId}});
+        if (!why.isEmpty() || !waitFor([&] { return plan->referencesFor("character", mara).size() == before + 1 && gen->jobs().isEmpty(); }))
+            return fail(101, "text to image through it: " + why + " " + json(gen->jobs()));
+        graph = lastGraph();
+        const auto cond = graph.value("30").toObject().value("inputs").toObject();
+        if (graph.contains("20") || graph.contains("21") || graph.contains("22") || cond.contains("images.image_1") || !cond.contains("prompt") ||
+            input(graph, "10", "value") != facePrompt || input(graph, "11", "value").toString().indexOf("{input text}") < 0)
+            return fail(101, "the picture-free graph: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+        // Its nodes say how it names pictures.
+        if (gen->pictureLabel(anyId, 2) != "<Picture 2>") return fail(102, "the picture name was not learned from the node: " + gen->pictureLabel(anyId, 2));
+        flows->setConventions(anyId, "@Image{n}", "Write edit instructions.");
+        if (gen->pictureLabel(anyId, 3) != "@Image3" || flows->notes(anyId) != "Write edit instructions.") return fail(102, "the user's picture name and notes");
+        flows->setConventions(anyId, "", "");
+        // From two pictures: the third Load Image comes out.
+        why = gen->generateWith("character", mara, "ref-edit", {{"workflow", anyId}, {"view", quarterView}, {"inputs", QVariantList{faceChosen, sampleRef}},
+                                                              {"instruction", "Turn <Picture 1> to the left."}});
+        if (!why.isEmpty() || !waitFor([&] { return plan->referencesFor("character", mara).size() == before + 2 && gen->jobs().isEmpty(); }))
+            return fail(103, "editing through it: " + why + " " + json(gen->jobs()));
+        graph = lastGraph();
+        const auto cond2 = graph.value("30").toObject().value("inputs").toObject();
+        if (!graph.contains("20") || !graph.contains("21") || graph.contains("22") || !cond2.contains("images.image_2") || cond2.contains("images.image_3") ||
+            !input(graph, "10", "value").toString().startsWith("Turn <Picture 1> to the left.\n\n"))
+            return fail(103, "the two-picture graph: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+        // A picture that sets the size cannot be left out: pruning stops before an output goes.
+        QJsonObject sized{{"1", QJsonObject{{"class_type", "LoadImage"}, {"inputs", QJsonObject{{"image", "a.png"}}}}},
+                          {"2", QJsonObject{{"class_type", "GetImageSize"}, {"inputs", QJsonObject{{"image", QJsonArray{"1", 0}}}}}},
+                          {"3", QJsonObject{{"class_type", "ImageConditioning"}, {"inputs", QJsonObject{{"width", QJsonArray{"2", 0}}, {"images.image_1", QJsonArray{"1", 0}}}}}},
+                          {"4", QJsonObject{{"class_type", "SaveImage"}, {"inputs", QJsonObject{{"images", QJsonArray{"3", 0}}}}}}};
+        Workflows::OptionalInputs optional{{"ImageConditioning", {"images", "vae"}}};
+        QJsonObject copy = sized;
+        if (Workflows::prune(copy, {"1"}, QJsonArray{"4"}, optional).isEmpty() || copy != sized) return fail(104, "a required picture was pruned");
+        flows->remove(anyId);
+    }
+
+    // ---- L. A turnaround sheet composed from views' chosen pictures, on this computer
+    {
+        // Choose a Three-quarter picture so two views have one.
+        const int quarterPick = plan->viewsFor("character", mara)[1].toMap()["pictures"].toList()[0].toMap()["id"].toInt();
+        plan->run({{"op", "set"}, {"kind", "reference"}, {"id", quarterPick}, {"fields", QVariantMap{{"approved", true}}}});
+        click(find(window, "planPage_cast"));
+        click(findItem(find(window, "characterRefs0"), "addViewTile_character"));
+        clickPopupItem("suggestView_character_Turnaround sheet");
+        const auto views = plan->viewsFor("character", mara);
+        if (views.size() != 3 || views[2].toMap()["role"] != "sheet") return fail(110, "the Turnaround sheet suggestion did not add a sheet view");
+        const int sheetView = views[2].toMap()["id"].toInt();
+        click(find(window, "viewCompose_character_2"));
+        if (!find(window, "composeTick_Face") || !find(window, "composeTick_Three-quarter")) return fail(110, "Compose did not offer the views to tick");
+        capture("compose-sheet");
+        click(find(window, "composeGo"));
+        const auto sheet = plan->viewsFor("character", mara)[2].toMap();
+        const auto chosen = sheet["chosen"].toMap();
+        const auto face = plan->item("reference", plan->viewsFor("character", mara)[0].toMap()["chosen"].toMap()["id"].toInt());
+        const auto side = plan->item("reference", quarterPick);
+        const int expectWidth = int(std::lround(double(face["width"].toInt()) * chosen["height"].toInt() / face["height"].toInt()))
+                              + int(std::lround(double(side["width"].toInt()) * chosen["height"].toInt() / side["height"].toInt()));
+        if (chosen.isEmpty() || chosen["source"] != "composed" || chosen["width"].toInt() != expectWidth ||
+            plan->item("view", sheetView)["fields"].toMap()["panels"].toList().size() != 2 || editor.undoText() != "Compose Turnaround sheet")
+            return fail(111, "the composed sheet: " + json(chosen) + " undo: " + editor.undoText());
+        editor.undo();
+        if (!plan->viewsFor("character", mara)[2].toMap()["pictures"].toList().isEmpty()) return fail(111, "undo did not take the sheet off");
+    }
 
     // ---- J. Removing a workflow takes its kind of picture away
     click(find(window, "comfyButton"));
@@ -502,6 +731,9 @@ int main(int argc, char** argv) {
             << "Generate menu, the queued graph, arrival unapproved with its workflow, prompt and seed, one undo step, job record),"
             << "the large viewer (approve, full size, ‹ › and arrow keys, Esc, right-click menu), Generate with options (fixed seed,"
             << "two pictures, settings kept with the workflow, sampler from ComfyUI's list, Reset, refusals), Generate again keeps the seed,"
+            << "views (Three-quarter added from its suggestion, edited from the chosen Face with the unused picture input removed, picked"
+            << "pictures in order with a third refused, kept with the view), a workflow for both uses (its prompt node, <Picture n> learned"
+            << "from the node, no pictures and two pictures with the rest removed, a required picture kept), a composed turnaround sheet,"
             << "from approved pictures (uploads in order), failure with Try again and Dismiss, cancel from the queue, resume after"
             << "reopening, ⌘Z, a location in 16:9, agents cannot mark pictures generated.";
     return 0;

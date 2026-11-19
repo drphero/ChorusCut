@@ -9,7 +9,7 @@
 namespace {
 qint64 now() { return QDateTime::currentSecsSinceEpoch(); }
 bool known(const QString& kind) {
-    return kind.isEmpty() || kind == "concept" || kind == "character" || kind == "look" || kind == "location" || kind == "arc" || kind == "shot";
+    return kind.isEmpty() || kind == "concept" || kind == "character" || kind == "look" || kind == "location" || kind == "arc" || kind == "shot" || kind == "view";
 }
 }
 
@@ -53,7 +53,7 @@ bool Requests::save(int id) {
 QString Requests::currentLabel(const QJsonObject& t) const {
     const auto about = t["about"].toObject();
     const QString kind = about["kind"].toString(), label = t["label"].toString();
-    if ((kind == "character" || kind == "look" || kind == "location" || kind == "shot") &&
+    if ((kind == "character" || kind == "look" || kind == "location" || kind == "shot" || kind == "view") &&
         editor->plan()->item(kind, about["id"].toInt()).isEmpty())
         return label + " (removed)";
     return label;
@@ -206,13 +206,18 @@ int Requests::agentAsk(const QString& question, const QJsonObject& about, const 
     if (!editor->current()) { error = "No project is open in Chorus Cut."; return 0; }
     if (question.trimmed().isEmpty()) { error = "Write the question."; return 0; }
     const QString kind = about["kind"].toString();
-    if (!known(kind)) { error = "about.kind must be concept, character, look, location, arc or shot."; return 0; }
+    if (!known(kind)) { error = "about.kind must be concept, character, look, location, view, arc or shot."; return 0; }
     const int id = about["id"].toInt();
     QString label = "The plan";
     Plan* plan = editor->plan();
     if (kind == "concept") label = "Concept";
     else if (kind == "arc") label = plan->sections().value(id).toMap()["label"].toString();
     else if (kind == "shot") label = "Shot " + QString::number(plan->shot(id)["number"].toInt());
+    else if (kind == "view") {
+        const auto v = plan->item("view", id);
+        if (v.isEmpty()) { error = QString("There is no view %1.").arg(id); return 0; }
+        label = plan->item(v["owner"].toString(), v["ownerId"].toInt())["fields"].toMap()["name"].toString() + " · " + v["fields"].toMap()["name"].toString();
+    }
     else if (!kind.isEmpty()) {
         const auto item = plan->item(kind, id);
         if (item.isEmpty()) { error = QString("There is no %1 %2.").arg(kind).arg(id); return 0; }

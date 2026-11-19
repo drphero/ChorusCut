@@ -2,7 +2,9 @@
 #include <QDir>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QSize>
 #include <QUrl>
 #include <QVariantList>
@@ -22,6 +24,9 @@ class Workflows : public QObject {
     Q_PROPERTY(QVariantList slotTypes READ slotTypes CONSTANT)
     Q_PROPERTY(QString folder READ folder CONSTANT)
 public:
+    // ComfyUI's optional inputs by node type, from /object_info: what may lose its link when a
+    // picture is left out. Types not listed count as having none.
+    using OptionalInputs = QHash<QString, QSet<QString>>;
     explicit Workflows(QObject* parent = nullptr);
     QString folder() const { return root.absolutePath(); }
     // [{id, name, use, useLabel, isDefault, ready, problems}]
@@ -48,6 +53,20 @@ public:
     Q_INVOKABLE QString forUse(const QString& use) const;
     // How many pictures a workflow takes (its highest picture index + 1).
     Q_INVOKABLE int pictureCount(const QString& id) const;
+    // Whether a workflow can be used for a use ("ref-any" serves both picture uses).
+    Q_INVOKABLE bool serves(const QString& id, const QString& use) const;
+    // How the workflow's model refers to its input pictures, as a pattern such as "<Picture {n}>"
+    // ("" when not set), and the user's notes on how to write for it, for the agent.
+    QString pictureName(const QString& id) const;
+    QString notes(const QString& id) const;
+    Q_INVOKABLE bool setConventions(const QString& id, const QString& pictureName, const QString& notes);
+    // Every node type the workflow uses.
+    QStringList classes(const QString& id) const;
+    // The fewest pictures the workflow can run with, given what is optional.
+    int minPictures(const QString& id, const OptionalInputs& optional) const;
+    // Takes the given nodes out of a graph with every node that then cannot run, and the links to
+    // them; "" when done, else why not (an output would go). Static so tests can call it.
+    static QString prune(QJsonObject& graph, const QSet<QString>& nodes, const QJsonArray& outputs, const OptionalInputs& optional);
     // The ready workflows for a use: [{id, name, isDefault}].
     Q_INVOKABLE QVariantList ready(const QString& use) const;
     Q_INVOKABLE bool hasSlot(const QString& id, const QString& slot) const;
@@ -61,9 +80,10 @@ public:
     // The values as the graph takes them ({key: value}), or why one is not right.
     QJsonObject checkValues(const QString& id, const QVariantMap& values, QString& error) const;
 
-    // What to put into a workflow. Pictures are names ComfyUI gave the uploads, in order.
+    // What to put into a workflow. Pictures are names ComfyUI gave the uploads, in order; fewer
+    // than the workflow's Load Image inputs leaves the rest out (see prune).
     // settings: {key: value} for inputs marked "Adjust when generating", over the kept values.
-    struct Values { QString prompt, negative, prefix; qint64 seed = -1; int width = 0, height = 0; QStringList pictures; QJsonObject settings; };
+    struct Values { QString prompt, negative, prefix; qint64 seed = -1; int width = 0, height = 0; QStringList pictures; QJsonObject settings; OptionalInputs optional; };
     // The graph to queue, or an empty object with the reason in error.
     QJsonObject build(const QString& id, const Values& values, QString& error) const;
     // The workflow's own width and height, when its adapter maps them; else 0.

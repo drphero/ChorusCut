@@ -1,0 +1,20 @@
+{
+ "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "any_image.safetensors", "weight_dtype": "default"}, "_meta": {"title": "Load Diffusion Model"}},
+ "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "encoder.safetensors", "type": "any", "device": "default"}, "_meta": {"title": "Load CLIP"}},
+ "3": {"class_type": "VAELoader", "inputs": {"vae_name": "vae.safetensors"}, "_meta": {"title": "Load VAE"}},
+ "10": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "a red bicycle"}, "_meta": {"title": "Prompt"}},
+ "11": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "You expand captions. Rewrite {input text} in detail."}, "_meta": {"title": "Enhancer instructions"}},
+ "12": {"class_type": "StringReplace", "inputs": {"find": "{input text}", "string": ["11", 0], "replace": ["10", 0]}, "_meta": {"title": "Replace"}},
+ "13": {"class_type": "TextGenerate", "inputs": {"max_length": 512, "clip": ["2", 0], "prompt": ["12", 0], "system_prompt": ["11", 0]}, "_meta": {"title": "Enhance"}},
+ "14": {"class_type": "ComfySwitchNode", "inputs": {"switch": false, "on_false": ["10", 0], "on_true": ["13", 0]}, "_meta": {"title": "Enhance prompt?"}},
+ "20": {"class_type": "LoadImage", "inputs": {"image": "first.png"}, "_meta": {"title": "Picture 1"}},
+ "21": {"class_type": "LoadImage", "inputs": {"image": "second.png"}, "_meta": {"title": "Picture 2"}},
+ "22": {"class_type": "LoadImage", "inputs": {"image": "third.png"}, "_meta": {"title": "Picture 3"}},
+ "30": {"class_type": "ImageConditioning", "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": ["14", 0], "width": 0, "height": 0,
+        "images.image_1": ["20", 0], "images.image_2": ["21", 0], "images.image_3": ["22", 0]}, "_meta": {"title": "Conditioning"}},
+ "31": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["30", 0]}, "_meta": {"title": "Zero out"}},
+ "40": {"class_type": "KSampler", "inputs": {"seed": 5, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        "model": ["1", 0], "positive": ["30", 0], "negative": ["31", 0], "latent_image": ["30", 1]}, "_meta": {"title": "KSampler"}},
+ "50": {"class_type": "VAEDecode", "inputs": {"samples": ["40", 0], "vae": ["3", 0]}, "_meta": {"title": "Decode"}},
+ "60": {"class_type": "SaveImage", "inputs": {"filename_prefix": "any", "images": ["50", 0]}, "_meta": {"title": "Save Image"}}
+}

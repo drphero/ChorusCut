@@ -336,7 +336,7 @@ Rectangle {
                         Heading { text: "Cast"; Layout.fillWidth: true }
                         Small { objectName: "addCharacter"; text: "Add character"; onClicked: ws.plan.run({op: "add", kind: "character", fields: {role: ws.plan.characters.length ? "actor" : "singer"}}) }
                     }
-                    Note { text: "Everyone who appears, with reference pictures and named looks (wardrobe and makeup). Add pictures with + or drop image files on a card's pictures; they are copied into the project. Set who sings each line from the lyric lines in Edit." }
+                    Note { text: "Everyone who appears: what they look like, their pictures and their looks. Set who sings each line from the lyric lines in Edit." }
                     Note { visible: ws.plan.characters.length === 0; text: "No characters yet."; color: "#6f8085" }
                     Repeater {
                         id: castCards
@@ -351,8 +351,11 @@ Rectangle {
                             flashing: ws.flash === "character:" + itemId
                             linkKind: "character"; linkId: itemId
                             readonly property var myLooks: ws.plan.looks.filter(l => l.character === itemId)
+                            property int openLook: 0
+                            property bool more: false
                             readonly property int sung: ws.plan.singers.filter(s => s.singers.indexOf(itemId) >= 0).length
                             LinkSummary { objectName: "characterLinks" + characterCard.index; kind: "character"; itemId: characterCard.itemId }
+                            // Name and role on one line.
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 12
                                 PlanField {
@@ -360,73 +363,181 @@ Rectangle {
                                     PlanText { objectName: "characterName" + characterCard.index; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                                 }
                                 PlanField {
+                                    Layout.preferredWidth: 220; Layout.fillWidth: false
                                     kind: "character"; itemId: characterCard.itemId; field: "role"; label: "Role"; item: characterCard.item
                                     PlanCombo { options: ws.opts.role; value: parent.parent.value; onPicked: v => parent.parent.set(v) }
                                 }
                             }
+                            // One description: what makes them recognisable, for the plan and every picture.
                             PlanField {
-                                kind: "character"; itemId: characterCard.itemId; field: "identity"; label: "Identity"; item: characterCard.item
-                                PlanText { multiline: true; lines: 2; value: parent.parent.value; placeholder: "Face, hair, build, age: what stays the same in every shot"; onCommit: t => parent.parent.set(t) }
-                            }
-                            PlanField {
-                                kind: "character"; itemId: characterCard.itemId; field: "voice"; label: "Voice"; item: characterCard.item
-                                PlanText { value: parent.parent.value; placeholder: "For engines that generate speech or singing"; onCommit: t => parent.parent.set(t) }
-                            }
-                            PlanField {
-                                kind: "character"; itemId: characterCard.itemId; field: "prompt"; label: "Picture prompt"; item: characterCard.item
-                                hint: "What Generate asks ComfyUI for: the person, on a plain background. Your agent can write it from the identity."
+                                kind: "character"; itemId: characterCard.itemId; field: "prompt"; label: "Appearance"; item: characterCard.item
+                                hint: "What makes them recognisable: face, eyes, skin, build, age, usually hair. Every picture of them is drawn from it; how each one frames them is its view's."
                                 expandable: true
                                 onExpandRequested: promptEditor.edit(kind, itemId, field, label)
                                 PlanText { objectName: "characterPrompt" + characterCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value
-                                           placeholder: "e.g. Studio portrait of a woman in her twenties, warm brown skin, dark curls, plain grey backdrop"
+                                           placeholder: "e.g. A woman in her late twenties, warm brown skin, oval face, dark brown eyes, tight black curls cropped to the jaw"
                                            onCommit: t => parent.parent.set(t) }
                             }
-                            Text { text: "Reference pictures"; color: "#adb8ba"; font.pixelSize: 11 }
-                            ReferenceStrip { objectName: "characterRefs" + characterCard.index; owner: "character"; ownerId: characterCard.itemId }
-                            Text { text: "Looks"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 4 }
-                            Repeater {
-                                model: characterCard.myLooks.length
+                            Text { text: "Pictures"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 4 }
+                            ReferenceViews { objectName: "characterRefs" + characterCard.index; owner: "character"; ownerId: characterCard.itemId }
+                            // Looks as tiles; the one clicked opens here.
+                            Text { text: "Looks"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 6 }
+                            Flow {
+                                Layout.fillWidth: true; spacing: 10
+                                Repeater {
+                                    model: characterCard.myLooks.length
+                                    Item {
+                                        id: lookTile
+                                        required property int index
+                                        readonly property var look: characterCard.myLooks[index] || ({id: 0, fields: {}})
+                                        readonly property var views: (ws.plan.revision, look.id ? ws.plan.viewsFor("look", look.id) : [])
+                                        readonly property var chosen: { for (const v of views) if (v.chosen.id) return v.chosen; return null }
+                                        readonly property int pictures: views.reduce((n, v) => n + v.pictures.length, 0)
+                                        readonly property var changes: look.fields && look.fields.changes ? Array.from(look.fields.changes) : []
+                                        readonly property bool isOpen: characterCard.openLook === look.id
+                                        objectName: "lookTile_" + look.id
+                                        width: 84; height: 107 + 34
+                                        Rectangle {
+                                            width: 84; height: 107; radius: 6; clip: true
+                                            color: lookTile.chosen ? "#0c1216" : "#162027"
+                                            border.width: lookTile.chosen ? 2 : 1
+                                            border.color: lookTile.chosen ? "#3f9c84" : "#5c7078"
+                                            Image { anchors.fill: parent; anchors.margins: 2; visible: !!lookTile.chosen
+                                                    source: lookTile.chosen && !lookTile.chosen.missing ? lookTile.chosen.url : ""
+                                                    fillMode: Image.PreserveAspectCrop; asynchronous: true; sourceSize: Qt.size(168, 214) }
+                                            Text { anchors.centerIn: parent; visible: !lookTile.chosen; text: "no picture yet"; color: "#6f8085"; font.pixelSize: 10 }
+                                        }
+                                        Rectangle { visible: lookTile.isOpen; y: 109; width: 84; height: 2; radius: 1; color: "#87dec7" }
+                                        Text { y: 113; width: 84; elide: Text.ElideRight; text: lookTile.look.fields.name || "Look"; color: lookTile.isOpen ? "#edf1ef" : "#d5dcdb"; font.pixelSize: 12 }
+                                        Text { y: 128; width: 84; elide: Text.ElideRight; font.pixelSize: 10
+                                               color: lookTile.changes.length ? "#e7b75f" : "#6f8085"
+                                               text: lookTile.changes.length ? "changes " + lookTile.changes.join(", ")
+                                                     : lookTile.pictures ? lookTile.pictures + (lookTile.pictures === 1 ? " picture" : " pictures") : "" }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: characterCard.openLook = lookTile.isOpen ? 0 : lookTile.look.id }
+                                    }
+                                }
+                                Rectangle {
+                                    objectName: "addLook" + characterCard.index
+                                    width: 84; height: 107; radius: 6
+                                    color: addLookMouse.containsMouse ? "#1a262d" : "transparent"; border.color: "#34434a"
+                                    Text { anchors.centerIn: parent; text: "+ look"; color: "#8fa0a4"; font.pixelSize: 12 }
+                                    MouseArea { id: addLookMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: { const r = ws.plan.run({op: "add", kind: "look", character: characterCard.itemId}); if (r.ok) characterCard.openLook = r.id } }
+                                    ToolTip.visible: addLookMouse.containsMouse; ToolTip.delay: 600; ToolTip.text: "A named outfit, hair and makeup for part of the video"
+                                }
+                            }
+                            // The open look: its appearance, what it keeps from the character, its pictures.
+                            Rectangle {
+                                id: lookPanel
+                                readonly property var item: characterCard.openLook ? (ws.plan.revision, ws.plan.item("look", characterCard.openLook)) : null
+                                readonly property int itemId: item && item.id ? item.id : 0
+                                objectName: "lookPanel" + characterCard.index
+                                visible: itemId !== 0
+                                Layout.fillWidth: true
+                                implicitHeight: lookBody.implicitHeight + 24
+                                radius: 6; color: "#152027"; border.color: "#26343b"
                                 ColumnLayout {
-                                    id: lookBlock
-                                    required property int index
-                                    readonly property var item: characterCard.myLooks[index] || null
-                                    readonly property int itemId: item ? item.id : 0
-                                    Layout.fillWidth: true; spacing: 6
-                                RowLayout {
-                                    id: lookRow
-                                    readonly property var item: lookBlock.item
-                                    readonly property int itemId: lookBlock.itemId
-                                    Layout.fillWidth: true; spacing: 8
+                                    id: lookBody
+                                    x: 12; y: 12; width: parent.width - 24
+                                    spacing: 8
+                                    RowLayout {
+                                        Layout.fillWidth: true; spacing: 8
+                                        PlanField {
+                                            Layout.preferredWidth: 200; Layout.fillWidth: false
+                                            kind: "look"; itemId: lookPanel.itemId; field: "name"; label: "Look"; item: lookPanel.item
+                                            PlanText { objectName: "lookName" + lookPanel.itemId; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text {
+                                            Layout.alignment: Qt.AlignBottom
+                                            text: "Remove look"; color: rmLookMouse.containsMouse ? "#f0a08f" : "#6f8085"; font.pixelSize: 11; bottomPadding: 6
+                                            MouseArea { id: rmLookMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                        onClicked: { ws.plan.run({op: "remove", kind: "look", id: lookPanel.itemId}); characterCard.openLook = 0 } }
+                                        }
+                                    }
                                     PlanField {
-                                        Layout.preferredWidth: 160; Layout.fillWidth: false
-                                        kind: "look"; itemId: lookRow.itemId; field: "name"; label: "Look"; item: lookRow.item
+                                        kind: "look"; itemId: lookPanel.itemId; field: "prompt"; label: "Appearance in this look"; item: lookPanel.item
+                                        hint: "Every garment with its colour and material, shoes, accessories, hair and makeup, and anything else this look changes."
+                                        expandable: true
+                                        onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                        PlanText { objectName: "lookPrompt" + lookPanel.itemId; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value
+                                                   placeholder: "e.g. Red sequinned jumpsuit with wide flared legs, gold platform boots, curls slicked back wet"; onCommit: t => parent.parent.set(t) }
+                                    }
+                                    // What the look keeps from its character; anything it changes is unticked.
+                                    RowLayout {
+                                        id: keeps
+                                        readonly property var changes: lookPanel.item && lookPanel.item.fields && lookPanel.item.fields.changes ? lookPanel.item.fields.changes : []
+                                        spacing: 6
+                                        Text { text: "Keeps from " + (characterCard.item && characterCard.item.fields.name || "the character") + ":"; color: "#8fa0a4"; font.pixelSize: 11 }
+                                        Repeater {
+                                            model: ws.opts.lookChanges
+                                            Rectangle {
+                                                id: chip
+                                                required property var modelData
+                                                readonly property bool kept: keeps.changes.indexOf(modelData.value) < 0
+                                                objectName: "lookKeeps_" + modelData.value + "_" + lookPanel.itemId
+                                                implicitWidth: chipText.implicitWidth + 16; implicitHeight: 20; radius: 10
+                                                color: kept ? "#1f3a35" : "#3a2f24"
+                                                Text { id: chipText; anchors.centerIn: parent; font.pixelSize: 11; font.strikeout: !chip.kept
+                                                       color: chip.kept ? "#87dec7" : "#e7b75f"; text: (chip.kept ? "✓ " : "✕ ") + chip.modelData.label }
+                                                MouseArea { id: chipMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                            onClicked: { const c = Array.from(keeps.changes); const i = c.indexOf(chip.modelData.value)
+                                                                         if (i >= 0) c.splice(i, 1); else c.push(chip.modelData.value)
+                                                                         ws.plan.run({op: "set", kind: "look", id: lookPanel.itemId, fields: {changes: c}}) } }
+                                                ToolTip.visible: chipMouse.containsMouse; ToolTip.delay: 400
+                                                ToolTip.text: chip.kept ? "Click if this look changes it (say how in its appearance)" : "This look changes it: shots in this look leave out the character's own pictures of it"
+                                            }
+                                        }
+                                    }
+                                    ReferenceViews { objectName: "lookRefs" + lookPanel.itemId; owner: "look"; ownerId: lookPanel.itemId; size: 56 }
+                                    // Older notes, from before appearance was one field.
+                                    PlanField {
+                                        visible: !!(lookPanel.item && lookPanel.item.fields && lookPanel.item.fields.description)
+                                        kind: "look"; itemId: lookPanel.itemId; field: "description"; label: "Older notes"; item: lookPanel.item
                                         PlanText { value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                                     }
-                                    PlanField {
-                                        kind: "look"; itemId: lookRow.itemId; field: "description"; label: "Wardrobe and makeup"; item: lookRow.item
-                                        PlanText { value: parent.parent.value; placeholder: "e.g. red wool coat, wet hair"; onCommit: t => parent.parent.set(t) }
-                                    }
-                                    Small { Layout.alignment: Qt.AlignBottom; text: "Remove"; danger: true; onClicked: ws.plan.run({op: "remove", kind: "look", id: lookRow.itemId}) }
+                                }
+                            }
+                            // Voice and older notes, folded away.
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                Text {
+                                    objectName: "characterMore" + characterCard.index
+                                    text: (characterCard.more ? "Hide " : "") + "Voice and notes" + (characterCard.more ? "" : "  ·  show")
+                                    color: moreMouse.containsMouse ? "#9fe3d0" : "#7f9a9f"; font.pixelSize: 11
+                                    MouseArea { id: moreMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: characterCard.more = !characterCard.more }
                                 }
                                 PlanField {
-                                    kind: "look"; itemId: lookBlock.itemId; field: "prompt"; label: "Picture prompt"; item: lookBlock.item
-                                    expandable: true
-                                    onExpandRequested: promptEditor.edit(kind, itemId, field, label)
-                                    PlanText { objectName: "lookPrompt" + lookBlock.itemId; multiline: true; lines: 1; collapsedLines: 3; value: parent.parent.value
-                                               placeholder: "e.g. The same woman, full body, in the red sequinned jumpsuit"; onCommit: t => parent.parent.set(t) }
+                                    visible: characterCard.more
+                                    kind: "character"; itemId: characterCard.itemId; field: "voice"; label: "Voice"; item: characterCard.item
+                                    PlanText { value: parent.parent.value; placeholder: "For engines that generate speech or singing"; onCommit: t => parent.parent.set(t) }
                                 }
-                                ReferenceStrip { owner: "look"; ownerId: lookBlock.itemId; size: 56 }
+                                PlanField {
+                                    visible: characterCard.more
+                                    kind: "character"; itemId: characterCard.itemId; field: "notes"; label: "Notes"; item: characterCard.item
+                                    PlanText { multiline: true; lines: 2; value: parent.parent.value; placeholder: "Anything else about them for the plan"; onCommit: t => parent.parent.set(t) }
+                                }
+                                PlanField {
+                                    visible: characterCard.more && !!(characterCard.item && characterCard.item.fields.identity)
+                                    kind: "character"; itemId: characterCard.itemId; field: "identity"; label: "Older identity notes"; item: characterCard.item
+                                    PlanText { multiline: true; lines: 2; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                                 }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
-                                Small { text: "Add look"; onClicked: ws.plan.run({op: "add", kind: "look", character: characterCard.itemId}) }
                                 Text {
-                                    Layout.fillWidth: true; leftPadding: 8
+                                    Layout.fillWidth: true
                                     text: characterCard.sung ? "Sings " + characterCard.sung + (characterCard.sung === 1 ? " line" : " lines") : ""
                                     color: "#8fa0a4"; font.pixelSize: 12
                                 }
-                                Small { text: "Remove character"; danger: true; onClicked: ws.plan.run({op: "remove", kind: "character", id: characterCard.itemId}) }
+                                Text {
+                                    objectName: "removeCharacter" + characterCard.index
+                                    text: "Remove character"; color: rmCharMouse.containsMouse ? "#f0a08f" : "#6f8085"; font.pixelSize: 11
+                                    MouseArea { id: rmCharMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: ws.plan.run({op: "remove", kind: "character", id: characterCard.itemId}) }
+                                }
                             }
                         }
                     }
@@ -447,7 +558,7 @@ Rectangle {
                         Heading { text: "Locations"; Layout.fillWidth: true }
                         Small { objectName: "addLocation"; text: "Add location"; onClicked: ws.plan.run({op: "add", kind: "location"}) }
                     }
-                    Note { text: "Places and sets: what the environment is, not the camera angle. Add reference pictures with + or by dropping image files." }
+                    Note { text: "Places and sets: what they look like and their pictures." }
                     Note { visible: ws.plan.locations.length === 0; text: "No locations yet."; color: "#6f8085" }
                     Repeater {
                         id: locationCards
@@ -468,30 +579,37 @@ Rectangle {
                                     PlanText { objectName: "locationName" + locationCard.index; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                                 }
                                 PlanField {
+                                    Layout.preferredWidth: 180; Layout.fillWidth: false
                                     kind: "location"; itemId: locationCard.itemId; field: "timeOfDay"; label: "Time of day"; item: locationCard.item
                                     PlanCombo { options: ws.opts.timeOfDay; value: parent.parent.value; onPicked: v => parent.parent.set(v) }
                                 }
                             }
                             PlanField {
-                                kind: "location"; itemId: locationCard.itemId; field: "description"; label: "Description"; item: locationCard.item
-                                PlanText { multiline: true; lines: 2; value: parent.parent.value; placeholder: "What is there, and what it feels like"; onCommit: t => parent.parent.set(t) }
+                                kind: "location"; itemId: locationCard.itemId; field: "prompt"; label: "Appearance"; item: locationCard.item
+                                hint: "What makes the place recognisable: layout, materials, colours and fixed details, with no people. Every picture of it is drawn from this."
+                                expandable: true
+                                onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                PlanText { objectName: "locationPrompt" + locationCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value
+                                           placeholder: "e.g. A cramped radio booth: egg-crate foam walls, a battered mixing desk, a red ON AIR light"; onCommit: t => parent.parent.set(t) }
                             }
                             PlanField {
                                 kind: "location"; itemId: locationCard.itemId; field: "lighting"; label: "Lighting"; item: locationCard.item
-                                PlanText { value: parent.parent.value; onCommit: t => parent.parent.set(t) }
+                                PlanText { value: parent.parent.value; placeholder: "e.g. one warm desk lamp, the red light"; onCommit: t => parent.parent.set(t) }
                             }
+                            Text { text: "Pictures"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 4 }
+                            ReferenceViews { objectName: "locationRefs" + locationCard.index; owner: "location"; ownerId: locationCard.itemId }
                             PlanField {
-                                kind: "location"; itemId: locationCard.itemId; field: "prompt"; label: "Picture prompt"; item: locationCard.item
-                                hint: "What Generate asks ComfyUI for: the place, empty, in the video's frame."
-                                expandable: true
-                                onExpandRequested: promptEditor.edit(kind, itemId, field, label)
-                                PlanText { objectName: "locationPrompt" + locationCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
+                                visible: !!(locationCard.item && locationCard.item.fields.description)
+                                kind: "location"; itemId: locationCard.itemId; field: "description"; label: "Older notes"; item: locationCard.item
+                                PlanText { multiline: true; lines: 2; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                             }
-                            Text { text: "Reference pictures"; color: "#adb8ba"; font.pixelSize: 11 }
-                            ReferenceStrip { owner: "location"; ownerId: locationCard.itemId }
                             RowLayout {
                                 Item { Layout.fillWidth: true }
-                                Small { text: "Remove location"; danger: true; onClicked: ws.plan.run({op: "remove", kind: "location", id: locationCard.itemId}) }
+                                Text {
+                                    text: "Remove location"; color: rmLocMouse.containsMouse ? "#f0a08f" : "#6f8085"; font.pixelSize: 11
+                                    MouseArea { id: rmLocMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: ws.plan.run({op: "remove", kind: "location", id: locationCard.itemId}) }
+                                }
                             }
                         }
                     }
