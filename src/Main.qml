@@ -57,6 +57,10 @@ ApplicationWindow {
     onClosing: saveWindow()
     function showManager() { managerOpen = true; manager.show() }
 
+    // Edit (timeline) or Plan (concept, cast, locations, arc); and, in Edit, the right-hand panel.
+    property string workspace: "edit"
+    property string sidePanel: "inspector"
+
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
@@ -94,6 +98,33 @@ ApplicationWindow {
         function onProjectChanged() { win.selection = null; timeline.fit() }
     }
     Connections {
+        target: editor.plan
+        // A selected shot follows edits and undo, and goes away when the shot does.
+        function onChanged() {
+            const s = win.selection
+            if (!s || s.kind !== "shot") return
+            const shot = editor.plan.shot(s.id)
+            win.selection = shot.id === undefined ? null : Object.assign({}, s, {start: shot.startMs, end: shot.endMs, label: "Shot " + shot.number})
+        }
+    }
+    // Opens what a plan check is about: its shot, its span of the song, or its Plan page.
+    function showCheck(c) {
+        if (c.code === "lyrics") { workspace = "edit"; lyricsEditor.open(); return }
+        if (c.gate === "G2" && c.shots.length === 0) {
+            workspace = "plan"
+            planWorkspace.page = c.code === "concept" ? "concept" : "arc"
+            return
+        }
+        workspace = "edit"
+        if (c.shots.length > 0) timeline.selectShot(c.shots[0])
+        else if (c.end > c.start) {
+            const row = lines.findIndex(l => l.start === c.start)
+            if (row >= 0) selectRow(row)
+            else select({kind: "range", start: c.start, end: c.end, label: "Range"})
+        }
+        if (c.end > c.start) timeline.zoomTo(c.start - 1500, c.end + 1500)
+    }
+    Connections {
         target: editor.lyrics
         // Keep the selection's times current after an edit or undo.
         function onChanged() {
@@ -121,6 +152,14 @@ ApplicationWindow {
         ToolTip.delay: 500
     }
     component LabelText: Text { color: win.ink; font.pixelSize: 14; verticalAlignment: Text.AlignVCenter }
+    component Tab: Button {
+        id: tab
+        property bool active: false
+        focusPolicy: Qt.NoFocus
+        implicitHeight: 26; leftPadding: 12; rightPadding: 12
+        contentItem: Text { text: tab.text; color: tab.active ? "#122328" : win.ink; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { color: tab.active ? win.mint : (tab.hovered ? "#3b4b52" : "#22303a"); radius: 4 }
+    }
 
     // ---------------------------------------------------------------- shortcuts
     Shortcut { enabled: !lyricsEditor.visible && !win.managerOpen; sequences: [StandardKey.Open]; onActivated: win.showManager() }
@@ -141,6 +180,14 @@ ApplicationWindow {
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.ZoomOut]; onActivated: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)) }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Ctrl+0"; onActivated: timeline.fit() }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Z"; onActivated: if (win.selection) timeline.zoomTo(win.selection.start, win.selection.end) }
+    Shortcut { enabled: editor.ready && !win.typing && win.selection !== null && win.selection.kind === "shot"
+               sequences: [StandardKey.Delete, "Backspace"]
+               onActivated: { const id = win.selection.id; win.selection = null; editor.plan.run({op: "remove", kind: "shot", id: id}) } }
+    // ⌘B splits the selected shot at the playhead, as in most editors.
+    Shortcut { enabled: editor.ready && !win.typing && win.selection !== null && win.selection.kind === "shot"; sequence: "Ctrl+B"
+               onActivated: editor.plan.run({op: "shot.split", id: win.selection.id, at: editor.frame}) }
+    Shortcut { enabled: editor.ready && !win.managerOpen; sequence: "Ctrl+1"; onActivated: win.workspace = "edit" }
+    Shortcut { enabled: editor.ready && !win.managerOpen; sequence: "Ctrl+2"; onActivated: win.workspace = "plan" }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.Undo]; onActivated: editor.undo() }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.Redo]; onActivated: editor.redo() }
 
@@ -284,107 +331,155 @@ ApplicationWindow {
                          : editor.comfy.connection === "unreachable" ? "#f0a08f" : "#748084"
                 }
             }
+            RowLayout {
+                Layout.leftMargin: 18
+                spacing: 2
+                Tab { objectName: "workspaceEdit"; text: "Edit"; active: win.workspace === "edit"; enabled: editor.ready; onClicked: win.workspace = "edit"
+                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Timeline, shots and lyrics (⌘1)" }
+                Tab { objectName: "workspacePlan"; text: "Plan"; active: win.workspace === "plan"; enabled: editor.ready; onClicked: win.workspace = "plan"
+                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Concept, look, cast, locations and arc (⌘2)" }
+            }
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }
             Action { text: "Redo"; enabled: editor.canRedo; onClicked: editor.redo(); ToolTip.text: editor.redoText ? "Redo " + editor.redoText.toLowerCase() : "" }
             Action { text: "Export timeline…"; enabled: editor.ready; onClicked: { save.selectedFile = editor.defaultExport; save.open() } }
         }
 
+        PlanWorkspace {
+            id: planWorkspace
+            objectName: "planWorkspace"
+            visible: win.workspace === "plan"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            onShowCheck: c => win.showCheck(c)
+        }
+
+        // Edit: monitor, transport and timeline, with the inspector or checks down the right.
         RowLayout {
-            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 160; Layout.maximumHeight: win.height * 0.42
+            visible: win.workspace === "edit"
+            Layout.fillWidth: true; Layout.fillHeight: true
             spacing: 8
-            Rectangle {
+            ColumnLayout {
+                id: editColumn
                 Layout.fillWidth: true; Layout.fillHeight: true
-                color: "#0c1216"; radius: 5; clip: true
-                VideoMonitor { objectName: "monitor"; anchors.fill: parent; anchors.margins: 4; visible: editor.sourceLength > 0 }
-                // Lyric preview: the line under the playhead, words lighting up as they are sung.
-                Item {
-                    id: preview
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 24
-                    anchors.verticalCenter: editor.sourceLength > 0 ? undefined : parent.verticalCenter
-                    anchors.bottom: editor.sourceLength > 0 ? parent.bottom : undefined
-                    anchors.bottomMargin: 24
-                    height: previewText.implicitHeight
-                    readonly property real ms: 1000 * editor.frame / editor.fps
-                    readonly property var line: {
-                        let found = null
-                        for (const l of win.lines) if (l.start <= ms + 300) found = l
-                        return found && ms <= found.end + 1500 ? found : null
+                spacing: 8
+                Rectangle {
+                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 160; Layout.maximumHeight: win.height * 0.42
+                    color: "#0c1216"; radius: 5; clip: true
+                    VideoMonitor { objectName: "monitor"; anchors.fill: parent; anchors.margins: 4; visible: editor.sourceLength > 0 }
+                    // Lyric preview: the line under the playhead, words lighting up as they are sung.
+                    Item {
+                        id: preview
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 24
+                        anchors.verticalCenter: editor.sourceLength > 0 ? undefined : parent.verticalCenter
+                        anchors.bottom: editor.sourceLength > 0 ? parent.bottom : undefined
+                        anchors.bottomMargin: 24
+                        height: previewText.implicitHeight
+                        readonly property real ms: 1000 * editor.frame / editor.fps
+                        readonly property var line: {
+                            let found = null
+                            for (const l of win.lines) if (l.start <= ms + 300) found = l
+                            return found && ms <= found.end + 1500 ? found : null
+                        }
+                        Text {
+                            id: previewText
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.Wrap
+                            textFormat: Text.RichText
+                            font.pixelSize: editor.sourceLength > 0 ? 22 : 30
+                            style: Text.Outline; styleColor: "#0c1216"
+                            text: {
+                                const l = preview.line
+                                if (!l) return win.lines.length || editor.sourceLength > 0 ? "" : "<span style='color:#6f8085'>Add lyrics with “Lyrics…”</span>"
+                                return l.words.map(w => "<span style='color:" + (w.start <= preview.ms ? "#87dec7" : "#edf1ef") + "'>"
+                                                        + w.word + "</span>").join(" ")
+                            }
+                        }
                     }
-                    Text {
-                        id: previewText
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.Wrap
-                        textFormat: Text.RichText
-                        font.pixelSize: editor.sourceLength > 0 ? 22 : 30
-                        style: Text.Outline; styleColor: "#0c1216"
-                        text: {
-                            const l = preview.line
-                            if (!l) return win.lines.length || editor.sourceLength > 0 ? "" : "<span style='color:#6f8085'>Add lyrics with “Lyrics…”</span>"
-                            return l.words.map(w => "<span style='color:" + (w.start <= preview.ms ? "#87dec7" : "#edf1ef") + "'>"
-                                                    + w.word + "</span>").join(" ")
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Action { objectName: "playPause"; enabled: editor.ready; text: editor.playing ? "Pause" : "Play"; active: true; onClicked: editor.togglePlay() }
+                    // Narrow windows drop the controls that have keyboard shortcuts.
+                    Action { visible: editColumn.width >= 820; text: "Play selection"; enabled: win.selection !== null; onClicked: editor.playRange(win.selection.start, win.selection.end) }
+                    Action { text: "Loop"; active: editor.looping; onClicked: editor.looping = !editor.looping }
+                    Action { visible: editColumn.width >= 1080; text: "−1 frame"; onClicked: editor.seek(editor.frame-1) }
+                    Action { visible: editColumn.width >= 1080; text: "+1 frame"; onClicked: editor.seek(editor.frame+1) }
+                    LabelText { text: win.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 18; color: win.mint; Layout.leftMargin: 8 }
+                    LabelText { visible: editColumn.width >= 700; text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
+                    Item { Layout.fillWidth: true }
+                    Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (⌘−)" }
+                    Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (⌘0)" }
+                    Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (⌘=)" }
+                    Action { visible: editColumn.width >= 620; text: editor.monitorMuted ? "Unmute" : "Mute"; Layout.leftMargin: 10; onClicked: editor.monitorMuted = !editor.monitorMuted }
+                    Slider {
+                        visible: editColumn.width >= 620
+                        Layout.preferredWidth: 90
+                        from: -60; to: 0; stepSize: 1
+                        value: editor.monitorDb
+                        Accessible.name: "Monitor gain in decibels"
+                        onMoved: editor.monitorDb = Math.round(value)
+                    }
+                    LabelText { visible: editColumn.width >= 620; text: editor.monitorDb + " dB"; font.pixelSize: 12; color: win.quiet }
+                }
+                Timeline {
+                    id: timeline
+                    objectName: "timeline"
+                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 240
+                    selection: win.selection
+                    onSelected: s => win.select(s)
+                    // Empty state: a song without aligned lyrics.
+                    Rectangle {
+                        visible: editor.ready && win.lines.length === 0
+                        anchors.centerIn: parent; width: 420; height: 110; radius: 8; color: "#1d2930"; border.color: "#34434a"
+                        ColumnLayout {
+                            anchors.centerIn: parent
+                            LabelText { text: editor.comfy.busy ? editor.comfy.jobText : editor.lyrics.text.length ? "The lyrics are not aligned yet." : "Start by adding the lyrics."
+                                        Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 380; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter }
+                            Action { text: "Lyrics…"; active: true; visible: !editor.comfy.busy; Layout.alignment: Qt.AlignHCenter; onClicked: lyricsEditor.open() }
                         }
                     }
                 }
             }
-            Inspector {
-                id: inspector
-                Layout.preferredWidth: 320; Layout.fillHeight: true
-                selection: win.selection
-                onZoomTo: (a, b) => timeline.zoomTo(a, b)
-                onNextFlagged: win.nextFlagged()
-                onSelect: s => win.select(s)
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Action { objectName: "playPause"; enabled: editor.ready; text: editor.playing ? "Pause" : "Play"; active: true; onClicked: editor.togglePlay() }
-            Action { text: "Play selection"; enabled: win.selection !== null; onClicked: editor.playRange(win.selection.start, win.selection.end) }
-            Action { text: "Loop"; active: editor.looping; onClicked: editor.looping = !editor.looping }
-            Action { text: "−1 frame"; onClicked: editor.seek(editor.frame-1) }
-            Action { text: "+1 frame"; onClicked: editor.seek(editor.frame+1) }
-            LabelText { text: win.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 18; color: win.mint; Layout.leftMargin: 8 }
-            LabelText { text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
-            Item { Layout.fillWidth: true }
-            Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (⌘−)" }
-            Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (⌘0)" }
-            Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (⌘=)" }
-            Action { text: editor.monitorMuted ? "Unmute" : "Mute"; Layout.leftMargin: 10; onClicked: editor.monitorMuted = !editor.monitorMuted }
-            Slider {
-                Layout.preferredWidth: 90
-                from: -60; to: 0; stepSize: 1
-                value: editor.monitorDb
-                Accessible.name: "Monitor gain in decibels"
-                onMoved: editor.monitorDb = Math.round(value)
-            }
-            LabelText { text: editor.monitorDb + " dB"; font.pixelSize: 12; color: win.quiet }
-        }
-
-        Timeline {
-            id: timeline
-            objectName: "timeline"
-            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 240
-            selection: win.selection
-            onSelected: s => win.select(s)
-            // Empty state: a song without aligned lyrics.
-            Rectangle {
-                visible: editor.ready && win.lines.length === 0
-                anchors.centerIn: parent; width: 420; height: 110; radius: 8; color: "#1d2930"; border.color: "#34434a"
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    LabelText { text: editor.comfy.busy ? editor.comfy.jobText : editor.lyrics.text.length ? "The lyrics are not aligned yet." : "Start by adding the lyrics."
-                                Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 380; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter }
-                    Action { text: "Lyrics…"; active: true; visible: !editor.comfy.busy; Layout.alignment: Qt.AlignHCenter; onClicked: lyricsEditor.open() }
+            ColumnLayout {
+                Layout.preferredWidth: 340; Layout.maximumWidth: 340; Layout.fillHeight: true
+                spacing: 6
+                RowLayout {
+                    spacing: 2
+                    Tab { objectName: "panelInspector"; text: "Inspector"; active: win.sidePanel === "inspector"; onClicked: win.sidePanel = "inspector" }
+                    Tab {
+                        objectName: "panelChecks"
+                        text: "Checks" + (editor.plan.errorCount ? " · " + editor.plan.errorCount : "")
+                        active: win.sidePanel === "checks"
+                        onClicked: win.sidePanel = "checks"
+                    }
+                }
+                Inspector {
+                    id: inspector
+                    visible: win.sidePanel === "inspector"
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    selection: win.selection
+                    onZoomTo: (a, b) => timeline.zoomTo(a, b)
+                    onNextFlagged: win.nextFlagged()
+                    onSelect: s => win.select(s)
+                }
+                Rectangle {
+                    visible: win.sidePanel === "checks"
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    color: "#1d2930"; radius: 5
+                    Checks {
+                        anchors.fill: parent; anchors.margins: 10
+                        compact: true
+                        onShowCheck: c => win.showCheck(c)
+                    }
                 }
             }
         }
 
         LabelText {
             Layout.fillWidth: true; elide: Text.ElideMiddle; color: win.quiet; font.pixelSize: 12
-            text: editor.status || (editor.comfy.busy ? editor.comfy.jobText : "") || editor.lyrics.message ||
-                  "Drag lyrics to move them, drag edges to trim. Pinch or ⌘-scroll to zoom; scroll to pan."
+            text: editor.status || (editor.comfy.busy ? editor.comfy.jobText : "") || editor.plan.message || editor.lyrics.message ||
+                  "Drag lyrics and shots to move them, drag edges to trim. Double-click V1 or V2 to plan a shot. Pinch or ⌘-scroll to zoom."
         }
     }
 

@@ -17,6 +17,9 @@
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWheelEvent>
+#include <QNativeGestureEvent>
+#include <QPointingDevice>
 #include <QDebug>
 #include <cmath>
 #include <functional>
@@ -222,10 +225,63 @@ int main(int argc, char** argv) {
         return fail(25, "track height was not remembered");
     QMetaObject::invokeMethod(secondTimeline, "resizeTrack", Q_ARG(QVariant, "audioH"), Q_ARG(QVariant, 180));
 
-    // 6. Edits persist: reopen the project and compare.
+    // 6. Trackpad: two-finger swipes pan, a pinch zooms around the pointer, ⌘-scroll zooms too.
+    {
+        static QPointingDevice trackpad("Test trackpad", 4242, QInputDevice::DeviceType::TouchPad, QPointingDevice::PointerType::Finger,
+                                        QInputDevice::Capability::Position | QInputDevice::Capability::Scroll | QInputDevice::Capability::PixelScroll,
+                                        5, 0);
+        auto lanes = find(root, "timelineLanes");
+        if (!lanes) return fail(26, "no lanes");
+        zoomTo(line(row)["start"].toInt() - 4000, line(row)["end"].toInt() + 4000);
+        const QPoint at = lanes->mapToScene(QPointF(lanes->width() / 2, timeline->property("lyricY").toDouble() + 10)).toPoint();
+        auto swipe = [&](QPoint pixels, Qt::KeyboardModifiers mods = {}) {
+            const Qt::ScrollPhase phases[] = {Qt::ScrollBegin, Qt::ScrollUpdate, Qt::ScrollUpdate, Qt::ScrollEnd};
+            for (auto phase : phases) {
+                const QPoint d = phase == Qt::ScrollBegin || phase == Qt::ScrollEnd ? QPoint() : pixels / 2;
+                QWheelEvent e(at, window->mapToGlobal(at), d, d * 2, Qt::NoButton, mods, phase, false, Qt::MouseEventNotSynthesized, &trackpad);
+                QGuiApplication::sendEvent(window, &e);
+                QTest::qWait(20);
+            }
+            QTest::qWait(80);
+        };
+        auto state = [&] { return QString("viewStart %1, pps %2").arg(timeline->property("viewStart").toDouble()).arg(timeline->property("pps").toDouble()); };
+        const double v0 = timeline->property("viewStart").toDouble(), p0 = timeline->property("pps").toDouble();
+        swipe(QPoint(-120, 0));  // fingers move left: later in the song
+        const double v1 = timeline->property("viewStart").toDouble();
+        if (!(std::abs(v1 - v0 - 120 / p0) < 0.05)) return fail(27, "horizontal two-finger swipe did not pan: " + state());
+        swipe(QPoint(0, -90));
+        const double v2 = timeline->property("viewStart").toDouble();
+        if (!(std::abs(v2 - v1 - 90 / p0) < 0.05)) return fail(28, "vertical two-finger swipe did not pan: " + state());
+        // Pinch: the time under the pointer stays put while the scale grows by about half.
+        const double anchor = v2 + (at.x() - lanes->mapToScene(QPointF(0, 0)).x()) / p0;
+        const QPointF local = window->contentItem()->mapFromScene(at);
+        auto gesture = [&](Qt::NativeGestureType type, double value) {
+            QNativeGestureEvent e(type, &trackpad, 2, local, at, window->mapToGlobal(at), value, QPointF(), 7);
+            QGuiApplication::sendEvent(window, &e);
+            QTest::qWait(20);
+        };
+        gesture(Qt::BeginNativeGesture, 0);
+        for (int k = 0; k < 5; ++k) gesture(Qt::ZoomNativeGesture, 0.0845);  // 1.0845^5 ≈ 1.5
+        gesture(Qt::EndNativeGesture, 0);
+        QTest::qWait(80);
+        const double p3 = timeline->property("pps").toDouble(), v3 = timeline->property("viewStart").toDouble();
+        if (!(p3 > p0 * 1.35 && p3 < p0 * 1.65)) return fail(29, "pinch did not zoom in by about half: " + state());
+        const double anchorAfter = v3 + (at.x() - lanes->mapToScene(QPointF(0, 0)).x()) / p3;
+        if (!(std::abs(anchorAfter - anchor) < 0.05)) return fail(29, QString("pinch moved the time under the pointer: %1 s -> %2 s").arg(anchor).arg(anchorAfter));
+        // ⌘-scroll on a mouse wheel zooms out around the pointer and keeps the view sane.
+        QWheelEvent wheel(at, window->mapToGlobal(at), QPoint(), QPoint(0, -240), Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+        QGuiApplication::sendEvent(window, &wheel);
+        QTest::qWait(80);
+        const double p4 = timeline->property("pps").toDouble(), v4 = timeline->property("viewStart").toDouble();
+        if (!(p4 < p3 * 0.9) || !std::isfinite(v4)) return fail(30, "⌘-scroll did not zoom out: " + state());
+        const double anchor4 = v4 + (at.x() - lanes->mapToScene(QPointF(0, 0)).x()) / p4;
+        if (!(std::abs(anchor4 - anchorAfter) < 0.05)) return fail(30, QString("⌘-scroll moved the time under the pointer: %1 s -> %2 s").arg(anchorAfter).arg(anchor4));
+    }
+
+    // 7. Edits persist: reopen the project and compare.
     const auto saved = lines();
     if (!editor.openProject(project) || lyrics->lines() != saved || editor.canUndo())
         return fail(20, "reopened project differs from the edited one");
-    qInfo() << "PASS: wrap when zoomed out, words when zoomed in, line drag, undo/redo, word select and trim, mark checked, play selection, track resize/scroll/reset/remember, reopen.";
+    qInfo() << "PASS: wrap when zoomed out, words when zoomed in, line drag, undo/redo, word select and trim, mark checked, play selection, track resize/scroll/reset/remember, trackpad pan and pinch, ⌘-scroll zoom, reopen.";
     return 0;
 }

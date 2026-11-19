@@ -27,6 +27,8 @@ Rectangle {
     property var lines: editor.lyrics.lines
     property var regions: editor.lyrics.regions
     property var instrumental: editor.lyrics.instrumental
+    property var shots: editor.plan.shots
+    property var coverage: editor.plan.coverage
     readonly property bool hasPicture: editor.sourceLength > 0
 
     // ---- selection (owned by Main.qml)
@@ -39,9 +41,12 @@ Rectangle {
     property int dragStartDelta: 0
     property int dragEndDelta: 0
 
+    // ---- in-progress shot drag: {id, track, start, end} in frames, or id -1
+    property var shotDrag: ({id: -1})
+
     // ---- track geometry: each track has its own height, resized from its header.
     readonly property int rulerH: 26
-    readonly property var trackDefaults: ({sectionH: 24, v2H: 34, v1H: 34, lyricH: 56, audioH: 180})
+    readonly property var trackDefaults: ({sectionH: 24, v2H: 40, v1H: 40, lyricH: 56, audioH: 160})
     readonly property var trackMinimum: ({sectionH: 18, v2H: 22, v1H: 22, lyricH: 30, audioH: 40})
     readonly property int trackMaximum: 480
     property int sectionH: trackDefaults.sectionH
@@ -50,12 +55,13 @@ Rectangle {
     property int lyricH: trackDefaults.lyricH
     property int audioH: trackDefaults.audioH
     property real scrollY: 0                 // vertical scroll of the tracks under the fixed ruler
-    readonly property int contentH: sectionH + (hasPicture ? v2H + v1H : 0) + lyricH + audioH
+    // V1 and V2 always show: planned shots live there before any footage exists.
+    readonly property int contentH: sectionH + v2H + v1H + lyricH + audioH
     readonly property int trackViewH: Math.max(1, height - rulerH - 12)
     readonly property int sectionY: rulerH - scrollY
     readonly property int v2Y: sectionY + sectionH
-    readonly property int v1Y: v2Y + (hasPicture ? v2H : 0)
-    readonly property int lyricY: v1Y + (hasPicture ? v1H : 0)
+    readonly property int v1Y: v2Y + v2H
+    readonly property int lyricY: v1Y + v1H
     readonly property int audioY: lyricY + lyricH
     // Lyric clips switch between two views on their own. Zoomed out, the line's text wraps
     // to fill the clip. Once most of a line's words are wide enough to read and grab, the
@@ -98,6 +104,8 @@ Rectangle {
     function px(seconds) { return (seconds - viewStart) * pps }
     function sec(x) { return viewStart + x / pps }
     function clampView() {
+        if (!isFinite(viewStart)) viewStart = 0   // never let a bad delta leave the view unusable
+        if (!isFinite(pps) || pps <= 0) pps = minPps
         viewStart = Math.max(0, Math.min(viewStart, Math.max(0, duration - visibleSeconds)))
     }
     function zoomAround(factor, x) {
@@ -107,6 +115,19 @@ Rectangle {
         clampView()
     }
     function fit() { pps = minPps; viewStart = 0 }
+    // Two-finger swipes (either way) and the mouse wheel pan; ⌘-scroll zooms around the pointer;
+    // ⌥-scroll moves the tracks up and down. On macOS Qt reports ⌘ as Control and ⌥ as Alt.
+    // Pixel deltas come from trackpads, angle deltas (120 per notch) from mouse wheels.
+    function wheel(angle, pixel, modifiers, x) {
+        if (modifiers & Qt.ControlModifier) {
+            zoomAround(Math.pow(1.0018, angle.y || pixel.y * 4), x)
+            return
+        }
+        const dx = pixel.x || angle.x / 4, dy = pixel.y || angle.y / 4
+        if (modifiers & Qt.AltModifier) { scrollY -= dy; clampScroll(); return }
+        viewStart -= (Math.abs(dx) > Math.abs(dy) ? dx : dy) / pps
+        clampView()
+    }
     function zoomTo(startMs, endMs) {
         const span = Math.max(0.5, (endMs - startMs) / 1000)
         pps = Math.max(minPps, Math.min(maxPps, viewWidth * 0.8 / span))
@@ -126,6 +147,74 @@ Rectangle {
         if (fine) text += "." + String(Math.floor((s - whole) * 10))
         return text
     }
+    // ---- shots: snapping and free space
+    // Shot edges snap within 8 px to lyric lines, sections, other shots, the playhead and the
+    // song's ends; to words as well once they are wide enough to aim at.
+    function snapTargets(exceptId) {
+        const t = [0, duration * 1000, playheadSeconds * 1000]
+        for (const l of lines) {
+            t.push(l.start, l.end)
+            if (pps >= 120) for (const w of l.words) t.push(w.start, w.end)
+        }
+        for (const r of regions) t.push(r.start, r.end)
+        for (const r of instrumental) t.push(r.start, r.end)
+        for (const s of shots) if (s.id !== exceptId) t.push(s.startMs, s.endMs)
+        return t
+    }
+    // Returns the snapped frame and how far (px) it moved, or null when nothing is close.
+    function snapFrame(frame, targets) {
+        const ms = frame / editor.fps * 1000
+        let best = null, bestPx = 8
+        for (const t of targets) {
+            const d = Math.abs(t - ms) / 1000 * pps
+            if (d < bestPx) { bestPx = d; best = t }
+        }
+        return best === null ? null : {frame: Math.round(best / 1000 * editor.fps), px: bestPx}
+    }
+    // The free frames around [start, end) on a track, or null if another shot is in the way.
+    function freeAround(track, start, end, exceptId) {
+        let lo = 0, hi = editor.length
+        for (const s of shots) {
+            if (s.id === exceptId || s.track !== track) continue
+            if (s.end <= start) lo = Math.max(lo, s.end)
+            else if (s.start >= end) hi = Math.min(hi, s.start)
+            else return null
+        }
+        return {lo: lo, hi: hi}
+    }
+    function trackAt(y) { return y >= v2Y && y < v2Y + v2H ? 2 : y >= v1Y && y < v1Y + v1H ? 1 : 0 }
+    // Double-clicking an empty track plans a shot over the lyric line there, or over the
+    // pause between lines, kept inside the free space.
+    function shotSpanAt(track, ms) {
+        let a = 0, b = duration * 1000
+        for (const l of lines) {
+            if (l.start <= ms && ms < l.end) { a = l.start; b = l.end; break }
+            if (l.end <= ms) a = l.end
+            else if (l.start > ms) { b = l.start; break }
+        }
+        let start = Math.round(a / 1000 * editor.fps), end = Math.max(start + 1, Math.round(b / 1000 * editor.fps))
+        const f = Math.round(ms / 1000 * editor.fps)
+        const free = freeAround(track, f, f + 1, -1)
+        if (!free) return null
+        start = Math.max(start, free.lo); end = Math.min(end, free.hi)
+        return end > start ? {start: start, end: end} : null
+    }
+    function addShotAt(track, ms) {
+        const span = shotSpanAt(track, ms)
+        if (!span) return
+        const r = editor.plan.run({op: "shot.add", track: track, start: span.start, end: span.end})
+        if (r.ok) selectShot(r.id)
+    }
+    function selectShot(id) {
+        const s = editor.plan.shot(id)
+        if (s.id !== undefined) selected({kind: "shot", id: id, start: s.startMs, end: s.endMs, label: "Shot " + s.number})
+    }
+    readonly property var shotColors: ({
+        lipsync: ["#24505a", "#6fc3d2"], performance: ["#2a4652", "#7fb0c0"], story: ["#363c66", "#959ce6"],
+        broll: ["#47395c", "#b99ade"], insert: ["#56482b", "#dcb66c"], abstract: ["#28534a", "#79cdb5"],
+        transition: ["#3c4347", "#9aa5aa"], title: ["#3c4347", "#9aa5aa"], gap: ["#1b2429", "#56656c"], "": ["#2e3a40", "#7a8a90"]
+    })
+
     function snapMs(ms) {
         // Edges snap to the playhead within 6 px.
         const head = playheadSeconds * 1000
@@ -170,8 +259,8 @@ Rectangle {
             // A static model: rebuilding it while a divider is dragged would end the drag.
             model: [
                 {label: "Sections", key: "sectionH"},
-                {label: "V2  Cutaway", key: "v2H"},
-                {label: "V1  Performance", key: "v1H"},
+                {label: "V2", key: "v2H"},
+                {label: "V1", key: "v1H"},
                 {label: "Lyrics", key: "lyricH"},
                 {label: "A1  Master", key: "audioH"}
             ]
@@ -180,14 +269,16 @@ Rectangle {
                 required property var modelData
                 objectName: "trackHeader_" + modelData.key
                 readonly property var tops: ({sectionH: tl.sectionY, v2H: tl.v2Y, v1H: tl.v1Y, lyricH: tl.lyricY, audioH: tl.audioY})
-                visible: tl.hasPicture || (modelData.key !== "v2H" && modelData.key !== "v1H")
                 y: tops[modelData.key] - tl.rulerH
                 width: tl.header; height: tl[modelData.key]
                 color: "#18242b"
                 Text {
                     anchors.verticalCenter: parent.verticalCenter; x: 10
                     width: parent.width - 14; elide: Text.ElideRight
-                    text: trackHeader.modelData.label; color: "#adb8ba"; font.pixelSize: 11
+                    // Footage from an imported pair sits under the planned shots.
+                    text: trackHeader.modelData.label + (!tl.hasPicture ? "" : trackHeader.modelData.key === "v2H" ? "  Cutaway"
+                          : trackHeader.modelData.key === "v1H" ? "  Performance" : "")
+                    color: "#adb8ba"; font.pixelSize: 11
                 }
                 Rectangle {
                     id: divider
@@ -248,29 +339,18 @@ Rectangle {
                     tl.selected({kind: "range", start: Math.round(a * 1000), end: Math.round(b * 1000), label: "Range"})
                 }
             }
-            onReleased: m => { if (!ranging && m.y >= tl.rulerH) tl.selected(null) }
-        }
-
-        WheelHandler {
-            // Pinch or Cmd+scroll zooms around the pointer; plain scroll pans.
-            // (On macOS, Qt reports Cmd as ControlModifier.)
-            acceptedModifiers: Qt.ControlModifier
-            onWheel: e => { tl.zoomAround(Math.pow(1.0018, e.angleDelta.y || e.pixelDelta.y * 4), e.x) }
-        }
-        WheelHandler {
-            acceptedModifiers: Qt.NoModifier
-            onWheel: e => {
-                const dx = e.pixelDelta.x || e.angleDelta.x / 4
-                const dy = e.pixelDelta.y || e.angleDelta.y / 4
-                tl.viewStart -= (Math.abs(dx) > Math.abs(dy) ? dx : dy) / tl.pps
-                tl.clampView()
+            property bool planned: false   // a double-click planned a shot; its release keeps the selection
+            onReleased: m => { if (!ranging && !planned && m.y >= tl.rulerH) tl.selected(null); planned = false }
+            // Scrolling anywhere over the lanes, including over clips (they pass wheel events on).
+            // A MouseArea sees both axes; a WheelHandler only reacts to the vertical one by default,
+            // which left two-finger sideways swipes doing nothing.
+            onWheel: w => tl.wheel(w.angleDelta, w.pixelDelta, w.modifiers, w.x)
+            onDoubleClicked: m => {
+                const track = tl.trackAt(m.y)
+                if (track && m.y >= tl.rulerH) { planned = true; tl.addShotAt(track, tl.sec(m.x) * 1000) }
             }
         }
-        WheelHandler {
-            // Option+scroll moves the tracks up and down (Qt reports Option as AltModifier).
-            acceptedModifiers: Qt.AltModifier
-            onWheel: e => { tl.scrollY -= e.pixelDelta.y || e.angleDelta.y / 4; tl.clampScroll() }
-        }
+
         PinchHandler {
             target: null
             property real last: 1
@@ -332,7 +412,10 @@ Rectangle {
             }
         }
 
-        // ---- picture lanes (projects with footage)
+        // ---- picture lanes: planned shots, over any imported footage
+        Rectangle { y: tl.v2Y; width: parent.width; height: tl.v2H; color: "#141e24" }
+        Rectangle { y: tl.v1Y; width: parent.width; height: tl.v1H; color: "#131c22" }
+        Rectangle { y: tl.v1Y; width: parent.width; height: 1; color: "#0e161a" }
         Rectangle {
             visible: tl.hasPicture
             x: tl.px(0); y: tl.v1Y + 2; width: editor.baseLength / editor.fps * tl.pps; height: tl.v1H - 4
@@ -375,6 +458,122 @@ Rectangle {
                 }
                 onReleased: { const d = cutaway.delta; cutaway.delta = 0; if (d) editor.change(cutaway.mode, d); cutaway.mode = "" }
                 onCanceled: { cutaway.delta = 0; cutaway.mode = "" }
+            }
+        }
+
+        Text {
+            visible: tl.shots.length === 0 && editor.ready
+            x: 10; y: tl.v1Y + (tl.v1H - height) / 2
+            text: "Double-click V1 or V2 to plan a shot over a lyric line, or select lines and use Add shot."
+            color: "#56656c"; font.pixelSize: 11
+        }
+        Repeater {
+            model: tl.shots
+            Rectangle {
+                id: shotCard
+                required property var modelData
+                objectName: "shotCard" + modelData.id
+                readonly property bool dragging: tl.shotDrag.id === modelData.id
+                readonly property int track: dragging ? tl.shotDrag.track : modelData.track
+                readonly property int sf: dragging ? tl.shotDrag.start : modelData.start
+                readonly property int ef: dragging ? tl.shotDrag.end : modelData.end
+                readonly property bool chosen: tl.selection !== null && tl.selection.kind === "shot" && tl.selection.id === modelData.id
+                readonly property var colors: tl.shotColors[modelData.fields.type || ""] || tl.shotColors[""]
+                x: tl.px(sf / editor.fps); y: (track === 2 ? tl.v2Y : tl.v1Y) + 3
+                width: Math.max(3, (ef - sf) / editor.fps * tl.pps); height: (track === 2 ? tl.v2H : tl.v1H) - 6
+                visible: x + width > -2 && x < lanes.width + 2
+                z: dragging ? 3 : 1
+                radius: 4; clip: true
+                color: colors[0]
+                opacity: dragging ? 0.85 : 1
+                border.color: chosen ? "#ecedc9" : modelData.problems ? "#e07f6f" : colors[1]
+                border.width: chosen ? 2 : 1
+                Column {
+                    x: 6; y: 3; width: parent.width - 12 - (badge.visible ? badge.width + 4 : 0)
+                    spacing: 1
+                    Text {
+                        width: parent.width; elide: Text.ElideRight
+                        text: shotCard.modelData.label + (shotCard.modelData.stale ? "  ↻" : "")
+                        color: "#edf1ef"; font.pixelSize: 11; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        visible: shotCard.height >= 32
+                        width: parent.width; elide: Text.ElideRight
+                        text: shotCard.modelData.fields.purpose || shotCard.modelData.typeLabel || "Unplanned shot"
+                        color: "#b9c6c8"; font.pixelSize: 10
+                    }
+                }
+                Rectangle {
+                    id: badge
+                    visible: shotCard.modelData.problems > 0 && shotCard.width > 30
+                    anchors.right: parent.right; anchors.rightMargin: 4; y: 4
+                    width: 15; height: 15; radius: 7.5; color: "#b4544a"
+                    Text { anchors.centerIn: parent; text: shotCard.modelData.problems; color: "#fff4f0"; font.pixelSize: 9; font.bold: true }
+                }
+                MouseArea {
+                    id: shotMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    property string mode: ""
+                    property real pressX: 0
+                    property bool moved: false
+                    property var targets: []
+                    property var free: null
+                    cursorShape: mouseX <= 6 || mouseX >= width - 6 ? Qt.SizeHorCursor : Qt.OpenHandCursor
+                    function lanePoint(m) { return mapToItem(lanes, m.x, m.y) }
+                    onPressed: m => {
+                        pressX = lanePoint(m).x; moved = false
+                        mode = m.x <= 6 ? "in" : m.x >= width - 6 ? "out" : "move"
+                        targets = tl.snapTargets(shotCard.modelData.id)
+                        free = tl.freeAround(shotCard.modelData.track, shotCard.modelData.start, shotCard.modelData.end, shotCard.modelData.id)
+                    }
+                    function preview(p) {
+                        const s0 = shotCard.modelData.start, e0 = shotCard.modelData.end, len = e0 - s0
+                        const d = Math.round((p.x - pressX) / tl.pps * editor.fps)
+                        let track = shotCard.modelData.track, start = s0, end = e0
+                        if (mode === "move") {
+                            start = s0 + d
+                            const a = tl.snapFrame(start, targets), b = tl.snapFrame(start + len, targets)
+                            if (a && (!b || a.px <= b.px)) start = a.frame
+                            else if (b) start = b.frame - len
+                            start = Math.max(0, Math.min(editor.length - len, start))
+                            // Moving onto the other track works where that track is free.
+                            const over = tl.trackAt(p.y)
+                            if (over && over !== track && tl.freeAround(over, start, start + len, shotCard.modelData.id)) track = over
+                            else start = Math.max(free.lo, Math.min(free.hi - len, start))
+                            end = start + len
+                        } else if (mode === "in") {
+                            const a = tl.snapFrame(s0 + d, targets)
+                            start = Math.max(free.lo, Math.min(e0 - 1, a ? a.frame : s0 + d))
+                        } else {
+                            const b = tl.snapFrame(e0 + d, targets)
+                            end = Math.min(free.hi, Math.max(s0 + 1, b ? b.frame : e0 + d))
+                        }
+                        tl.shotDrag = {id: shotCard.modelData.id, track: track, start: start, end: end}
+                    }
+                    onPositionChanged: m => {
+                        if (!pressed) return
+                        const p = lanePoint(m)
+                        if (!moved && Math.abs(p.x - pressX) < 3 && tl.trackAt(p.y) === shotCard.modelData.track) return
+                        moved = true
+                        preview(p)
+                    }
+                    onReleased: m => {
+                        // Commit after clearing the preview: the edit rebuilds the cards.
+                        const timeline = tl, plan = editor.plan, id = shotCard.modelData.id
+                        if (moved) preview(lanePoint(m))
+                        const d = timeline.shotDrag, wasMoved = moved
+                        timeline.shotDrag = {id: -1}
+                        if (wasMoved) {
+                            const r = plan.run({op: "shot.retime", id: id, track: d.track, start: d.start, end: d.end})
+                            if (r.ok) timeline.selectShot(id)
+                        } else {
+                            timeline.selectShot(id)
+                        }
+                    }
+                    onCanceled: tl.shotDrag = {id: -1}
+                    onDoubleClicked: editor.playRange(shotCard.modelData.startMs, shotCard.modelData.endMs)
+                }
             }
         }
 
@@ -583,6 +782,20 @@ Rectangle {
                 visible: t >= 0 && t <= tl.duration
                 Rectangle { y: 14; width: 1; height: 12; color: "#4b5b62" }
                 Text { x: 4; y: 2; text: tl.clock(parent.t, ticks.step < 1); color: "#8fa0a4"; font.pixelSize: 10 }
+            }
+        }
+
+        // ---- picture coverage along the bottom of the ruler: planned (teal) and uncovered (red)
+        Repeater {
+            model: tl.coverage
+            Rectangle {
+                required property var modelData
+                objectName: modelData.covered ? "coverageCovered" : "coverageGap"
+                z: 10
+                x: tl.px(modelData.start / 1000); y: tl.rulerH - 3
+                width: Math.max(1, (modelData.end - modelData.start) / 1000 * tl.pps); height: 3
+                visible: x + width > 0 && x < lanes.width
+                color: modelData.covered ? "#3f9c84" : "#d0645a"
             }
         }
 

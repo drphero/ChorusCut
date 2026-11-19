@@ -40,6 +40,8 @@ private:
 Editor::Editor() {
     comfyJobs = new ComfyJobs(this);
     lyricState.setHistory(&history);
+    planState = new Plan(&lyricState, this);
+    planState->setHistory(&history);
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
     connect(&history, &QUndoStack::cleanChanged, this, changed);
@@ -63,6 +65,7 @@ void Editor::closeProject() {
     stop();
     listener.reset(); output.reset(); timeline.reset();
     lyricState.unload();
+    planState->unload();
     project.reset();
     thumbPicture = {};
     ++peakSerial;
@@ -159,7 +162,11 @@ bool Editor::openProject(const QUrl& folder) {
     auto next = Project::open(folder.toLocalFile(), error);
     if (!next) { info(error); return false; }
     saveThumbnail();  // The outgoing project's card, before its lyrics are replaced.
-    if (!lyricState.load(*next,error)) { info(error); return false; }
+    if (!lyricState.load(*next,error) || !planState->load(*next,error)) {
+        info(error);
+        if (project) { QString ignored; lyricState.load(*project, ignored); planState->load(*project, ignored); }
+        return false;
+    }
     thumbPicture = {};
     stop();
     listener.reset(); output.reset(); timeline.reset();
