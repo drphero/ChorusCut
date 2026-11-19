@@ -64,7 +64,7 @@ ApplicationWindow {
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -228,7 +228,7 @@ ApplicationWindow {
             LabelText { text: "ComfyUI"; font.pixelSize: 17; font.bold: true }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet
-                text: "Chorus Cut aligns lyrics, and later generates shots, through ComfyUI: on this computer, on another machine, or on a rented GPU. Install the Chorus Cut node pack in that ComfyUI."
+                text: "Chorus Cut aligns lyrics and generates pictures through ComfyUI: on this computer, on another machine, or on a rented GPU. Install the Chorus Cut node pack there to align lyrics."
             }
             TextField { id: comfyUrl; objectName: "comfyUrl"; Layout.fillWidth: true; placeholderText: "http://127.0.0.1:8188"; selectByMouse: true
                         Keys.onReturnPressed: comfySheet.connectNow() }
@@ -240,12 +240,17 @@ ApplicationWindow {
                     color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "checking" ? win.quiet : "#e7b75f" }
             RowLayout {
                 Action { visible: editor.comfy.hasToken; text: "Forget token"; onClicked: editor.comfy.configure(comfyUrl.text, "", true) }
+                Action { objectName: "comfyWorkflows"; text: "Workflows…"; onClicked: win.openWorkflows() }
                 Item { Layout.fillWidth: true }
                 Action { objectName: "comfyConnect"; text: "Connect"; onClicked: comfySheet.connectNow() }
                 Action { text: "Done"; active: true; onClicked: comfySheet.close() }
             }
         }
     }
+
+    // The ComfyUI workflows Chorus Cut generates with, and their adapters.
+    WorkflowsSheet { id: workflowsSheet }
+    function openWorkflows() { comfySheet.close(); workflowsSheet.open() }
 
     // Connecting an agent: Claude Code, Codex or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {

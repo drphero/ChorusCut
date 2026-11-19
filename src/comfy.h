@@ -42,6 +42,9 @@ public:
     // Uploads the project's song and queues ChorusCutAlignLyrics for the saved lyrics.
     Q_INVOKABLE void alignLyrics(const QString& language);
     Q_INVOKABLE void cancel();
+    // A request to the configured server, with the access token. Shared with the Generator.
+    QNetworkRequest request(const QString& path) const;
+    static QString errorOf(QNetworkReply* reply);
     // Called by the editor when a project opens or closes.
     void resume();
     void detach();
@@ -77,7 +80,6 @@ private:
     int misses = 0;          // Polls in a row where the server could not be reached.
     QTimer poll;
     QElapsedTimer clock;
-    QNetworkRequest request(const QString& path) const;
     void setConnection(const QString& value, const QString& text);
     void say(const QString& text);
     bool ensureTable();
@@ -87,5 +89,4 @@ private:
     void complete(const QByteArray& alignment);
     void fail(const QString& why);
     void forget();
-    static QString errorOf(QNetworkReply* reply);
 };

@@ -39,9 +39,11 @@ private:
 
 Editor::Editor() {
     comfyJobs = new ComfyJobs(this);
+    workflowLibrary = new Workflows(this);
     lyricState.setHistory(&history);
     planState = new Plan(&lyricState, this);
     planState->setHistory(&history);
+    generatorJobs = new Generator(this);  // after the plan and the workflows it uses
     agentBridge = new AgentBridge(this, this);  // serves agents once start() is called
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
@@ -63,6 +65,7 @@ void Editor::closeProject() {
     saveThumbnail();
     thumbTimer.stop();
     comfyJobs->detach();
+    generatorJobs->detach();
     stop();
     listener.reset(); output.reset(); timeline.reset();
     lyricState.unload();
@@ -183,6 +186,7 @@ bool Editor::openProject(const QUrl& folder) {
     emit projectChanged(); emit edited();
     seek(0);
     comfyJobs->resume();
+    generatorJobs->resume();
     return true;
 }
 

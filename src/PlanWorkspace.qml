@@ -368,8 +368,17 @@ Rectangle {
                                 kind: "character"; itemId: characterCard.itemId; field: "voice"; label: "Voice"; item: characterCard.item
                                 PlanText { value: parent.parent.value; placeholder: "For engines that generate speech or singing"; onCommit: t => parent.parent.set(t) }
                             }
+                            PlanField {
+                                kind: "character"; itemId: characterCard.itemId; field: "prompt"; label: "Picture prompt"; item: characterCard.item
+                                hint: "What Generate asks ComfyUI for: the person, on a plain background. Your agent can write it from the identity."
+                                expandable: true
+                                onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                PlanText { objectName: "characterPrompt" + characterCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value
+                                           placeholder: "e.g. Studio portrait of a woman in her twenties, warm brown skin, dark curls, plain grey backdrop"
+                                           onCommit: t => parent.parent.set(t) }
+                            }
                             Text { text: "Reference pictures"; color: "#adb8ba"; font.pixelSize: 11 }
-                            ReferenceStrip { owner: "character"; ownerId: characterCard.itemId }
+                            ReferenceStrip { objectName: "characterRefs" + characterCard.index; owner: "character"; ownerId: characterCard.itemId }
                             Text { text: "Looks"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 4 }
                             Repeater {
                                 model: characterCard.myLooks.length
@@ -394,6 +403,13 @@ Rectangle {
                                         PlanText { value: parent.parent.value; placeholder: "e.g. red wool coat, wet hair"; onCommit: t => parent.parent.set(t) }
                                     }
                                     Small { Layout.alignment: Qt.AlignBottom; text: "Remove"; danger: true; onClicked: ws.plan.run({op: "remove", kind: "look", id: lookRow.itemId}) }
+                                }
+                                PlanField {
+                                    kind: "look"; itemId: lookBlock.itemId; field: "prompt"; label: "Picture prompt"; item: lookBlock.item
+                                    expandable: true
+                                    onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                    PlanText { objectName: "lookPrompt" + lookBlock.itemId; multiline: true; lines: 1; collapsedLines: 3; value: parent.parent.value
+                                               placeholder: "e.g. The same woman, full body, in the red sequinned jumpsuit"; onCommit: t => parent.parent.set(t) }
                                 }
                                 ReferenceStrip { owner: "look"; ownerId: lookBlock.itemId; size: 56 }
                                 }
@@ -459,6 +475,13 @@ Rectangle {
                             PlanField {
                                 kind: "location"; itemId: locationCard.itemId; field: "lighting"; label: "Lighting"; item: locationCard.item
                                 PlanText { value: parent.parent.value; onCommit: t => parent.parent.set(t) }
+                            }
+                            PlanField {
+                                kind: "location"; itemId: locationCard.itemId; field: "prompt"; label: "Picture prompt"; item: locationCard.item
+                                hint: "What Generate asks ComfyUI for: the place, empty, in the video's frame."
+                                expandable: true
+                                onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                PlanText { objectName: "locationPrompt" + locationCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
                             }
                             Text { text: "Reference pictures"; color: "#adb8ba"; font.pixelSize: 11 }
                             ReferenceStrip { owner: "location"; ownerId: locationCard.itemId }
@@ -541,6 +564,8 @@ Rectangle {
             Layout.fillHeight: true
         }
     }
+    // Long prompts open here, with what they should follow.
+    PromptEditor { id: promptEditor }
     // On a narrow window the panel opens over the page.
     LinksPanel {
         objectName: "linksOverlay"

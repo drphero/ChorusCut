@@ -91,6 +91,8 @@ public:
     QVariantMap options() const;
     QString message() const { return notice; }
     Q_INVOKABLE QVariantMap shot(int id) const;
+    // One character, look, location or reference as exported, or an empty map.
+    Q_INVOKABLE QVariantMap item(const QString& kind, int id) const { return has(kind, id) ? exported(kind, id) : QVariantMap{}; }
     // Every kind's fields with their types and allowed values, for agents.
     QVariantMap schema() const;
     // Checks that concern one shot, for the inspector.

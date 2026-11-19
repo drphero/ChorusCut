@@ -3,14 +3,18 @@
 usage: comfy_stub.py PORT ALIGNMENT_JSON
 
 Implements the endpoints Chorus Cut uses (/system_stats, /object_info/<node>, /upload/image,
-/prompt, /history/<id>, /queue, /interrupt). A queued job answers with ALIGNMENT_JSON,
-every word shifted by the stub's current "shift" in milliseconds. Control endpoints:
-  POST /_stub/mode  {"mode": "finish" | "hold" | "error", "shift": ms}
+/prompt, /history/<id>, /queue, /interrupt, /view). An alignment job answers with ALIGNMENT_JSON,
+every word shifted by the stub's current "shift" in milliseconds. Any other graph is a picture
+job: each SaveImage node outputs one PNG (PreviewImage a temporary one), served by /view.
+Control endpoints:
+  POST /_stub/mode  {"mode": "finish" | "hold" | "wait" | "error", "shift": ms}   (wait: pending in the queue)
   POST /_stub/release   finish held jobs
   GET  /_stub/log       what the client sent
   /ws?clientId=...      WebSocket: sends "progress" for held jobs queued by that client
 """
 import base64
+import struct
+import zlib
 import hashlib
 import json
 import sys
@@ -22,6 +26,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT, FIXTURE = int(sys.argv[1]), sys.argv[2]
 lock = threading.Lock()
 state = {"mode": "finish", "shift": 0, "jobs": {}, "uploads": [], "prompts": [], "deleted": [], "interrupted": 0}
+
+
+def png(name):
+    """An 8x8 PNG in a colour taken from the name, so each picture is different."""
+    r, g, b = hashlib.sha1(name.encode()).digest()[:3]
+    raw = b"".join(b"\x00" + bytes([r, g, b]) * 8 for _ in range(8))
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def picture_outputs(prompt, number):
+    outputs = {}
+    for node, spec in prompt.items():
+        kind = spec.get("class_type", "")
+        if kind == "SaveImage":
+            prefix = spec["inputs"].get("filename_prefix", "ComfyUI")
+            folder, _, base = prefix.rpartition("/")
+            outputs[node] = {"images": [{"filename": f"{base}_{number:05}_.png", "subfolder": folder, "type": "output"}]}
+        elif kind == "PreviewImage":
+            outputs[node] = {"images": [{"filename": f"preview_{number:05}_.png", "subfolder": "", "type": "temp"}]}
+    return outputs
 
 
 def result(shift):
@@ -85,12 +112,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"ChorusCutAlignLyrics": {"input": {}}})
             if self.path == "/queue":
                 running = [[0, i, {}, {}, []] for i, j in state["jobs"].items() if j["state"] == "running"]
-                return self.send({"queue_running": running, "queue_pending": []})
+                pending = [[0, i, {}, {}, []] for i, j in state["jobs"].items() if j["state"] == "waiting"]
+                return self.send({"queue_running": running, "queue_pending": pending})
+            if self.path.startswith("/view?"):
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                name = q.get("filename", [""])[0]
+                state.setdefault("views", []).append({"filename": name, "subfolder": q.get("subfolder", [""])[0], "type": q.get("type", [""])[0]})
+                body = png(name)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path.startswith("/history/"):
                 job_id = self.path.split("/")[-1]
                 job = state["jobs"].get(job_id)
-                if not job or job["state"] in ("running", "interrupted"):
+                if not job or job["state"] in ("running", "interrupted", "waiting"):
                     return self.send({})
+                if job.get("outputs") is not None and job["state"] == "done":
+                    return self.send({job_id: {"status": {"status_str": "success", "completed": True, "messages": []},
+                                               "outputs": job["outputs"]}})
                 if job["state"] == "error":
                     return self.send({job_id: {"status": {"status_str": "error", "completed": False, "messages": [
                         ["execution_error", {"exception_message": "Stub failure for testing"}]]}, "outputs": {}}})
@@ -115,8 +158,10 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = str(uuid.uuid4())
                 state["prompts"].append(prompt)
                 mode = state["mode"]
-                state["jobs"][job_id] = {"state": "running" if mode == "hold" else mode if mode == "error" else "done",
-                                         "result": result(state["shift"]), "client": request.get("client_id", "")}
+                picture = not any(n.get("class_type") == "ChorusCutAlignLyrics" for n in prompt.values())
+                state["jobs"][job_id] = {"state": {"hold": "running", "error": "error", "wait": "waiting"}.get(mode, "done"),
+                                         "result": "" if picture else result(state["shift"]), "client": request.get("client_id", ""),
+                                         "outputs": picture_outputs(prompt, len(state["prompts"])) if picture else None}
                 return self.send({"prompt_id": job_id, "number": len(state["prompts"]), "node_errors": {}})
             if self.path == "/queue":
                 state["deleted"] += json.loads(raw).get("delete", [])
@@ -132,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"ok": True})
             if self.path == "/_stub/release":
                 for j in state["jobs"].values():
-                    if j["state"] == "running":
+                    if j["state"] in ("running", "waiting"):
                         j["state"] = "done"
                 return self.send({"ok": True})
         self.send({"error": "not found"}, 404)

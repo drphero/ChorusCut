@@ -2,6 +2,8 @@
 #include <QTimer>
 #include "lyrics.h"
 #include "comfy.h"
+#include "generate.h"
+#include "workflows.h"
 #include "plan.h"
 #include "agent.h"
 #include <mlt++/Mlt.h>
@@ -28,6 +30,8 @@ class Editor : public QObject {
     Q_OBJECT
     Q_PROPERTY(Lyrics* lyrics READ lyrics CONSTANT)
     Q_PROPERTY(ComfyJobs* comfy READ comfy CONSTANT)
+    Q_PROPERTY(Workflows* workflows READ workflows CONSTANT)
+    Q_PROPERTY(Generator* generator READ generator CONSTANT)
     Q_PROPERTY(Plan* plan READ plan CONSTANT)
     Q_PROPERTY(AgentBridge* agent READ agent CONSTANT)
     Q_PROPERTY(bool monitorMuted READ monitorMuted WRITE setMonitorMuted NOTIFY monitorChanged)
@@ -59,6 +63,8 @@ public:
     Editor();
     Lyrics* lyrics() { return &lyricState; }
     ComfyJobs* comfy() { return comfyJobs; }
+    Workflows* workflows() { return workflowLibrary; }
+    Generator* generator() { return generatorJobs; }
     Plan* plan() { return planState; }
     AgentBridge* agent() { return agentBridge; }
     Project* current() { return project.get(); }
@@ -133,6 +139,8 @@ private:
     std::unique_ptr<Project> project;
     Lyrics lyricState;
     ComfyJobs* comfyJobs;
+    Workflows* workflowLibrary;
+    Generator* generatorJobs;
     Plan* planState;
     AgentBridge* agentBridge;
     int passageEnd = -1;

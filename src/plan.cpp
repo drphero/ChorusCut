@@ -56,9 +56,9 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         {"concept", {{"brief", "text"}, {"logline", "text"}, {"treatment", "text"}, {"videoKind", "enum"}, {"mix", "text"}, {"aspect", "enum"},
                      {"resolution", "text"}, {"style", "text"}, {"palette", "text"}, {"lighting", "text"}, {"era", "text"},
                      {"lens", "text"}, {"grade", "text"}, {"rules", "texts"}}},
-        {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}}},
-        {"look", {{"name", "text"}, {"description", "text"}}},
-        {"location", {{"name", "text"}, {"description", "text"}, {"timeOfDay", "enum"}, {"lighting", "text"}}},
+        {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}, {"prompt", "text"}}},
+        {"look", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}}},
+        {"location", {{"name", "text"}, {"description", "text"}, {"timeOfDay", "enum"}, {"lighting", "text"}, {"prompt", "text"}}},
         {"arc", {{"happens", "text"}, {"beat", "text"}, {"density", "enum"}}},
         {"singer", {{"singers", "singers"}}},
         {"reference", {{"role", "enum"}, {"approved", "bool"}, {"notes", "text"}}},
@@ -619,12 +619,18 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     if (role.isEmpty()) role = owner == "location" ? "setting" : owner == "look" ? "look" : siblings.isEmpty() ? "face" : "body";
     const int id = nextId("reference");
     const int position = siblings.isEmpty() ? 0 : row("reference", siblings.last())["position"].toInt() + 1;
-    write("reference", id, {{"owner", owner}, {"ownerId", ownerId}, {"file", relative}, {"name", QFileInfo(source).fileName()},
-                            {"width", size.width()}, {"height", size.height()}, {"position", position},
-                            {"source", by == "user" ? "imported" : "agent"}, {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}});
-    if (pendingLabel.isEmpty()) pendingLabel = "Add reference";
-    // Pictures the user brings are approved; ones an agent adds wait for the user.
-    r = setFields("reference", id, {{"role", role}, {"approved", by == "user"}}, by, "replace");
+    // Generated pictures come from the app's own jobs (never an agent's command) and keep how
+    // they were made: the workflow, prompt and seed.
+    const bool generated = by == "user" && c.value("source").toString() == "generated";
+    QJsonObject entry{{"owner", owner}, {"ownerId", ownerId}, {"file", relative},
+                      {"name", c.value("name").toString().isEmpty() ? QFileInfo(source).fileName() : c.value("name").toString()},
+                      {"width", size.width()}, {"height", size.height()}, {"position", position},
+                      {"source", generated ? "generated" : by == "user" ? "imported" : "agent"}, {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
+    if (generated) entry["generation"] = QJsonObject::fromVariantMap(c.value("generation").toMap());
+    write("reference", id, entry);
+    if (pendingLabel.isEmpty()) pendingLabel = generated ? "Add generated reference" : "Add reference";
+    // Pictures the user brings are approved; generated ones and ones an agent adds wait for the user.
+    r = setFields("reference", id, {{"role", role}, {"approved", by == "user" && !generated}}, generated ? "user" : by, "replace");
     r.id = id;
     return r;
 }

@@ -796,6 +796,63 @@ int main(int argc, char** argv) {
         click(find(window, "workspaceEdit"));
     }
 
+    // ---- E3. Long prompts: folded on the card, open while editing, and the large editor
+    {
+        QStringList many;
+        for (int i = 0; i < 120; ++i) many << "soft" << "rim" << "light";
+        const QString longPrompt = "Studio portrait, " + many.join(" ");
+        const int words = longPrompt.split(' ', Qt::SkipEmptyParts).size();
+        run(cmd({{"op", "set"}, {"kind", "character"}, {"id", mara}, {"fields", QVariantMap{{"prompt", longPrompt}}}}));
+        click(find(window, "workspacePlan"));
+        click(find(window, "planPage_cast"));
+        auto card = find(window, "characterCard0");
+        auto field = card ? findItem(card, "characterPrompt0") : nullptr;
+        if (!field) return fail(72, "no picture prompt on Mara's card");
+        scrollIntoView(field);
+        auto more = findItem(field, "showAll");
+        if (!field->property("collapsed").toBool() || !more || field->height() > 110 ||
+            more->property("text").toString() != QString("%1 words  ·  Show all").arg(words))
+            return fail(72, QString("the long prompt is not folded (height %1, %2)").arg(field->height()).arg(more ? more->property("text").toString() : "no Show all"));
+        capture("plan-prompt-folded");
+        const double folded = field->height();
+        click(more);
+        if (field->property("collapsed").toBool() || field->height() < folded + 40) return fail(72, "Show all did not open the prompt");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(150);
+        if (!field->property("collapsed").toBool()) return fail(72, "leaving the field did not fold it again");
+        // The large editor, with what the prompt follows.
+        click(findItem(card, "expand_character_prompt"));
+        auto promptEditor = window->findChild<QObject*>("promptEditor");
+        if (!promptEditor || !waitFor([&] { return promptEditor->property("opened").toBool(); }, 1500)) return fail(73, "⤢ Editor did not open the editor");
+        auto editorText = find(window, "promptEditorText");
+        if (!editorText || editorText->property("text") != longPrompt || find(window, "promptEditorTitle")->property("text") != "Mara")
+            return fail(73, "the editor does not show Mara's prompt");
+        bool identity = false;
+        for (const auto& v : promptEditor->property("context").toList())
+            identity |= v.toMap()["label"] == "Identity" && v.toMap()["text"] == plan->item("character", mara)["fields"].toMap()["identity"];
+        if (!identity) return fail(73, "the editor does not show Mara's identity beside the prompt");
+        capture("plan-prompt-editor");
+        selectAll();
+        typeText("Close up of a face");
+        QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+        QTest::qWait(150);
+        if (promptEditor->property("visible").toBool() || plan->item("character", mara)["fields"].toMap()["prompt"] != "Close up of a face")
+            return fail(74, "⌘Return did not save the prompt and close");
+        QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+        if (plan->item("character", mara)["fields"].toMap()["prompt"] != longPrompt) return fail(74, "⌘Z did not bring the long prompt back");
+        click(findItem(card, "expand_character_prompt"));
+        waitFor([&] { return promptEditor->property("opened").toBool(); }, 1500);
+        typeText(" more");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(150);
+        if (promptEditor->property("visible").toBool() || plan->item("character", mara)["fields"].toMap()["prompt"] != longPrompt)
+            return fail(74, "Esc did not cancel the editor");
+        // A look's prompt wraps over several lines now.
+        auto lookPrompt = find(window, QString("lookPrompt%1").arg(coat));
+        if (!lookPrompt || !lookPrompt->property("multiline").toBool()) return fail(75, "the look's prompt is still one line");
+        click(find(window, "workspaceEdit"));
+    }
+
     // ---- F. Reopen: the plan made with the mouse and keyboard persisted.
     const QVariantList uiShots = plan->shots();
     const QVariantMap uiConcept = plan->concept();
@@ -806,6 +863,7 @@ int main(int argc, char** argv) {
             << "and real input (Plan pages, typing, combos, locks, double-click a shot, snap trim, drag to V2, undo, singers,"
             << "Add shot, checks panel fix and selection, ruler coverage, Delete), reference pictures (import, roles, approval,"
             << "order, cascade, missing files, G3, drag and drop, menu, shot references), links (section, character and location"
-            << "links, overview, card summaries, chips, Back, focus, Show card, open a shot in Edit, narrow window), reopen.";
+            << "links, overview, card summaries, chips, Back, focus, Show card, open a shot in Edit, narrow window), long prompts"
+            << "(folded, Show all, the large editor with context, ⌘Return, ⌘Z, Esc), reopen.";
     return 0;
 }

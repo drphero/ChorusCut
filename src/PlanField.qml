@@ -19,6 +19,9 @@ ColumnLayout {
     // Lists from C++ are array-like but not JS arrays, so test their length.
     readonly property bool empty: value === undefined || value === null || value === "" || (typeof value === "object" && value.length === 0)
     readonly property var list: value !== undefined && value !== null && typeof value === "object" && value.length !== undefined ? Array.from(value) : []
+    // A button in the header that asks for a bigger editor (see PromptEditor).
+    property bool expandable: false
+    signal expandRequested()
     default property alias content: holder.data
     Layout.fillWidth: true
     spacing: 3
@@ -38,6 +41,15 @@ ColumnLayout {
             font.pixelSize: 11
         }
         Item { Layout.fillWidth: true }
+        Text {
+            objectName: "expand_" + pf.kind + "_" + pf.field
+            visible: pf.expandable
+            text: "⤢ Editor"
+            color: expandMouse.containsMouse ? "#9fe3d0" : "#7f9a9f"
+            font.pixelSize: 10
+            MouseArea { id: expandMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: pf.expandRequested() }
+            ToolTip.visible: expandMouse.containsMouse; ToolTip.delay: 500; ToolTip.text: "Read and edit it in a large editor, with what it should follow"
+        }
         Rectangle {
             visible: pf.prov !== undefined && pf.prov.by === "agent"
             implicitWidth: agentText.implicitWidth + 8; implicitHeight: 14; radius: 3; color: "#2f3d5c"
