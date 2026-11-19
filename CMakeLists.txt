@@ -8,7 +8,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MLT REQUIRED IMPORTED_TARGET mlt++-7)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavutil)
 add_library(chorus_editor STATIC src/lyrics.cpp src/editor.cpp src/editor.h src/xml.cpp src/project.cpp
-            src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h)
+            src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h
+            src/agent.cpp src/agent.h src/agent_tools.cpp src/agent_tools.h)
 target_include_directories(chorus_editor PUBLIC src)
 target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain)
 set(CHORUS_ALIGNMENT_PYTHON "python3" CACHE STRING "Python with torch and torchaudio for local lyric alignment")
@@ -19,6 +20,12 @@ set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManage
 qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py)
 qt_add_resources(ChorusCut ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCut PRIVATE chorus_editor Qt6::QuickControls2)
+
+# The stdio MCP server agents launch; it lives inside the app bundle beside the app.
+qt_add_executable(choruscut-mcp src/mcp_shim.cpp src/agent_tools.cpp)
+target_link_libraries(choruscut-mcp PRIVATE Qt6::Core Qt6::Network)
+set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
+add_dependencies(ChorusCut choruscut-mcp)
 set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.prototype)
 
 # Uses the same editor commands as QML. Build explicitly for the import regression.
@@ -49,3 +56,9 @@ target_link_libraries(ChorusCutComfyCheck PRIVATE chorus_editor Qt6::QuickContro
 qt_add_executable(ChorusCutPlanCheck EXCLUDE_FROM_ALL tests/plan_check.cpp)
 qt_add_resources(ChorusCutPlanCheck plan_ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCutPlanCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)
+
+# Agent control through the real choruscut-mcp over stdio, with real input. Build explicitly; see docs/TESTING.md.
+qt_add_executable(ChorusCutMcpCheck EXCLUDE_FROM_ALL tests/mcp_check.cpp)
+qt_add_resources(ChorusCutMcpCheck mcp_ui PREFIX "/" FILES ${CHORUS_QML})
+target_link_libraries(ChorusCutMcpCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)
+add_dependencies(ChorusCutMcpCheck choruscut-mcp)

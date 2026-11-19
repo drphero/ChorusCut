@@ -3,6 +3,7 @@
 #include "lyrics.h"
 #include "comfy.h"
 #include "plan.h"
+#include "agent.h"
 #include <mlt++/Mlt.h>
 #include <QtQuick/QQuickPaintedItem>
 #include <QImage>
@@ -28,6 +29,7 @@ class Editor : public QObject {
     Q_PROPERTY(Lyrics* lyrics READ lyrics CONSTANT)
     Q_PROPERTY(ComfyJobs* comfy READ comfy CONSTANT)
     Q_PROPERTY(Plan* plan READ plan CONSTANT)
+    Q_PROPERTY(AgentBridge* agent READ agent CONSTANT)
     Q_PROPERTY(bool monitorMuted READ monitorMuted WRITE setMonitorMuted NOTIFY monitorChanged)
     Q_PROPERTY(int monitorDb READ monitorDb WRITE setMonitorDb NOTIFY monitorChanged)
     Q_PROPERTY(int frame READ frame NOTIFY cursorChanged)
@@ -58,6 +60,7 @@ public:
     Lyrics* lyrics() { return &lyricState; }
     ComfyJobs* comfy() { return comfyJobs; }
     Plan* plan() { return planState; }
+    AgentBridge* agent() { return agentBridge; }
     Project* current() { return project.get(); }
     Q_INVOKABLE void seekLyric(int startMs);
     Q_INVOKABLE void playLyric(int startMs, int endMs);
@@ -131,6 +134,7 @@ private:
     Lyrics lyricState;
     ComfyJobs* comfyJobs;
     Plan* planState;
+    AgentBridge* agentBridge;
     int passageEnd = -1;
     int passageStart = -1;
     QUndoStack history;

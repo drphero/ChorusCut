@@ -42,6 +42,7 @@ Editor::Editor() {
     lyricState.setHistory(&history);
     planState = new Plan(&lyricState, this);
     planState->setHistory(&history);
+    agentBridge = new AgentBridge(this, this);  // serves agents once start() is called
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
     connect(&history, &QUndoStack::cleanChanged, this, changed);

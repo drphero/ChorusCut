@@ -13,6 +13,7 @@
 #include <QSqlQuery>
 #include <QUndoStack>
 #include <algorithm>
+#include <functional>
 #include <cmath>
 
 namespace {
@@ -126,7 +127,17 @@ bool Plan::load(Project& next, QString& error) {
         while (q.next()) {
             const auto doc = QJsonDocument::fromJson(q.value(2).toByteArray());
             if (!doc.isObject()) { error = "The project contains an unreadable plan"; items.clear(); return false; }
-            const auto row = doc.object();
+            QJsonObject row = doc.object();
+            // Older builds kept provenance for fields that were unlocked while empty; drop it.
+            QJsonObject prov = row["prov"].toObject();
+            const QJsonObject fields = row["fields"].toObject();
+            for (const QString& key : prov.keys()) {
+                QJsonObject p = prov[key].toObject();
+                if (p["locked"].toBool()) continue;
+                if (empty(fields.value(key))) prov.remove(key);
+                else if (p.contains("locked")) { p.remove("locked"); prov[key] = p; }
+            }
+            if (row.contains("prov")) row["prov"] = prov;
             items[q.value(0).toString()][q.value(1).toInt()] = row;
             clock = std::max({clock, row["edited"].toInt(), row["written"].toInt()});
         }
@@ -209,7 +220,7 @@ QVariantMap Plan::run(const QVariantMap& command) {
         invalidate(); emit changed();
         return failed(error);
     }
-    QVariantMap result{{"ok", true}, {"id", r.id}, {"skipped", r.skipped}};
+    QVariantMap result{{"ok", true}, {"id", r.id}, {"skipped", r.skipped}, {"ids", r.ids}, {"refs", r.refs}, {"changes", int(pending.size())}};
     if (pending.isEmpty()) return result;
     const QString label = command.value("label").toString().isEmpty() ? pendingLabel : command.value("label").toString();
     if (history) history->push(new PlanCommand(this, pending, label.isEmpty() ? "Plan edit" : label));
@@ -227,12 +238,29 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     if (op == "batch") {
         Result total;
         label(c.value("label", "Plan changes").toString());
-        for (const auto& v : c.value("commands").toList()) {
-            QVariantMap sub = v.toMap();
-            Result r = dispatch(sub, sub.value("by", by).toString(), sub.value("mode", mode).toString());
-            if (!r.ok) return r;
+        // "$name" stands for the id an earlier command in this batch created with "ref": "name".
+        std::function<QVariant(const QVariant&)> resolve = [&](const QVariant& v) -> QVariant {
+            if (v.typeId() == QMetaType::QString && v.toString().startsWith('$') && total.refs.contains(v.toString().mid(1)))
+                return total.refs.value(v.toString().mid(1));
+            if (v.typeId() == QMetaType::QVariantList) { QVariantList l = v.toList(); for (auto& x : l) x = resolve(x); return l; }
+            if (v.typeId() == QMetaType::QVariantMap) { QVariantMap m = v.toMap(); for (auto& x : m) x = resolve(x); return m; }
+            return v;
+        };
+        const QVariantList commands = c.value("commands").toList();
+        for (int i = 0; i < commands.size(); ++i) {
+            QVariantMap sub = resolve(commands[i]).toMap();
+            const QString subBy = by == "agent" ? QStringLiteral("agent") : sub.value("by", by).toString();
+            if (subBy != "user" && subBy != "agent") return error("by must be \"user\" or \"agent\".");
+            Result r = dispatch(sub, subBy, sub.value("mode", mode).toString());
+            if (!r.ok) {
+                if (commands.size() > 1) r.error = QString("Command %1 (%2): %3").arg(i + 1).arg(sub.value("op").toString(), r.error);
+                return r;
+            }
             total.skipped += r.skipped;
+            total.ids.append(r.id);
             if (r.id) total.id = r.id;
+            if (sub.contains("ref")) total.refs[sub.value("ref").toString()] = r.id;
+            for (auto it = r.refs.begin(); it != r.refs.end(); ++it) total.refs[it.key()] = it.value();
         }
         return total;
     }
@@ -303,13 +331,22 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         QJsonObject p = prov[field].toObject();
         const bool locked = c.value("locked", true).toBool();
         if (p["locked"].toBool() == locked) return {};
-        p["locked"] = locked;
-        if (!p.contains("by")) p["by"] = "user";
-        prov[field] = p;
-        r["prov"] = prov;
         if (!r.contains("fields")) r["fields"] = QJsonObject{};
+        if (locked) {
+            p["locked"] = true;
+            if (!p.contains("by")) p["by"] = "user";
+            prov[field] = p;
+        } else if (empty(r["fields"].toObject().value(field))) {
+            prov.remove(field);  // nothing written and nothing locked: no provenance left
+        } else {
+            p.remove("locked");
+            prov[field] = p;
+        }
+        r["prov"] = prov;
         if (kind == "arc" && !r.contains("section")) r["section"] = sections().value(id).toMap()["label"].toString();
-        write(kind, id, r);
+        // A concept, arc or singer row that only existed for the lock goes away with it.
+        const bool bare = r["fields"].toObject().isEmpty() && prov.isEmpty();
+        write(kind, id, bare && (kind == "concept" || kind == "arc" || kind == "singer") ? QJsonObject{} : r);
         label((locked ? "Lock " : "Unlock ") + nameOf(kind, id) + " " + field);
         return {};
     }
@@ -849,6 +886,25 @@ QVariantMap Plan::options() const {
     }
     out["required"] = kRequired;
     return out;
+}
+
+QVariantMap Plan::schema() const {
+    QVariantMap kinds;
+    for (auto k = fieldTable().begin(); k != fieldTable().end(); ++k) {
+        QVariantMap fields;
+        for (auto f = k.value().begin(); f != k.value().end(); ++f) {
+            QVariantMap spec{{"type", f.value()}};
+            if (f.value() == "enum") {
+                QVariantList values;
+                for (const auto& o : optionTable().value(k.key() == "reference" && f.key() == "role" ? "refRole" : f.key()))
+                    values.append(QVariantMap{{"value", o.value}, {"label", o.label}});
+                spec["options"] = values;
+            }
+            fields[f.key()] = spec;
+        }
+        kinds[k.key()] = fields;
+    }
+    return kinds;
 }
 
 QVariantList Plan::checks() const {

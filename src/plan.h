@@ -59,10 +59,13 @@ public:
     //                                          when the user adds it, awaiting approval from an agent)
     //   ref.move   {id, position}              reorders a reference among its owner's
     //   set/remove {kind: "reference", ...}    role, approved and notes; or take it off the list
-    //   batch      {label, commands: [...]}    all or nothing, one undo step
+    //   batch      {label, commands: [...]}    all or nothing, one undo step. A command may carry
+    //                                          "ref": "name"; later commands write "$name" for the
+    //                                          id it created. The result lists each command's id.
     // Common: by = "user" (default) or "agent". Agent writes take mode = "agent" (default: fill
     // empty or agent-owned fields), "fill" (empty only) or "replace" (also user-owned); locked
-    // fields are never written by an agent, and skipped fields are listed in the result.
+    // fields are never written by an agent, and skipped fields are listed in the result. Inside an
+// agent's batch every command is the agent's, whatever it says.
     Q_INVOKABLE QVariantMap run(const QVariantMap& command);
 
     QVariantMap concept() const;
@@ -86,6 +89,8 @@ public:
     QVariantMap options() const;
     QString message() const { return notice; }
     Q_INVOKABLE QVariantMap shot(int id) const;
+    // Every kind's fields with their types and allowed values, for agents.
+    QVariantMap schema() const;
     // Checks that concern one shot, for the inspector.
     Q_INVOKABLE QVariantList checksFor(int shot) const;
     // Lyric rows overlapping a frame span, with their text and singers.
@@ -112,7 +117,7 @@ private:
     mutable bool checksValid = false;
     mutable QVariantList cachedChecks;
 
-    struct Result { bool ok = true; QString error; int id = 0; QStringList skipped; };
+    struct Result { bool ok = true; QString error; int id = 0; QStringList skipped; QVariantList ids; QVariantMap refs; };
     Result dispatch(const QVariantMap& command, const QString& by, const QString& mode);
     Result setFields(const QString& kind, int id, const QVariantMap& fields, const QString& by, const QString& mode);
     Result shotAdd(const QVariantMap& c, const QString& by);

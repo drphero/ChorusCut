@@ -13,6 +13,8 @@
 #include <QQuickWindow>
 #include <QStyleHints>
 #include <QTest>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QDir>
 #include <QDropEvent>
 #include <QImage>
@@ -67,8 +69,20 @@ int main(int argc, char** argv) {
     app.setApplicationName("Plan Check");
     Mlt::Factory::init();
     const QUrl project = QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath());
+    {
+        // A concept row as older builds left it after locking and unlocking an empty logline.
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "seed");
+        db.setDatabaseName(QDir(project.toLocalFile()).filePath("project.sqlite"));
+        QSqlQuery q(db.open() ? db : QSqlDatabase());
+        if (!q.exec("CREATE TABLE IF NOT EXISTS plan_items(kind TEXT NOT NULL, id INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id))") ||
+            !q.exec("INSERT OR REPLACE INTO plan_items VALUES('concept',1,'{\"fields\":{},\"prov\":{\"logline\":{\"by\":\"user\",\"locked\":false}}}')"))
+            return fail(2, "could not seed the plan");
+        q.finish(); db.close();
+    }
+    QSqlDatabase::removeDatabase("seed");
     Editor editor;
     if (!editor.openProject(project)) return fail(2, editor.status());
+    if (!editor.plan()->concept()["prov"].toMap().isEmpty()) return fail(2, "provenance of an empty, unlocked field survived opening the project");
     if (!editor.lyrics()->importAlignment(QUrl::fromLocalFile(QFileInfo(argv[2]).absoluteFilePath())))
         return fail(2, editor.lyrics()->message());
     Plan* plan = editor.plan();
@@ -102,6 +116,14 @@ int main(int argc, char** argv) {
         return fail(13, "replace mode should write the unlocked user field and skip the locked one");
     if (ok(run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "style"}, {"locked", false}, {"by", "agent"}}))))
         return fail(13, "an agent unlocked a field");
+    // Locking an empty field and unlocking it again leaves no provenance behind.
+    run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "treatment"}, {"locked", true}}));
+    if (!plan->concept()["prov"].toMap()["treatment"].toMap()["locked"].toBool()) return fail(13, "an empty field could not be locked");
+    run(cmd({{"op", "lock"}, {"kind", "concept"}, {"field", "treatment"}, {"locked", false}}));
+    if (plan->concept()["prov"].toMap().contains("treatment")) return fail(13, "unlocking an empty field left provenance behind");
+    run(cmd({{"op", "lock"}, {"kind", "arc"}, {"id", 3}, {"field", "beat"}, {"locked", true}}));
+    run(cmd({{"op", "lock"}, {"kind", "arc"}, {"id", 3}, {"field", "beat"}, {"locked", false}}));
+    if (!plan->arc()[3].toMap()["prov"].toMap().isEmpty()) return fail(13, "unlocking an empty arc field left provenance behind");
     if (ok(run(cmd({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"aspect", "7:3"}}}}))))
         return fail(14, "an unknown aspect ratio was accepted");
 

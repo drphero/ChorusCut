@@ -66,6 +66,8 @@ int main(int argc,char** argv) {
     auto monitor=engine.rootObjects().first()->findChild<Monitor*>("monitor");
     if (!monitor) return 6;
     QObject::connect(&editor,&Editor::imageReady,monitor,&Monitor::showImage);
+    // Agents (Claude Code, Codex) reach the open project through choruscut-mcp; not in scripted runs.
+    if (!args.contains("--screenshot") && !args.contains("--check-playback")) editor.agent()->start();
     editor.seek(0);
     const int shotAt = args.indexOf("--screenshot");
     if (shotAt >= 0) {

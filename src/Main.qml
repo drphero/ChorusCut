@@ -64,7 +64,7 @@ ApplicationWindow {
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -235,6 +235,59 @@ ApplicationWindow {
         }
     }
 
+    // Connecting an agent: Claude Code, Codex or any MCP client runs choruscut-mcp, which talks to this app.
+    Popup {
+        id: agentSheet
+        objectName: "agentSheet"
+        anchors.centerIn: parent
+        width: Math.min(640, win.width - 80)
+        modal: true
+        padding: 20
+        background: Rectangle { color: "#1d2930"; radius: 6; border.color: "#34434a" }
+        component CommandRow: RowLayout {
+            id: cmdRow
+            property string label
+            property string command
+            Layout.fillWidth: true
+            spacing: 8
+            Text { text: cmdRow.label; color: win.quiet; font.pixelSize: 12; Layout.preferredWidth: 86 }
+            TextField {
+                Layout.fillWidth: true
+                readOnly: true; selectByMouse: true
+                text: cmdRow.command
+                color: win.ink; font.family: "Menlo"; font.pixelSize: 11
+                onTextChanged: cursorPosition = 0
+                Component.onCompleted: cursorPosition = 0
+                background: Rectangle { color: "#162027"; radius: 4; border.color: "#34434a" }
+            }
+            Action { text: "Copy"; onClicked: editor.agent.copy(cmdRow.command) }
+        }
+        contentItem: ColumnLayout {
+            spacing: 10
+            LabelText { text: "Agent"; font.pixelSize: 17; font.bold: true }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet
+                text: "Plan with your own Claude Code or Codex. It works on the project open here: you see every change as it lands, each pass is one step you can undo, and fields you wrote or locked are left alone. Run one of these once in a terminal to add Chorus Cut to your agent:"
+            }
+            CommandRow { label: "Claude Code"; command: editor.agent.claudeCommand }
+            CommandRow { label: "Codex"; command: editor.agent.codexCommand }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
+                text: "Other MCP clients can run the same program over stdio: " + editor.agent.shimPath + "\n\nThen just ask your agent to plan the video in Chorus Cut. In Claude Code, /mcp__ChorusCut__plan starts it too."
+            }
+            Label {
+                objectName: "agentStatus"
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: editor.agent.note || (editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "No agent connected right now.")
+                color: editor.agent.note ? "#e7b75f" : editor.agent.clients.length ? win.mint : win.quiet
+            }
+            RowLayout {
+                Item { Layout.fillWidth: true }
+                Action { text: "Done"; active: true; onClicked: agentSheet.close() }
+            }
+        }
+    }
+
     // Lyric text: paste, save, align locally or import a GPU alignment.
     Popup {
         id: lyricsEditor
@@ -329,6 +382,17 @@ ApplicationWindow {
                     width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
                     color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "missingNode" ? "#e7b75f"
                          : editor.comfy.connection === "unreachable" ? "#f0a08f" : "#748084"
+                }
+            }
+            Action {
+                objectName: "agentButton"
+                text: "Agent"
+                leftPadding: 26
+                onClicked: agentSheet.open()
+                ToolTip.text: editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "Plan with Claude Code or Codex"
+                Rectangle {
+                    width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
+                    color: editor.agent.clients.length ? win.mint : editor.agent.note ? "#e7b75f" : "#748084"
                 }
             }
             RowLayout {
@@ -480,6 +544,42 @@ ApplicationWindow {
             Layout.fillWidth: true; elide: Text.ElideMiddle; color: win.quiet; font.pixelSize: 12
             text: editor.status || (editor.comfy.busy ? editor.comfy.jobText : "") || editor.plan.message || editor.lyrics.message ||
                   "Drag lyrics and shots to move them, drag edges to trim. Double-click V1 or V2 to plan a shot. Pinch or ⌘-scroll to zoom."
+        }
+    }
+
+    // After an agent's pass: what it did, and a one-click undo while it is the latest step.
+    Rectangle {
+        id: passBanner
+        objectName: "agentPassBanner"
+        property string label: ""
+        property int changes: 0
+        property string client: ""
+        visible: label.length > 0 && !win.managerOpen
+        z: 50
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 52
+        width: passRow.implicitWidth + 24; height: 36
+        radius: 6; color: "#24364a"; border.color: "#5c7fa8"
+        Connections {
+            target: editor.agent
+            function onPassApplied(label, changes, client) { passBanner.label = label; passBanner.changes = changes; passBanner.client = client }
+        }
+        RowLayout {
+            id: passRow
+            anchors.centerIn: parent
+            spacing: 10
+            Text {
+                text: (passBanner.client ? passBanner.client + " · " : "") + passBanner.label.replace(/^Agent: /, "")
+                      + " — " + passBanner.changes + (passBanner.changes === 1 ? " change" : " changes")
+                color: win.ink; font.pixelSize: 13
+            }
+            Tab {
+                objectName: "agentPassUndo"
+                text: "Undo"
+                enabled: editor.undoText === passBanner.label
+                onClicked: { editor.undo(); passBanner.label = "" }
+            }
+            Tab { objectName: "agentPassDismiss"; text: "Dismiss"; onClicked: passBanner.label = "" }
         }
     }
 
