@@ -21,6 +21,7 @@ CANON = ["<blank>"] + list("abcdefghijklmnopqrstuvwxyz'")
 FRAME = 0.02  # seconds per wav2vec2 emission frame
 MODELS = {
     "w2v_large": {"en": "facebook/wav2vec2-large-960h-lv60-self"},
+    # parakeet-ctc-1.1b scored the same in this four-voter pipeline (2026-11-19) and is slower.
     "parakeet": {"en": "nvidia/parakeet-ctc-0.6b"},
     "xlsr": {"en": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
              "fr": "jonatasgrosman/wav2vec2-large-xlsr-53-french",
@@ -171,14 +172,23 @@ def wav2vec2_emissions(repo, wave, device, cache_dir):
 
 
 def parakeet_words(repo, wave, words, device, cache_dir):
-    """Subword CTC forced alignment with Parakeet (run in float32: float16 gives NaN logits)."""
+    """Subword CTC forced alignment with Parakeet.
+
+    The 1.1B model runs in float16 on CUDA. The 0.6B model gives NaN logits in float16, so it
+    runs in float32, and any NaN result is retried in float32.
+    """
     from transformers import AutoProcessor, ParakeetForCTC
     processor = AutoProcessor.from_pretrained(repo, cache_dir=cache_dir)
-    model = ParakeetForCTC.from_pretrained(repo, torch_dtype=torch.float32, cache_dir=cache_dir).to(device).eval()
     feats = processor.feature_extractor(wave, sampling_rate=16000, return_tensors="pt")
-    with torch.inference_mode():
-        logits = model(input_features=feats.input_features.to(device),
-                       attention_mask=feats.attention_mask.to(device)).logits[0].float()
+    half = device == "cuda" and "1.1b" in repo
+    for dtype in ([torch.float16] if half else []) + [torch.float32]:
+        model = ParakeetForCTC.from_pretrained(repo, torch_dtype=dtype, cache_dir=cache_dir).to(device).eval()
+        with torch.inference_mode():
+            logits = model(input_features=feats.input_features.to(device, dtype),
+                           attention_mask=feats.attention_mask.to(device)).logits[0].float()
+        if torch.isfinite(logits).all():
+            break
+        del model
     blank = model.config.pad_token_id
     del model
     logp = logits.log_softmax(-1).cpu().numpy()
