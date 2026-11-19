@@ -103,12 +103,29 @@ int main(int argc, char** argv) {
         return s.value("kind").toString();
     };
 
-    // 1. Drag a whole line to the right, then undo and redo it with the keyboard.
+    // 0. Zoomed out, lines wrap onto several rows and no word clips are shown.
     const int row = 9;
+    auto anyWords = [&] {
+        for (const auto& l : lines())
+            for (const auto& v : l.toMap()["words"].toList())
+                if (find(root, QString("lyricWord%1").arg(v.toMap()["index"].toInt()))) return true;
+        return false;
+    };
+    zoomTo(line(row)["start"].toInt() - 15000, line(row)["end"].toInt() + 15000);
+    int wrapped = 0;
+    for (int i = 0; i < lines().size(); ++i)
+        if (auto text = find(root, QString("lyricText%1").arg(i)); text && text->property("lineCount").toInt() > 1) ++wrapped;
+    if (!wrapped) return fail(7, "zoomed out, no lyric line wrapped onto a second row");
+    if (anyWords()) return fail(7, "zoomed out, word clips should be hidden");
+
+    // 1. Drag a whole line to the right, then undo and redo it with the keyboard.
     auto before = line(row);
-    zoomTo(before["start"].toInt() - 4000, before["end"].toInt() + 4000);
+    zoomTo(before["start"].toInt() - 1500, before["end"].toInt() + 1500);
     auto clip = find(root, QString("lyricClip%1").arg(row));
     if (!clip || clip->width() < 20) return fail(7, "line clip not visible on screen");
+    if (!find(root, QString("lyricWord%1").arg(before["first"].toInt())) || find(root, QString("lyricText%1").arg(row)))
+        return fail(7, QString("zoomed in, the line should show word clips (pps %1, showWords %2, lyricH %3)")
+                       .arg(timeline->property("pps").toDouble()).arg(clip->property("showWords").toBool()).arg(timeline->property("lyricH").toDouble()));
     const double pps = timeline->property("pps").toDouble();
     const auto limits = lyrics->moveLimits(before["first"].toInt(), before["last"].toInt());
     const QPoint start = center(clip);
@@ -209,6 +226,6 @@ int main(int argc, char** argv) {
     const auto saved = lines();
     if (!editor.openProject(project) || lyrics->lines() != saved || editor.canUndo())
         return fail(20, "reopened project differs from the edited one");
-    qInfo() << "PASS: line drag, undo/redo, word select and trim, mark checked, play selection, track resize/scroll/reset/remember, reopen.";
+    qInfo() << "PASS: wrap when zoomed out, words when zoomed in, line drag, undo/redo, word select and trim, mark checked, play selection, track resize/scroll/reset/remember, reopen.";
     return 0;
 }

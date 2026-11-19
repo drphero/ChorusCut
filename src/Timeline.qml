@@ -21,7 +21,6 @@ Rectangle {
     readonly property real visibleSeconds: viewWidth / pps
     readonly property real minPps: viewWidth / Math.max(1, duration)
     readonly property real maxPps: 800
-    readonly property bool showWords: pps >= 70
     readonly property real playheadSeconds: editor.frame / editor.fps
 
     // ---- data
@@ -58,8 +57,24 @@ Rectangle {
     readonly property int v1Y: v2Y + (hasPicture ? v2H : 0)
     readonly property int lyricY: v1Y + (hasPicture ? v1H : 0)
     readonly property int audioY: lyricY + lyricH
-    // Word clips need a zoomed-in view and a lyric track tall enough for two rows.
-    readonly property bool wordRows: showWords && lyricH >= 46
+    // Lyric clips switch between two views on their own. Zoomed out, the line's text wraps
+    // to fill the clip. Once most of a line's words are wide enough to read and grab, the
+    // clip shows a one-row title strip with word clips below (the track must fit both rows).
+    FontMetrics { id: lineFont; font.pixelSize: 12 }
+    FontMetrics { id: wordFont; font.pixelSize: 11 }
+    function wordsFit(words) {
+        if (lyricH < 46 || words.length === 0) return false
+        // A word counts only when it shows in full; an elided "res…" is not readable.
+        let fit = 0
+        for (const w of words)
+            if ((w.end - w.start) / 1000 * pps >= wordFont.advanceWidth(w.word) + 6) ++fit
+        return fit >= 0.5 * words.length
+    }
+    function widestWord(words) {
+        let widest = 0
+        for (const w of words) widest = Math.max(widest, lineFont.advanceWidth(w.word))
+        return widest
+    }
 
     function clampScroll() { scrollY = Math.max(0, Math.min(scrollY, Math.max(0, contentH - trackViewH))) }
     function resizeTrack(name, value) {
@@ -380,6 +395,8 @@ Rectangle {
                 x: tl.px(shownStart / 1000); y: tl.lyricY + 4
                 width: Math.max(3, (shownEnd - shownStart) / 1000 * tl.pps); height: tl.lyricH - 8
                 visible: x + width > -2 && x < lanes.width + 2
+                readonly property bool showWords: visible && tl.wordsFit(modelData.words)
+                readonly property real widest: tl.widestWord(modelData.words)
 
                 Rectangle {
                     anchors.fill: parent; radius: 4
@@ -388,23 +405,28 @@ Rectangle {
                     border.width: clipItem.isSelected ? 2 : 1
                 }
                 Text {
-                    visible: !tl.wordRows
-                    anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4
+                    objectName: "lyricText" + clipItem.index
+                    visible: !clipItem.showWords
+                    anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 4; anchors.topMargin: 2; anchors.bottomMargin: 2
                     verticalAlignment: Text.AlignVCenter
                     text: (clipItem.modelData.flag ? "? " : "") + clipItem.modelData.text
                     color: "#edf1ef"; font.pixelSize: 12; elide: Text.ElideRight
+                    // Wrap between words while every word fits the clip's width; otherwise one elided row.
+                    wrapMode: clipItem.width - 10 >= clipItem.widest ? Text.WordWrap : Text.NoWrap
+                    maximumLineCount: Math.max(1, Math.floor(height / lineFont.height))
                 }
                 Text {
-                    visible: tl.wordRows
+                    visible: clipItem.showWords
                     x: 6; y: 3; width: parent.width - 10
                     text: (clipItem.modelData.flag ? "? " : "") + clipItem.modelData.text
                     color: "#bcd3cc"; font.pixelSize: 10; elide: Text.ElideRight
                 }
-                // Word clips, shown when zoomed in.
+                // Word clips, shown once the words are wide enough to read.
                 Repeater {
-                    model: tl.wordRows ? clipItem.modelData.words : []
+                    model: clipItem.showWords ? clipItem.modelData.words : []
                     Rectangle {
                         required property var modelData
+                        objectName: "lyricWord" + modelData.index
                         readonly property bool dragged: tl.dragFirst <= modelData.index && modelData.index <= tl.dragLast
                         readonly property int ws: modelData.start + (dragged ? tl.dragStartDelta : 0)
                         readonly property int we: modelData.end + (dragged ? tl.dragEndDelta : 0)
@@ -439,7 +461,7 @@ Rectangle {
 
                     function wordAt(x, y) {
                         // Zoomed in, the top strip grabs the whole line and the lower strip grabs words.
-                        if (!tl.wordRows || y < 16) return null
+                        if (!clipItem.showWords || y < 16) return null
                         const t = clipItem.modelData.start + x / tl.pps * 1000
                         const slack = 6 / tl.pps * 1000
                         for (const w of clipItem.modelData.words)
