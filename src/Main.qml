@@ -107,6 +107,16 @@ ApplicationWindow {
             win.selection = shot.id === undefined ? null : Object.assign({}, s, {start: shot.startMs, end: shot.endMs, label: "Shot " + shot.number})
         }
     }
+    // Opens a shot in Edit: selected, with the playhead at its start and the timeline showing it.
+    function showShot(id) {
+        const s = editor.plan.shot(id)
+        if (s.id === undefined) return
+        workspace = "edit"
+        sidePanel = "inspector"
+        timeline.selectShot(id)
+        editor.seekLyric(s.startMs)
+        timeline.reveal(s.startMs / 1000)
+    }
     // Opens what a plan check is about: its shot, its span of the song, or its Plan page.
     function showCheck(c) {
         if (c.code === "lyrics") { workspace = "edit"; lyricsEditor.open(); return }
@@ -417,6 +427,8 @@ ApplicationWindow {
             visible: win.workspace === "plan"
             Layout.fillWidth: true; Layout.fillHeight: true
             onShowCheck: c => win.showCheck(c)
+            onShowShot: id => win.showShot(id)
+            shotColors: timeline.shotColors
         }
 
         // Edit: monitor, transport and timeline, with the inspector or checks down the right.

@@ -87,6 +87,18 @@ int main(int argc,char** argv) {
                     QMetaObject::invokeMethod(timeline, "zoomTo", Q_ARG(QVariant, range.value(0).toInt()), Q_ARG(QVariant, range.value(1).toInt()));
             });
         }
+        // "--workspace plan", "--plan-page arc" and "--plan-link section:3" open the Plan workspace
+        // on a page with a card's links showing.
+        if (window) {
+            const int workspaceAt = args.indexOf("--workspace"), pageAt = args.indexOf("--plan-page"), linkAt = args.indexOf("--plan-link");
+            if (workspaceAt >= 0) window->setProperty("workspace", args.value(workspaceAt + 1));
+            if (auto plan = window->findChild<QObject*>("planWorkspace")) {
+                if (pageAt >= 0) plan->setProperty("page", args.value(pageAt + 1));
+                const auto link = args.value(linkAt + 1).split(':');
+                if (linkAt >= 0 && link.size() == 2)
+                    plan->setProperty("linked", QVariantMap{{"kind", link[0]}, {"id", link[1].toInt()}});
+            }
+        }
         QTimer::singleShot(delay, &app, [window, path, &app] {
             app.exit(window && window->grabWindow().save(path) ? 0 : 12);
         });

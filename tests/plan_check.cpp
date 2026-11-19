@@ -672,6 +672,130 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
     if (plan->shots().size() != count) return fail(61, "⌘Z did not restore the deleted shot");
 
+    // ---- E2. Links between sections, cast, locations and shots
+    {
+        // A known set of shots: section 1 holds Mara (in her coat, at the booth), an empty
+        // shot and Leo on V2; section 2 holds Mara again. Leo's second shot starts 0.2 s before
+        // section 2, so it counts only there.
+        const auto s1 = plan->sections()[1].toMap(), s2 = plan->sections()[2].toMap();
+        const int a = frame(s1["start"].toInt()), b = frame(s1["end"].toInt()), c = frame(s2["end"].toInt());
+        const int mid = (a + b) / 2;
+        QVariantList commands;
+        for (const auto& v : plan->shots()) commands.append(cmd({{"op", "remove"}, {"kind", "shot"}, {"id", v.toMap()["id"]}}));
+        auto shotCmd = [&](const char* ref, int track, int start, int end, const QVariant& who, const QVariant& where) {
+            return cmd({{"op", "shot.add"}, {"ref", ref}, {"track", track}, {"start", start}, {"end", end},
+                        {"fields", QVariantMap{{"type", "story"}, {"purpose", QString(ref)}, {"who", who}, {"where", where}}}});
+        };
+        commands << shotCmd("maraBooth", 1, a, mid, QVariantList{QVariantMap{{"character", mara}, {"look", coat}}}, booth)
+                 << shotCmd("nobody", 1, mid, b, "none", "none")
+                 << shotCmd("leoTop", 2, a + 2, mid, QVariantList{QVariantMap{{"character", leo}}}, "none")
+                 << shotCmd("maraLater", 1, b, c, QVariantList{QVariantMap{{"character", mara}}}, booth)
+                 << shotCmd("leoLate", 2, b - int(0.2 * fps), std::min(c, b + int(3 * fps)), QVariantList{QVariantMap{{"character", leo}}}, "none");
+        r = run(cmd({{"op", "batch"}, {"label", "Links shots"}, {"commands", commands}}));
+        if (!ok(r)) return fail(63, "could not plan the links shots: " + plan->message());
+        const int maraBooth = r["refs"].toMap()["maraBooth"].toInt();
+
+        auto section = plan->links("section", 1);
+        auto names = [](const QVariantList& l) { QStringList n; for (const auto& v : l) n << v.toMap()["name"].toString() + ":" + v.toMap()["shots"].toString(); return n.join(","); };
+        if (section["shots"].toList().size() != 3 || names(section["characters"].toList()) != "Mara:1,Leo:1" ||
+            section["empty"].toInt() != 1 || names(section["locations"].toList()) != "Radio booth:1" ||
+            section["characters"].toList()[0].toMap()["looks"].toStringList() != QStringList{plan->looks()[0].toMap()["fields"].toMap()["name"].toString()})
+            return fail(63, "section links: " + QString::fromUtf8(QJsonDocument::fromVariant(section).toJson(QJsonDocument::Compact)));
+        auto person = plan->links("character", leo);
+        QStringList where;
+        for (const auto& v : person["sections"].toList()) where << v.toMap()["ordinal"].toString() + ":" + v.toMap()["shots"].toString();
+        if (person["shots"].toList().size() != 2 || where.join(",") != "1:1,2:1" || person["marks"].toList().size() != 2)
+            return fail(64, "Leo's links: " + where.join(","));
+        auto place = plan->links("location", booth);
+        if (names(place["characters"].toList()) != "Mara:2" || place["sections"].toList().size() != 2) return fail(64, "the booth's links");
+        const auto rows = plan->overview()["rows"].toList();
+        if (rows.size() != plan->characters().size() + plan->locations().size() || rows[0].toMap()["cells"].toList().value(1).toInt() != 1)
+            return fail(64, "overview rows");
+        if (!plan->links("character", 999).isEmpty() || !plan->links("section", 99).isEmpty()) return fail(64, "links for nothing");
+
+        // With the mouse: click the section's card, follow a chip, a section, go back, and open a shot.
+        click(find(window, "workspacePlan"));
+        click(find(window, "planPage_arc"));
+        auto panel = find(window, "linksPanel");
+        auto title = find(window, "linksTitle");
+        if (!panel || panel->width() < 300 || !title) return fail(65, "no links panel beside the page at 1280 wide");
+        // Typing in the cards earlier picked them; × goes back to who and where.
+        if (title->property("text") != plan->sections()[1].toMap()["label"]) return fail(65, "the arc field typed in earlier did not pick its section");
+        click(find(window, "linksClose"));
+        if (title->property("text") != "Who and where" || !find(window, "overviewRow0")) return fail(65, "× did not go back to who and where");
+        // A card is picked by clicking its empty top-right corner, away from fields and buttons.
+        auto pick = [&](QQuickItem* card) {
+            scrollIntoView(card);
+            QTest::mouseClick(window, Qt::LeftButton, {}, card->mapToScene(QPointF(card->width() - 20, 18)).toPoint());
+            QTest::qWait(120);
+        };
+        auto card1 = find(window, "arcCard1");
+        pick(card1);
+        if (title->property("text") != s1["label"] || !card1->property("picked").toBool()) return fail(65, "clicking the card did not show its links");
+        if (!find(window, "laneShot1") || !find(window, "linksShot3")) return fail(65, "the section's shots are not drawn");
+        QQuickItem* leoChip = nullptr;
+        QStringList chips;
+        for (auto item : find(window, "arcLinks1")->childItems())
+            if (item->inherits("QQuickAbstractButton")) { chips << item->property("text").toString(); if (item->property("text") == "Leo") leoChip = item; }
+        if (!leoChip) return fail(66, "no Leo chip on the section's card: " + chips.join(", "));
+        click(leoChip);
+        if (title->property("text") != "Leo") return fail(66, "the chip did not open Leo's links");
+        auto later = find(window, "linksSection1");
+        if (!later) return fail(66, "Leo's second section is not listed");
+        click(later);
+        if (title->property("text") != s2["label"]) return fail(66, "the section row did not open it");
+        click(find(window, "linksBack"));
+        if (title->property("text") != "Leo") return fail(67, "Back did not return to Leo");
+        QTest::keyClick(window, Qt::Key_BracketLeft, Qt::ControlModifier);
+        QTest::qWait(100);
+        if (title->property("text") != s1["label"]) return fail(67, "⌘[ did not go back to the section");
+        // Typing in another card picks that card.
+        auto happens2 = find(window, "arcHappens2");
+        click(happens2);
+        if (title->property("text") != s2["label"]) return fail(68, "focusing a field did not pick its card");
+        QTest::keyClick(window, Qt::Key_Escape);
+        // Show card on a character opens the Cast page at that card.
+        click(find(window, "planPage_cast"));
+        pick(find(window, "characterCard0"));
+        if (title->property("text") != "Mara") return fail(68, "clicking Mara's card did not pick her");
+        click(find(window, "planPage_arc"));
+        click(find(window, "linksShowCard"));
+        if (find(window, "planWorkspace")->property("page") != "cast" || !find(window, "characterCard0")->property("flashing").toBool())
+            return fail(68, "Show card did not open Mara's card");
+        capture("plan-links");
+        // A shot opens in Edit, selected, with the playhead on it.
+        auto shotRow = find(window, QString("linksShot%1").arg(plan->shot(maraBooth)["number"].toInt()));
+        if (!shotRow) return fail(69, "Mara's shot is not listed");
+        click(shotRow);
+        if (!find(window, "timeline") || selection()["kind"] != "shot" || selection()["id"].toInt() != maraBooth ||
+            std::abs(editor.frame() - a) > 1)
+            return fail(69, QString("the shot did not open in Edit (frame %1, start %2)").arg(editor.frame()).arg(a));
+        // A narrow window: the panel opens over the page from the toggle, and closes again.
+        click(find(window, "workspacePlan"));
+        window->resize(1000, 820);
+        QTest::qWait(200);
+        if (find(window, "linksPanel") || find(window, "linksOverlay"))
+            return fail(70, QString("the panel stayed docked on a narrow window (window %1, workspace %2, docked %3)").arg(window->width())
+                .arg(find(window, "planWorkspace")->width()).arg(find(window, "planWorkspace")->property("docked").toBool()));
+        click(find(window, "linksToggle"));
+        auto overlay = find(window, "linksOverlay");
+        if (!overlay || overlay->width() < 300) return fail(70, "the toggle did not open the panel");
+        capture("plan-links-narrow");
+        click(findItem(overlay, "linksClose"));
+        if (find(window, "linksOverlay")) return fail(70, "the panel did not close");
+        window->resize(1280, 820);
+        QTest::qWait(200);
+        // Removing the character in view falls back to who and where.
+        click(find(window, "planPage_cast"));
+        pick(find(window, "characterCard1"));
+        if (title->property("text") != "Leo") return fail(71, "clicking Leo's card did not pick him");
+        run(cmd({{"op", "remove"}, {"kind", "character"}, {"id", leo}}));
+        QTest::qWait(100);
+        if (title->property("text") != "Who and where") return fail(71, "a removed character stayed in the panel");
+        editor.undo();
+        click(find(window, "workspaceEdit"));
+    }
+
     // ---- F. Reopen: the plan made with the mouse and keyboard persisted.
     const QVariantList uiShots = plan->shots();
     const QVariantMap uiConcept = plan->concept();
@@ -681,6 +805,7 @@ int main(int argc, char** argv) {
     qInfo() << "PASS: commands (provenance, locks, agent modes, batches, undo, arc order, singers, split at lines, checks, stale)"
             << "and real input (Plan pages, typing, combos, locks, double-click a shot, snap trim, drag to V2, undo, singers,"
             << "Add shot, checks panel fix and selection, ruler coverage, Delete), reference pictures (import, roles, approval,"
-            << "order, cascade, missing files, G3, drag and drop, menu, shot references), reopen.";
+            << "order, cascade, missing files, G3, drag and drop, menu, shot references), links (section, character and location"
+            << "links, overview, card summaries, chips, Back, focus, Show card, open a shot in Edit, narrow window), reopen.";
     return 0;
 }

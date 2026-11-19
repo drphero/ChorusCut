@@ -888,6 +888,143 @@ QVariantList Plan::linesIn(int start, int end) const {
     return out;
 }
 
+bool Plan::inSection(const QJsonObject& shot, int a, int b) const {
+    const int start = shot["start"].toInt(), end = shot["end"].toInt();
+    const int inside = std::min(end, b) - std::max(start, a);
+    return inside > 0 && (2 * inside >= end - start || 2 * inside >= int(std::lround(fps())));
+}
+
+QVariantMap Plan::links(const QString& kind, int id) const {
+    const auto sectionList = sections();
+    QVariantMap out{{"kind", kind}, {"id", id}, {"songFrames", songFrames()}};
+    int a = 0, b = 0;
+    if (kind == "section") {
+        if (id < 0 || id >= sectionList.size()) return {};
+        const auto s = sectionList[id].toMap();
+        out["name"] = s["label"]; out["start"] = s["start"]; out["end"] = s["end"];
+        a = msToFrame(s["start"].toInt()); b = msToFrame(s["end"].toInt());
+    } else if (kind == "character" || kind == "location") {
+        if (!has(kind, id)) return {};
+        out["name"] = nameOf(kind, id);
+    } else {
+        return {};
+    }
+    const auto appears = [&](const QJsonObject& f) {
+        if (kind == "location") return f["where"].isDouble() && f["where"].toInt() == id;
+        for (const auto& e : f["who"].toArray()) if (e.toObject()["character"].toInt() == id) return true;
+        return false;
+    };
+    // Counts keyed by id, kept in first-seen order.
+    struct Tally { QList<int> order; QMap<int, int> count; QMap<int, QStringList> extra;
+                   void add(int k) { if (!count.contains(k)) order << k; ++count[k]; } };
+    Tally cast, places, looks;
+    QVariantList shots, marks;
+    QList<int> sectionCount(sectionList.size(), 0);
+    int empty = 0;
+    for (int shotId : shotOrder()) {
+        const auto r = row("shot", shotId);
+        const auto f = r["fields"].toObject();
+        if (kind == "section" ? !inSection(r, a, b) : !appears(f)) continue;
+        QStringList who;
+        for (const auto& e : f["who"].toArray()) {
+            const auto o = e.toObject();
+            const int c = o["character"].toInt();
+            if (!has("character", c)) continue;
+            who << nameOf("character", c);
+            const bool worn = o.contains("look") && !o["look"].isNull() && has("look", o["look"].toInt());
+            if (kind == "section") {
+                cast.add(c);
+                if (worn && !cast.extra[c].contains(nameOf("look", o["look"].toInt()))) cast.extra[c] << nameOf("look", o["look"].toInt());
+            } else if (kind == "character" && c == id) {
+                looks.add(worn ? o["look"].toInt() : 0);
+            } else if (kind == "location") {
+                cast.add(c);
+            }
+        }
+        if (kind == "section" && who.isEmpty()) ++empty;
+        const bool placed = f["where"].isDouble() && has("location", f["where"].toInt());
+        if (placed && kind != "location") places.add(f["where"].toInt());
+        if (kind != "section")
+            for (int i = 0; i < sectionList.size(); ++i) {
+                const auto s = sectionList[i].toMap();
+                if (inSection(r, msToFrame(s["start"].toInt()), msToFrame(s["end"].toInt()))) ++sectionCount[i];
+            }
+        const int start = r["start"].toInt(), end = r["end"].toInt();
+        shots.append(QVariantMap{{"id", shotId}, {"number", shotNumber(shotId)}, {"track", r["track"].toInt()},
+                                 {"start", start}, {"end", end}, {"startMs", frameToMs(start)}, {"endMs", frameToMs(end)},
+                                 {"type", f["type"].toString()}, {"framing", f["framing"].toString().toUpper()},
+                                 {"who", who.join(", ")}, {"where", placed ? nameOf("location", f["where"].toInt()) : QString()},
+                                 {"purpose", f["purpose"].toString()}});
+        marks.append(QVariantMap{{"start", start}, {"end", end}});
+    }
+    auto list = [](const Tally& t, const std::function<QVariantMap(int)>& entry) {
+        QVariantList l;
+        for (int k : t.order) { QVariantMap m = entry(k); m["shots"] = t.count[k]; l.append(m); }
+        return l;
+    };
+    auto named = [this](const QString& k) { return [this, k](int i) { return QVariantMap{{"id", i}, {"name", nameOf(k, i)}}; }; };
+    out["shots"] = shots;
+    out["marks"] = marks;
+    if (kind != "location") out["locations"] = list(places, named("location"));
+    if (kind == "section") {
+        out["characters"] = list(cast, [&](int c) { return QVariantMap{{"id", c}, {"name", nameOf("character", c)}, {"looks", cast.extra.value(c)}}; });
+        out["empty"] = empty;
+        const int sa = out["start"].toInt(), sb = out["end"].toInt();
+        QVariantList lines;
+        for (const auto& v : linesIn(msToFrame(sa), msToFrame(sb))) {
+            const auto l = v.toMap();
+            const int inside = std::min(l["end"].toInt(), sb) - std::max(l["start"].toInt(), sa);
+            if (2 * inside >= l["end"].toInt() - l["start"].toInt()) lines.append(l);
+        }
+        out["lines"] = lines;
+    } else {
+        QVariantList secs;
+        for (int i = 0; i < sectionList.size(); ++i)
+            if (sectionCount[i]) {
+                const auto s = sectionList[i].toMap();
+                secs.append(QVariantMap{{"ordinal", i}, {"name", s["label"]}, {"start", s["start"]}, {"end", s["end"]}, {"shots", sectionCount[i]}});
+            }
+        out["sections"] = secs;
+    }
+    if (kind == "character") {
+        out["looks"] = list(looks, [this](int l) { return QVariantMap{{"id", l}, {"name", l ? nameOf("look", l) : QString("No look set")}}; });
+        int sung = 0;
+        for (const auto& v : singers()) if (v.toMap()["singers"].toList().contains(id)) ++sung;
+        out["sung"] = sung;
+    }
+    if (kind == "location") out["characters"] = list(cast, named("character"));
+    return out;
+}
+
+QVariantMap Plan::overview() const {
+    const auto sectionList = sections();
+    QVector<QPair<int, int>> spans;
+    for (const auto& v : sectionList) {
+        const auto s = v.toMap();
+        spans.append({msToFrame(s["start"].toInt()), msToFrame(s["end"].toInt())});
+    }
+    QVariantList rows;
+    for (const QString kind : {"character", "location"})
+        for (int id : items.value(kind).keys()) {
+            QVariantList cells;
+            int total = 0;
+            for (const auto& span : spans) {
+                int n = 0;
+                for (const auto& r : items.value("shot")) {
+                    const auto f = r["fields"].toObject();
+                    bool in = false;
+                    if (kind == "location") in = f["where"].isDouble() && f["where"].toInt() == id;
+                    else for (const auto& e : f["who"].toArray()) in = in || e.toObject()["character"].toInt() == id;
+                    if (in && inSection(r, span.first, span.second)) ++n;
+                }
+                cells.append(n);
+                total += n;
+            }
+            rows.append(QVariantMap{{"kind", kind}, {"id", id}, {"name", nameOf(kind, id)}, {"cells", cells}, {"total", total}});
+        }
+    return {{"sections", sectionList}, {"songFrames", songFrames()}, {"rows", rows}};
+}
+
 QVariantMap Plan::options() const {
     QVariantMap out;
     for (auto it = optionTable().begin(); it != optionTable().end(); ++it) {

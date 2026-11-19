@@ -37,6 +37,8 @@ class Plan : public QObject {
     Q_PROPERTY(int warningCount READ warningCount NOTIFY changed)
     Q_PROPERTY(QVariantMap options READ options CONSTANT)
     Q_PROPERTY(QString message READ message NOTIFY messageChanged)
+    // Notifies on every change, so QML bindings that call links() or overview() refresh.
+    Q_PROPERTY(int revision READ revision NOTIFY changed)
 public:
     explicit Plan(Lyrics* lyrics, QObject* parent = nullptr);
     void setHistory(QUndoStack* stack) { history = stack; }
@@ -97,6 +99,19 @@ public:
     Q_INVOKABLE QVariantList linesIn(int start, int end) const;
     // The longest shot a route can render, in frames; 0 when unlimited.
     Q_INVOKABLE int maxFrames(const QString& route) const;
+    // How one thing in the plan connects to the rest, for the Plan workspace's links panel.
+    // kind "section" (id = ordinal), "character" or "location". Always has kind, id, name,
+    // songFrames, shots (each with number, track, start, end, framing, who, where, purpose) and
+    // marks (the frame spans where it appears). A section adds start/end (ms), characters (with the
+    // looks worn there and their shot counts), locations, lines (sung there, with singers) and
+    // empty (shots with no one in frame). A character adds looks, locations, sections and sung;
+    // a location adds characters and sections. Counts are shots; a shot belongs to a section when
+    // half of it, or half a second of it, falls inside. Empty map for an unknown id.
+    Q_INVOKABLE QVariantMap links(const QString& kind, int id) const;
+    // Who and where in each section: {sections, songFrames, rows: [{kind, id, name, cells}]},
+    // a row for every character, then every location; cells hold shot counts per section.
+    Q_INVOKABLE QVariantMap overview() const;
+    int revision() const { return clock; }
 
     // Used by the undo command.
     struct Change { QString kind; int id; QJsonObject before, after; };
@@ -145,5 +160,6 @@ private:
     int shotNumber(int id) const;
     QVariantList computeChecks() const;
     QString clockText(int frame) const;
+    bool inSection(const QJsonObject& shot, int startFrame, int endFrame) const;
     QString nameOf(const QString& kind, int id) const;
 };
