@@ -14,10 +14,15 @@ ApplicationWindow {
     readonly property color quiet: "#adb8ba"
     readonly property color mint: "#87dec7"
 
+    // The Project Manager covers the editor at launch when no project is open, and on ⌘O.
+    property bool managerOpen: false
+    Component.onCompleted: if (!editor.ready) showManager()
+    function showManager() { managerOpen = true; manager.show() }
+
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: lyricsEditor.visible || create.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -80,6 +85,7 @@ ApplicationWindow {
     component LabelText: Text { color: win.ink; font.pixelSize: 14; verticalAlignment: Text.AlignVCenter }
 
     // ---------------------------------------------------------------- shortcuts
+    Shortcut { enabled: !lyricsEditor.visible && !win.managerOpen; sequences: [StandardKey.Open]; onActivated: win.showManager() }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Space"; onActivated: editor.togglePlay() }
     Shortcut { enabled: editor.ready && !win.typing; sequences: ["Return", "Enter"]
                onActivated: if (win.selection) editor.playRange(win.selection.start, win.selection.end) }
@@ -102,65 +108,11 @@ ApplicationWindow {
 
     // ---------------------------------------------------------------- dialogs
     FileDialog { id: save; fileMode: FileDialog.SaveFile; nameFilters: ["Final Cut Pro 7 XML (*.xml)"]; onAccepted: editor.exportTimeline(selectedFile) }
-    FolderDialog { id: openFolder; title: "Open Chorus Cut project"; onAccepted: editor.openProject(selectedFolder) }
     FileDialog {
         id: importDialog
         title: "Import GPU alignment"
         nameFilters: ["Alignment JSON (*.json)"]
         onAccepted: if (editor.lyrics.importAlignment(selectedFile)) lyricsEditor.close()
-    }
-    Dialog {
-        id: create
-        title: "New project"
-        anchors.centerIn: parent
-        width: Math.min(540, win.width - 60)
-        modal: true
-        closePolicy: editor.importing ? Popup.NoAutoClose : Popup.CloseOnEscape
-        Connections {
-            target: editor
-            function onImportFinished(success) {
-                if (success) {
-                    create.close()
-                    projectName.clear()
-                    create.master = ""; create.performance = ""; create.cutaway = ""
-                } else create.failure = editor.status
-            }
-        }
-        property url parentFolder
-        property url master
-        property url performance
-        property url cutaway
-        property string failure: ""
-        function leaf(url) { return decodeURIComponent(String(url).split("/").pop()) }
-        function choose(role) { pick.role = role; pick.title = "Choose " + role; pick.open() }
-        FolderDialog { id: location; title: "Choose where to create the project folder"; onAccepted: create.parentFolder = selectedFolder }
-        FileDialog { id: pick; property string role; onAccepted: create[role] = selectedFile }
-        contentItem: ColumnLayout {
-            enabled: !editor.importing
-            TextField { id: projectName; Layout.fillWidth: true; placeholderText: "Project name"; Accessible.name: "Project name" }
-            RowLayout {
-                Button { text: "Save in…"; onClicked: location.open() }
-                Label { Layout.fillWidth: true; elide: Text.ElideMiddle; text: create.parentFolder.toString() ? decodeURIComponent(create.parentFolder.toString().replace(/^file:\/\//,"")) : "Choose a parent folder" }
-            }
-            Repeater { model: ["master", "performance", "cutaway"]
-                RowLayout {
-                    required property string modelData
-                    Button { text: modelData.charAt(0).toUpperCase() + modelData.slice(1) + "…"; onClicked: create.choose(modelData) }
-                    Label { Layout.fillWidth: true; elide: Text.ElideMiddle; text: create.leaf(create[modelData]) }
-                }
-            }
-            Label { text: "Start with the song alone, or include both picture sources. Selected files are copied into the project."; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            Label { visible: text.length > 0; text: create.failure; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            RowLayout {
-                Item { Layout.fillWidth: true }
-                Button { text: "Cancel"; onClicked: create.close() }
-                Button {
-                    text: editor.importing ? "Importing…" : "Create project"
-                    enabled: projectName.text.trim() && create.parentFolder.toString() && create.master.toString() && (!!create.performance.toString() === !!create.cutaway.toString())
-                    onClicked: { create.failure = ""; editor.createProject(create.parentFolder, projectName.text, create.master, create.performance, create.cutaway) }
-                }
-            }
-        }
     }
 
     // Lyric text: paste, save, align locally or import a GPU alignment.
@@ -215,8 +167,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             LabelText { text: "Chorus Cut"; font.pixelSize: 22; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
-            Action { text: "New…"; onClicked: { create.failure = ""; create.open() } }
-            Action { text: "Open…"; onClicked: openFolder.open() }
+            Action { objectName: "openManager"; text: "Projects"; onClicked: win.showManager(); ToolTip.text: "Project Manager (⌘O)" }
             Action { objectName: "openLyrics"; text: "Lyrics…"; enabled: editor.ready; onClicked: lyricsEditor.open() }
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }
@@ -319,5 +270,15 @@ ApplicationWindow {
             text: editor.status || editor.lyrics.message ||
                   "Drag lyrics to move them, drag edges to trim. Pinch or ⌘-scroll to zoom; scroll to pan."
         }
+    }
+
+    ProjectManager {
+        id: manager
+        objectName: "projectManager"
+        anchors.fill: parent
+        z: 100
+        visible: win.managerOpen
+        focus: visible
+        onFinished: { win.managerOpen = false; win.contentItem.forceActiveFocus() }
     }
 }

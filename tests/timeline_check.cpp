@@ -3,6 +3,7 @@
 // usage: ChorusCutTimelineCheck PROJECT_COPY ALIGNMENT_JSON DISK_CAPTURE
 #include "editor.h"
 #include "waveform.h"
+#include "library.h"
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
@@ -71,7 +72,9 @@ int main(int argc, char** argv) {
     qmlRegisterType<Monitor>("Chorus", 1, 0, "VideoMonitor");
     qmlRegisterType<WaveformView>("Chorus", 1, 0, "WaveformView");
     QQmlApplicationEngine engine;
+    ProjectLibrary library(&editor);
     engine.rootContext()->setContextProperty("editor", &editor);
+    engine.rootContext()->setContextProperty("library", &library);
     engine.load(QUrl("qrc:/src/Main.qml"));
     if (engine.rootObjects().isEmpty()) return fail(5, "QML did not load");
     auto window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
@@ -195,6 +198,7 @@ int main(int argc, char** argv) {
     engine.clearComponentCache();
     QQmlApplicationEngine second;
     second.rootContext()->setContextProperty("editor", &editor);
+    second.rootContext()->setContextProperty("library", &library);
     second.load(QUrl("qrc:/src/Main.qml"));
     auto secondTimeline = second.rootObjects().isEmpty() ? nullptr : second.rootObjects().first()->findChild<QObject*>("timeline");
     if (!secondTimeline || secondTimeline->property("audioH").toInt() != remembered)

@@ -21,6 +21,8 @@ class Lyrics : public QObject {
     Q_PROPERTY(QString message READ message NOTIFY messageChanged)
 public:
     bool load(Project& next, QString& error);
+    // Detaches from a project that is about to close.
+    void unload();
     void setHistory(QUndoStack* stack) { history = stack; }
     QString text() const { return draft; }
     QVariantList lines() const;

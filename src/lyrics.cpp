@@ -86,6 +86,13 @@ bool Lyrics::load(Project& next, QString& error) {
     return true;
 }
 
+void Lyrics::unload() {
+    cancel();
+    project = nullptr;
+    revision = 0; draft.clear(); alignedText.clear(); words = {}; sections = {};
+    say({}); emit changed();
+}
+
 bool Lyrics::store(const QString& text, const QString& aligned, const QJsonArray& spans, const QJsonArray& gaps) {
     if (!project) return false;
     QSqlQuery q(project->db);

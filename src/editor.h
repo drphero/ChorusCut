@@ -1,4 +1,5 @@
 #pragma once
+#include <QTimer>
 #include "lyrics.h"
 #include <mlt++/Mlt.h>
 #include <QtQuick/QQuickPaintedItem>
@@ -57,6 +58,11 @@ public:
     Q_INVOKABLE void playRange(int startMs, int endMs) { playLyric(startMs, endMs); }
     ~Editor();
     Q_INVOKABLE bool openProject(const QUrl& folder);
+    // Saves the thumbnail and releases the project, e.g. before the manager renames or trashes it.
+    Q_INVOKABLE void closeProject();
+    QString projectPath() const { return project ? project->dir.absolutePath() : QString(); }
+    // Writes the Project Manager card image: a picture frame or black, the song waveform and lyric lines.
+    void saveThumbnail();
     Q_INVOKABLE void createProject(const QUrl& parent, const QString& name, const QUrl& song,
                                    const QUrl& base, const QUrl& insert);
     bool importing() const { return importInProgress; }
@@ -121,6 +127,8 @@ private:
     QUndoStack history;
     QVector<float> peakData;
     void computePeaks();
+    QImage thumbPicture;
+    QTimer thumbTimer;
     int peakSerial = 0;
     QSize previewSize;
     std::unique_ptr<Mlt::Profile> profile;

@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "library.h"
 #include <QPainter>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -43,9 +44,77 @@ Editor::Editor() {
     connect(&history, &QUndoStack::cleanChanged, this, changed);
     // Replacing the lyric text or alignment renumbers words, so older steps no longer apply.
     connect(&lyricState, &Lyrics::historyInvalidated, this, [this] { history.clear(); emit edited(); });
+    // Keep the Project Manager's card current: after peaks arrive and shortly after lyric edits.
+    thumbTimer.setSingleShot(true);
+    thumbTimer.setInterval(1500);
+    connect(&thumbTimer, &QTimer::timeout, this, &Editor::saveThumbnail);
+    connect(&lyricState, &Lyrics::changed, this, [this] { if (peaksReady()) thumbTimer.start(); });
+    connect(this, &Editor::peaksChanged, this, [this] { if (peaksReady()) saveThumbnail(); });
 }
 
-Editor::~Editor() { stop(); }
+Editor::~Editor() { saveThumbnail(); stop(); }
+
+void Editor::closeProject() {
+    if (!project) return;
+    saveThumbnail();
+    thumbTimer.stop();
+    stop();
+    listener.reset(); output.reset(); timeline.reset();
+    lyricState.unload();
+    project.reset();
+    thumbPicture = {};
+    ++peakSerial;
+    peakData.clear();
+    history.clear();
+    cursor = 0;
+    info({});
+    emit imageReady(QImage());
+    emit peaksChanged(); emit projectChanged(); emit edited(); emit cursorChanged();
+}
+
+void Editor::saveThumbnail() {
+    if (!project || !peaksReady()) return;
+    constexpr int W = 480, H = 270;
+    const bool picture = sourceLength() > 0;
+    if (picture && thumbPicture.isNull() && !running && timeline) {
+        thumbPicture = imageAt(length() / 3);
+        timeline->seek(cursor);
+    }
+    QImage image(W, H, QImage::Format_RGB32);
+    image.fill(QColor("#0c1216"));
+    QPainter p(&image);
+    p.setRenderHint(QPainter::Antialiasing);
+    if (!thumbPicture.isNull()) {
+        const QImage fill = thumbPicture.scaled(W, H, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        p.drawImage(QPoint((W - fill.width()) / 2, (H - fill.height()) / 2), fill);
+        QLinearGradient shade(0, H * 0.55, 0, H);
+        shade.setColorAt(0, QColor(12, 18, 22, 0));
+        shade.setColorAt(1, QColor(12, 18, 22, 220));
+        p.fillRect(image.rect(), shade);
+    }
+    // Song waveform: the whole song across the card.
+    const int buckets = peakData.size() / 2;
+    const double mid = picture ? H * 0.80 : H * 0.46, half = picture ? H * 0.12 : H * 0.30;
+    p.setPen(QPen(QColor(135, 222, 199, picture ? 200 : 170), 1));
+    for (int x = 0; x < W && buckets > 0; ++x) {
+        int a = int(qint64(x) * buckets / W), b = qMax(a + 1, int(qint64(x + 1) * buckets / W));
+        float lo = peakData[2 * a], hi = peakData[2 * a + 1];
+        for (int i = a + 1; i < b && i < buckets; ++i) { lo = qMin(lo, peakData[2 * i]); hi = qMax(hi, peakData[2 * i + 1]); }
+        p.drawLine(QPointF(x + 0.5, mid - hi * half), QPointF(x + 0.5, mid - lo * half + 0.5));
+    }
+    // Lyric lines along the bottom, amber where a line still needs checking.
+    const double songMs = 1000.0 * length() / fps();
+    if (songMs > 0) {
+        for (const auto& value : lyricState.lines()) {
+            const auto line = value.toMap();
+            const double x0 = W * line["start"].toInt() / songMs, x1 = W * line["end"].toInt() / songMs;
+            p.fillRect(QRectF(x0, H - 9, qMax(1.5, x1 - x0 - 1), 5),
+                       line["flag"].toBool() ? QColor("#e7b75f") : QColor("#87dec7"));
+        }
+    }
+    p.end();
+    image.save(ProjectLibrary::thumbnailPath(project->dir.absolutePath()), "JPG", 88);
+}
 void Editor::info(const QString& text) { message = text; emit messageChanged(); }
 QString Editor::projectName() const { return project ? project->dir.dirName() : QString(); }
 QString Editor::performanceName() const { return project ? QFileInfo(project->performance.path).fileName() : QString(); }
@@ -86,7 +155,10 @@ bool Editor::openProject(const QUrl& folder) {
     if (!folder.isLocalFile()) { info("Choose a local project folder"); return false; }
     QString error;
     auto next = Project::open(folder.toLocalFile(), error);
-    if (!next || !lyricState.load(*next,error)) { info(error); return false; }
+    if (!next) { info(error); return false; }
+    saveThumbnail();  // The outgoing project's card, before its lyrics are replaced.
+    if (!lyricState.load(*next,error)) { info(error); return false; }
+    thumbPicture = {};
     stop();
     listener.reset(); output.reset(); timeline.reset();
     project = std::move(next);

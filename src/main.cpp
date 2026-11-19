@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "waveform.h"
+#include "library.h"
 #include <QQuickWindow>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -21,14 +22,18 @@ int main(int argc,char** argv) {
         qputenv("SDL_AUDIO_DRIVER", "disk");
     }
     Mlt::Factory::init();
-    QString project=QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../../Example");
+    // An interactive launch opens the Project Manager. Scripted checks open a project directly:
+    // --project PATH, or the Example beside a development build.
+    const bool scripted = args.contains("--check") || args.contains("--export") || args.contains("--check-playback") ||
+                          args.contains("--import-alignment");
+    QString project = scripted ? QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../../Example") : QString();
     for (int i=1;i+1<args.size();++i)
         if (args[i]=="--project") project=QFileInfo(args[i+1]).absoluteFilePath();
     Editor editor;
-    if (!editor.openProject(QUrl::fromLocalFile(QDir::cleanPath(project)))) {
-        if (args.contains("--project") || args.contains("--check") || args.contains("--export") ||
-            args.contains("--check-playback")) { qCritical().noquote()<<editor.status(); return 1; }
+    if (!project.isEmpty() && !editor.openProject(QUrl::fromLocalFile(QDir::cleanPath(project)))) {
+        if (args.contains("--project") || scripted) { qCritical().noquote()<<editor.status(); return 1; }
     }
+    ProjectLibrary library(&editor);
     const int importAt = args.indexOf("--import-alignment");
     if (importAt >= 0) {
         // Load a GPU alignment (alignment/experiments/align_v2.py output) into the project.
@@ -55,6 +60,7 @@ int main(int argc,char** argv) {
     qmlRegisterType<WaveformView>("Chorus",1,0,"WaveformView");
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("editor",&editor);
+    engine.rootContext()->setContextProperty("library",&library);
     engine.load(QUrl("qrc:/src/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 5;
     auto monitor=engine.rootObjects().first()->findChild<Monitor*>("monitor");

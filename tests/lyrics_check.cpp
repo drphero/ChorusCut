@@ -3,6 +3,7 @@
 // usage: ChorusCutLyricsCheck NEW_PROJECT SONG LYRICS_TEXT DISK_CAPTURE [PERFORMANCE CUTAWAY]
 #include "editor.h"
 #include "waveform.h"
+#include "library.h"
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QFile>
@@ -56,7 +57,9 @@ int main(int argc, char** argv) {
     qmlRegisterType<Monitor>("Chorus", 1, 0, "VideoMonitor");
     qmlRegisterType<WaveformView>("Chorus", 1, 0, "WaveformView");
     QQmlApplicationEngine engine;
+    ProjectLibrary library(&editor);
     engine.rootContext()->setContextProperty("editor", &editor);
+    engine.rootContext()->setContextProperty("library", &library);
     engine.load(QUrl("qrc:/src/Main.qml"));
     if (engine.rootObjects().empty()) return fail(3, "QML did not load");
     auto window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
