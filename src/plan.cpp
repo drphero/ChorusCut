@@ -100,6 +100,11 @@ QString joinNames(const QStringList& names) {
     if (names.size() <= 1) return names.join("");
     return names.mid(0, names.size() - 1).join(", ") + " and " + names.last();
 }
+// Shot numbers for a message: all of them up to five, else the first four "and N more".
+QString shotNumbers(const QStringList& numbers) {
+    if (numbers.size() <= 5) return joinNames(numbers);
+    return numbers.mid(0, 4).join(", ") + QString(" and %1 more").arg(numbers.size() - 4);
+}
 }
 
 Plan::Plan(Lyrics* lyrics, QObject* parent) : QObject(parent), lyrics(lyrics) {
@@ -967,12 +972,15 @@ QVariantList Plan::computeChecks() const {
     QVariantList out;
     if (!project) return out;
     // level: "error" (wrong), "todo" (unfinished; holds its gate) or "warning" (advice).
+    // owner: the character, look or location the check is about, so the UI can open it.
     auto add = [&](const QString& level, const QString& gate, const QString& code, const QString& text,
-                   int startMs, int endMs, const QList<int>& shots = {}, const QString& fix = {}) {
+                   int startMs, int endMs, const QList<int>& shots = {}, const QString& fix = {}, const QVariantMap& owner = {}) {
         QVariantList ids;
         for (int s : shots) ids.append(s);
-        out.append(QVariantMap{{"level", level}, {"gate", gate}, {"code", code}, {"message", text},
-                               {"start", startMs}, {"end", endMs}, {"shots", ids}, {"fix", fix}});
+        QVariantMap check{{"level", level}, {"gate", gate}, {"code", code}, {"message", text},
+                          {"start", startMs}, {"end", endMs}, {"shots", ids}, {"fix", fix}};
+        if (!owner.isEmpty()) check["owner"] = owner;
+        out.append(check);
     };
     const auto ls = lyrics->lines();
     const auto who = singers();
@@ -1050,18 +1058,18 @@ QVariantList Plan::computeChecks() const {
             if (approved) continue;
             QList<int> shots = it.value();
             shots.erase(std::unique(shots.begin(), shots.end()), shots.end());
-            QStringList numbers;
-            for (int s : shots) numbers << QString::number(number(s));
+            // The fix is on the card, not the shots, so the message counts them; the ids stay on the check.
             const QString what = kind == "look" ? QString("The look \u201c%1\u201d").arg(nameOf(kind, id)) : nameOf(kind, id);
-            add("todo", "G3", "reference", QString("%1 has no approved reference picture; %2 %3 %4 it.")
-                .arg(what, shots.size() == 1 ? "shot" : "shots", joinNames(numbers), shots.size() == 1 ? "uses" : "use"),
-                shotMs(shots.first()).first, shotMs(shots.last()).second, shots);
+            const QString used = shots.size() == 1 ? QString("shot %1").arg(number(shots.first())) : QString("%1 shots").arg(shots.size());
+            add("todo", "G3", "reference", QString("%1 has no approved reference picture yet (used in %2).").arg(what, used),
+                shotMs(shots.first()).first, shotMs(shots.last()).second, shots, {}, QVariantMap{{"kind", kind}, {"id", id}});
         }
         for (int ref : items.value("reference").keys()) {
             const auto r = row("reference", ref);
             if (!QFileInfo::exists(project->dir.filePath(r["file"].toString())))
                 add("error", "G3", "referenceMissing", QString("The reference picture %1 for %2 is missing from the project's Media/References folder.")
-                    .arg(r["name"].toString(), nameOf(r["owner"].toString(), r["ownerId"].toInt())), 0, 0);
+                    .arg(r["name"].toString(), nameOf(r["owner"].toString(), r["ownerId"].toInt())), 0, 0, {}, {},
+                    QVariantMap{{"kind", r["owner"].toString()}, {"id", r["ownerId"].toInt()}});
         }
     }
 
@@ -1148,7 +1156,7 @@ QVariantList Plan::computeChecks() const {
             for (int id : over) shotNames << QString::number(number(id));
             add("error", "G4", "singer", QString(over.size() == 1 ? "\"%1\" is sung by %2, but lip-sync shot %3 shows someone else."
                                                                   : "\"%1\" is sung by %2, but lip-sync shots %3 show someone else.")
-                .arg(line["text"].toString(), joinNames(names), joinNames(shotNames)), a, b, over);
+                .arg(line["text"].toString(), joinNames(names), shotNumbers(shotNames)), a, b, over);
         }
     }
     // Advice: long runs of one framing, in picture order.
@@ -1189,7 +1197,7 @@ QVariantList Plan::computeChecks() const {
         QStringList names;
         for (int id : stale) names << QString::number(number(id));
         add("warning", "G4", "stale", QString("The concept, cast, locations or arc changed after %1 %2 %3 written. Review %4, then mark %4 current.")
-            .arg(stale.size() == 1 ? "shot" : "shots", joinNames(names), stale.size() == 1 ? "was" : "were", stale.size() == 1 ? "it" : "them"),
+            .arg(stale.size() == 1 ? "shot" : "shots", shotNumbers(names), stale.size() == 1 ? "was" : "were", stale.size() == 1 ? "it" : "them"),
             shotMs(stale.first()).first, shotMs(stale.last()).second, stale, "markCurrent");
     }
     return out;

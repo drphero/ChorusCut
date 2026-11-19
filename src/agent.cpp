@@ -253,6 +253,7 @@ QJsonObject AgentBridge::checks() const {
                       {"message", c["message"].toString()}};
         if (c["end"].toInt() > c["start"].toInt()) { o["startMs"] = c["start"].toInt(); o["endMs"] = c["end"].toInt(); }
         if (!c["shots"].toList().isEmpty()) o["shots"] = QJsonArray::fromVariantList(c["shots"].toList());
+        if (c.contains("owner")) o["about"] = json(c["owner"]);
         list.append(o);
     }
     return {{"gates", gates}, {"checks", list}};

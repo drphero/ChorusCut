@@ -110,6 +110,8 @@ ApplicationWindow {
     // Opens what a plan check is about: its shot, its span of the song, or its Plan page.
     function showCheck(c) {
         if (c.code === "lyrics") { workspace = "edit"; lyricsEditor.open(); return }
+        // A reference to-do is fixed on the character's, look's or location's card.
+        if (c.owner) { workspace = "plan"; planWorkspace.reveal(c.owner.kind, c.owner.id); return }
         if (c.gate === "G2" && c.shots.length === 0) {
             workspace = "plan"
             planWorkspace.page = c.code === "concept" ? "concept" : "arc"

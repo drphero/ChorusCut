@@ -13,6 +13,7 @@
 #include <QQuickWindow>
 #include <QStyleHints>
 #include <QTest>
+#include <QRegularExpression>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QDir>
@@ -219,6 +220,22 @@ int main(int argc, char** argv) {
     if (stale.size() != 1 || stale[0].toMap()["shots"].toList().isEmpty()) return fail(26, "shots of Mara not marked stale");
     if (!ok(run(cmd({{"op", "shot.markCurrent"}, {"ids", stale[0].toMap()["shots"]}}))) || !checksWith(plan, "stale").isEmpty())
         return fail(26, "mark current did not clear the stale shots");
+    // Long shot lists are cut to four numbers and "and N more".
+    {
+        QVariantList many;
+        for (int k = 0; k < 7; ++k)
+            many.append(cmd({{"op", "shot.add"}, {"track", 2}, {"start", 4000 + k * 40}, {"end", 4040 + k * 40},
+                             {"fields", QVariantMap{{"type", "broll"}, {"purpose", "Filler"}}}}));
+        run(cmd({{"op", "batch"}, {"label", "Fillers"}, {"commands", many}}));
+        run(cmd({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"palette", "Cherry and teal"}}}}));
+        const auto longStale = checksWith(plan, "stale").value(0).toMap();
+        const int count = longStale["shots"].toList().size();
+        const QString text = longStale["message"].toString();
+        if (count < 7 || !text.contains(QString(" and %1 more").arg(count - 4)) || text.count(QRegularExpression("\\d+")) != 5)
+            return fail(26, QString("a long shot list was not shortened (%1 shots): %2").arg(count).arg(text));
+        editor.undo(); editor.undo();
+        if (!checksWith(plan, "stale").isEmpty()) return fail(26, "undoing the fillers and the concept edit left stale shots");
+    }
 
     // Removing a character leaves a reported dangling reference, and undo brings it back.
     run(cmd({{"op", "remove"}, {"kind", "character"}, {"id", leo}}));
@@ -270,6 +287,15 @@ int main(int argc, char** argv) {
     const int boothRef = r["id"].toInt();
     if (plan->referencesFor("location", booth).value(0).toMap()["approved"].toBool()) return fail(32, "an agent's picture was approved");
     if (needing() != QStringList{"Leo", "Radio booth"}) return fail(32, "only Leo and the booth should still need a picture: " + needing().join(" | "));
+    // The to-do counts the shots instead of listing them, and names what it is about.
+    for (const auto& c : checksWith(plan, "reference")) {
+        const auto m = c.toMap();
+        const auto owner = m["owner"].toMap();
+        if (!m["message"].toString().contains("(used in ") || m["message"].toString().contains(", ") ||
+            owner["kind"] != (m["message"].toString().startsWith("Leo") ? "character" : "location") ||
+            owner["id"].toInt() != (owner["kind"] == "character" ? leo : booth))
+            return fail(32, "reference to-do is not short or does not name its owner: " + m["message"].toString());
+    }
     run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", boothRef}, {"fields", QVariantMap{{"approved", true}}}}));
     if (needing() != QStringList{"Leo"}) return fail(32, "approving the booth picture did not clear its to-do");
     // A shot uses its look's pictures, then the character's, then the location's.
@@ -580,6 +606,40 @@ int main(int argc, char** argv) {
     QTest::qWait(150);
     if (selection()["kind"] != "shot" || selection()["id"].toInt() != expectShot) return fail(59, "clicking the check did not select its shot");
     if (!find(window, "coverageGap") || !find(window, "coverageCovered")) return fail(60, "coverage is not drawn on the ruler");
+
+    // A reference to-do opens the card where it is fixed: put Leo (no pictures) in a shot, click his to-do.
+    {
+        const int shotWithMara = plan->shots().value(0).toMap()["id"].toInt();
+        run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", shotWithMara},
+                 {"fields", QVariantMap{{"who", QVariantList{QVariantMap{{"character", mara}}, QVariantMap{{"character", leo}}}}}}}));
+        QTest::qWait(150);
+        const auto model = list->property("model").toList();
+        int at = -1;
+        for (int i = 0; i < model.size(); ++i) {
+            const auto m = model[i].toMap();
+            if (m["code"] == "reference" && m["owner"].toMap()["id"].toInt() == leo && m["owner"].toMap()["kind"] == "character") at = i;
+        }
+        if (at < 0) return fail(60, "no reference to-do for Leo in the checks panel");
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, at), Q_ARG(int, 1));
+        QTest::qWait(100);
+        auto row = findItem(list, QString("check_reference_%1").arg(at));
+        if (!row) return fail(60, "Leo's to-do is not on screen");
+        QTest::mouseClick(window, Qt::LeftButton, {}, row->mapToScene(QPointF(30, row->height() / 2)).toPoint());
+        QTest::qWait(300);
+        int leoIndex = 0;
+        for (int i = 0; i < plan->characters().size(); ++i) if (plan->characters()[i].toMap()["id"].toInt() == leo) leoIndex = i;
+        auto workspace = find(window, "planWorkspace");
+        auto card = find(window, QString("characterCard%1").arg(leoIndex));
+        if (!workspace || workspace->property("page") != "cast" || !card) return fail(61, "clicking the to-do did not open the Cast page");
+        QQuickItem* view = card->parentItem();
+        while (view && !view->inherits("QQuickFlickable")) view = view->parentItem();
+        const QRectF r = card->mapRectToItem(view, QRectF(0, 0, card->width(), qMin(card->height(), view->height())));
+        if (!card->property("flashing").toBool() || r.top() < -1 || r.top() > view->height() / 2)
+            return fail(61, QString("Leo's card is not highlighted near the top of the view (top %1 of %2)").arg(r.top()).arg(view->height()));
+        capture("check-opens-card");
+        click(find(window, "workspaceEdit"));
+        click(find(window, "panelChecks"));
+    }
 
     // Delete removes the selected shot; ⌘Z brings it back.
     click(find(window, "panelInspector"));

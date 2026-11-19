@@ -33,9 +33,11 @@ Rectangle {
     component Note: Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#8fa0a4"; font.pixelSize: 12 }
     component Card: Rectangle {
         default property alias body: cardBody.data
+        property bool flashing: false
         Layout.fillWidth: true
         implicitHeight: cardBody.implicitHeight + 24
-        radius: 6; color: "#18242b"; border.color: "#26343b"
+        radius: 6; color: "#18242b"
+        border.color: flashing ? "#87dec7" : "#26343b"; border.width: flashing ? 2 : 1
         ColumnLayout { id: cardBody; x: 12; y: 12; width: parent.width - 24; spacing: 10 }
     }
     component Small: Button {
@@ -45,6 +47,31 @@ Rectangle {
         property bool danger: false
         contentItem: Text { text: sb.text; color: sb.danger ? "#f0a08f" : "#edf1ef"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
         background: Rectangle { radius: 4; color: sb.hovered ? "#3b4b52" : "#2b383f" }
+    }
+    // Opens the card for a character, look (its character's card) or location, scrolls it into
+    // view and highlights it for a moment: where a reference to-do is fixed.
+    property string flash: ""
+    Timer { id: flashTimer; interval: 1800; onTriggered: ws.flash = "" }
+    function reveal(kind, id) {
+        let owner = kind, ownerId = id
+        if (kind === "look") {
+            const look = plan.looks.find(l => l.id === id)
+            if (!look) return
+            owner = "character"; ownerId = look.character
+        }
+        const list = owner === "location" ? plan.locations : plan.characters
+        const index = list.findIndex(x => x.id === ownerId)
+        if (index < 0) return
+        page = owner === "location" ? "locations" : "cast"
+        flash = owner + ":" + ownerId
+        flashTimer.restart()
+        Qt.callLater(() => {
+            const view = owner === "location" ? locationsPage : castPage
+            const card = (owner === "location" ? locationCards : castCards).itemAt(index)
+            if (!card) return
+            const flick = view.contentItem
+            flick.contentY = Math.max(0, Math.min(card.y - 12, flick.contentHeight - flick.height))
+        })
     }
     function clock(ms) {
         const s = ms / 1000, m = Math.floor(s / 60)
@@ -200,6 +227,7 @@ Rectangle {
                     Note { text: "Everyone who appears, with reference pictures and named looks (wardrobe and makeup). Add pictures with + or drop image files on a card's pictures; they are copied into the project. Set who sings each line from the lyric lines in Edit." }
                     Note { visible: ws.plan.characters.length === 0; text: "No characters yet."; color: "#6f8085" }
                     Repeater {
+                        id: castCards
                         // A count, so editing a card updates it in place instead of rebuilding the list.
                         model: ws.plan.characters.length
                         Card {
@@ -208,6 +236,7 @@ Rectangle {
                             objectName: "characterCard" + index
                             readonly property var item: ws.plan.characters[index] || null
                             readonly property int itemId: item ? item.id : 0
+                            flashing: ws.flash === "character:" + itemId
                             readonly property var myLooks: ws.plan.looks.filter(l => l.character === itemId)
                             readonly property int sung: ws.plan.singers.filter(s => s.singers.indexOf(itemId) >= 0).length
                             RowLayout {
@@ -291,12 +320,15 @@ Rectangle {
                     Note { text: "Places and sets: what the environment is, not the camera angle. Add reference pictures with + or by dropping image files." }
                     Note { visible: ws.plan.locations.length === 0; text: "No locations yet."; color: "#6f8085" }
                     Repeater {
+                        id: locationCards
                         model: ws.plan.locations.length
                         Card {
                             id: locationCard
                             required property int index
+                            objectName: "locationCard" + index
                             readonly property var item: ws.plan.locations[index] || null
                             readonly property int itemId: item ? item.id : 0
+                            flashing: ws.flash === "location:" + itemId
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 12
                                 PlanField {
