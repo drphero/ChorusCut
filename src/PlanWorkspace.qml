@@ -163,6 +163,8 @@ Rectangle {
             flick.contentY = Math.max(0, Math.min(card.y - 12, flick.contentHeight - flick.height))
         })
     }
+    // Opens the Requests page at one thread.
+    function showRequests(id) { page = "requests"; requestsPage.revealThread(id) }
     function clock(ms) {
         const s = ms / 1000, m = Math.floor(s / 60)
         return m + ":" + String(Math.floor(s - 60 * m)).padStart(2, "0")
@@ -183,6 +185,8 @@ Rectangle {
             NavButton { key: "locations"; text: "Locations"; detail: ws.plan.locations.length || "" }
             NavButton { key: "arc"; text: "Arc"; detail: ws.plan.sections.length + " sections" }
             NavButton { key: "checks"; text: "Checks"; detail: ws.plan.errorCount ? ws.plan.errorCount + " open" : "" }
+            NavButton { key: "requests"; text: "Requests"
+                        detail: editor.requests.waitingOnUser ? editor.requests.waitingOnUser + " for you" : editor.requests.waitingOnAgent ? editor.requests.waitingOnAgent + " waiting" : "" }
             Button {
                 id: linksToggle
                 objectName: "linksToggle"
@@ -213,7 +217,7 @@ Rectangle {
 
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
-            currentIndex: ["concept", "look", "cast", "locations", "arc", "checks"].indexOf(ws.page)
+            currentIndex: ["concept", "look", "cast", "locations", "arc", "checks", "requests"].indexOf(ws.page)
 
             // ------------------------------------------------------ concept
             ScrollView {
@@ -552,6 +556,9 @@ Rectangle {
             Checks {
                 onShowCheck: c => ws.showCheck(c)
             }
+
+            // ------------------------------------------------------ requests
+            RequestsPage { id: requestsPage; ws: ws }
         }
 
         // ---------------------------------------------------------- links

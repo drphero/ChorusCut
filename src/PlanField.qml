@@ -41,6 +41,27 @@ ColumnLayout {
             font.pixelSize: 11
         }
         Item { Layout.fillWidth: true }
+        // Open requests to the agent about this field; click to see them.
+        Rectangle {
+            id: asked
+            objectName: "asked_" + pf.kind + "_" + pf.field
+            readonly property var threads: (editor.requests.list, editor.requests.about(pf.kind, pf.itemId, pf.field))
+            readonly property bool yourTurn: threads.some(t => t.turn === "user")
+            visible: threads.length > 0
+            implicitWidth: askedText.implicitWidth + 10; implicitHeight: 14; radius: 3
+            color: yourTurn ? "#4a3a1c" : "#1f3a35"
+            Text { id: askedText; anchors.centerIn: parent; text: asked.yourTurn ? "agent replied" : "asked"; color: asked.yourTurn ? "#e7b75f" : "#87dec7"; font.pixelSize: 9 }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: pf.Window.window.showRequests(asked.threads[0].id) }
+        }
+        Text {
+            objectName: "ask_" + pf.kind + "_" + pf.field
+            text: "ask"
+            color: askMouse.containsMouse ? "#adb8ba" : "#5d6c71"
+            font.pixelSize: 9
+            MouseArea { id: askMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: pf.Window.window.askAgent(pf.kind, pf.itemId, pf.field, pf.label) }
+            ToolTip.visible: askMouse.containsMouse; ToolTip.delay: 500; ToolTip.text: "Ask your agent to change this, or ask it about it"
+        }
         Text {
             objectName: "expand_" + pf.kind + "_" + pf.field
             visible: pf.expandable

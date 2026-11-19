@@ -248,6 +248,31 @@ ApplicationWindow {
         }
     }
 
+    // Asking the agent about a field, an item or the whole plan.
+    AskPopup { id: askPopup; onSent: thread => { win.workspace = "plan"; planWorkspace.showRequests(thread) } }
+    // What a field or item is called, for a request: "Cherry · Picture prompt".
+    function aboutName(kind, id) {
+        const plan = editor.plan
+        if (kind === "concept") return "Concept"
+        if (kind === "arc") return (plan.arc[id] || {}).label || "Section"
+        if (kind === "shot") return "Shot " + plan.shot(id).number
+        const item = plan.item(kind, id)
+        const name = item.fields && item.fields.name ? item.fields.name : "Unnamed " + kind
+        if (kind === "look") { const c = plan.item("character", item.character); return ((c.fields && c.fields.name) || "Unnamed character") + " · " + name }
+        return name
+    }
+    function askAgent(kind, id, field, fieldLabel) {
+        if (!editor.ready) return
+        let value
+        if (kind && field) {
+            const fields = kind === "concept" ? editor.plan.concept.fields : kind === "arc" ? (editor.plan.arc[id] || {}).fields : (editor.plan.item(kind, id).fields || {})
+            value = fields ? fields[field] : undefined
+        }
+        const label = kind ? aboutName(kind, id) + (fieldLabel ? " · " + fieldLabel : "") : "The whole plan"
+        askPopup.start(kind, id, field, label, value)
+    }
+    function showRequests(thread) { workspace = "plan"; planWorkspace.showRequests(thread) }
+
     // The ComfyUI workflows Chorus Cut generates with, and their adapters.
     WorkflowsSheet { id: workflowsSheet }
     function openWorkflows() { comfySheet.close(); workflowsSheet.open() }
@@ -290,6 +315,11 @@ ApplicationWindow {
             CommandRow { label: "Codex"; command: editor.agent.codexCommand }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
+                text: "To send requests from the app straight into a Claude Code session (“ask” on any field), start Claude Code like this. Channels are a Claude Code research preview; it asks you to confirm at startup, and Team or Enterprise plans need an owner to turn channels on. Without it, requests wait in Plan ▸ Requests until your agent checks them."
+            }
+            CommandRow { objectName: "channelCommand"; label: "Live requests"; command: editor.agent.channelCommand }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
                 text: "Other MCP clients can run the same program over stdio: " + editor.agent.shimPath + "\n\nThen just ask your agent to plan the video in Chorus Cut. In Claude Code, /mcp__ChorusCut__plan starts it too."
             }
             Label {
@@ -300,7 +330,7 @@ ApplicationWindow {
             }
             RowLayout {
                 Item { Layout.fillWidth: true }
-                Action { text: "Done"; active: true; onClicked: agentSheet.close() }
+                Action { objectName: "agentDone"; text: "Done"; active: true; onClicked: agentSheet.close() }
             }
         }
     }
@@ -403,10 +433,11 @@ ApplicationWindow {
             }
             Action {
                 objectName: "agentButton"
-                text: "Agent"
+                text: editor.requests.waitingOnUser ? "Agent · " + editor.requests.waitingOnUser : "Agent"
                 leftPadding: 26
-                onClicked: agentSheet.open()
-                ToolTip.text: editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "Plan with Claude Code or Codex"
+                onClicked: editor.requests.waitingOnUser ? win.showRequests(0) : agentSheet.open()
+                ToolTip.text: (editor.requests.waitingOnUser ? editor.requests.waitingOnUser + " waiting for your answer. " : "")
+                              + (editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "Plan with Claude Code or Codex")
                 Rectangle {
                     width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
                     color: editor.agent.clients.length ? win.mint : editor.agent.note ? "#e7b75f" : "#748084"

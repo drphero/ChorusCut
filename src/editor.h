@@ -3,6 +3,7 @@
 #include "lyrics.h"
 #include "comfy.h"
 #include "generate.h"
+#include "requests.h"
 #include "workflows.h"
 #include "plan.h"
 #include "agent.h"
@@ -32,6 +33,7 @@ class Editor : public QObject {
     Q_PROPERTY(ComfyJobs* comfy READ comfy CONSTANT)
     Q_PROPERTY(Workflows* workflows READ workflows CONSTANT)
     Q_PROPERTY(Generator* generator READ generator CONSTANT)
+    Q_PROPERTY(Requests* requests READ requests CONSTANT)
     Q_PROPERTY(Plan* plan READ plan CONSTANT)
     Q_PROPERTY(AgentBridge* agent READ agent CONSTANT)
     Q_PROPERTY(bool monitorMuted READ monitorMuted WRITE setMonitorMuted NOTIFY monitorChanged)
@@ -65,6 +67,7 @@ public:
     ComfyJobs* comfy() { return comfyJobs; }
     Workflows* workflows() { return workflowLibrary; }
     Generator* generator() { return generatorJobs; }
+    Requests* requests() { return requestThreads; }
     Plan* plan() { return planState; }
     AgentBridge* agent() { return agentBridge; }
     Project* current() { return project.get(); }
@@ -141,6 +144,7 @@ private:
     ComfyJobs* comfyJobs;
     Workflows* workflowLibrary;
     Generator* generatorJobs;
+    Requests* requestThreads;
     Plan* planState;
     AgentBridge* agentBridge;
     int passageEnd = -1;

@@ -80,6 +80,16 @@ Rectangle {
                 }
             }
             Button {
+                objectName: "linksAsk"
+                visible: lp.info !== null
+                focusPolicy: Qt.NoFocus
+                implicitHeight: 28; leftPadding: 10; rightPadding: 10
+                contentItem: Text { text: "Ask"; color: "#edf1ef"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { radius: 4; color: parent.hovered ? "#3b4b52" : "#2b383f" }
+                onClicked: lp.Window.window.askAgent(lp.target.kind === "section" ? "arc" : lp.target.kind, lp.target.id, "", "")
+                ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Ask your agent about this"
+            }
+            Button {
                 objectName: "linksShowCard"
                 visible: lp.info !== null
                 focusPolicy: Qt.NoFocus

@@ -20,6 +20,10 @@ class AgentBridge : public QObject {
     Q_PROPERTY(QString shimPath READ shimPath CONSTANT)
     Q_PROPERTY(QString claudeCommand READ claudeCommand CONSTANT)
     Q_PROPERTY(QString codexCommand READ codexCommand CONSTANT)
+    // Starts Claude Code with Chorus Cut as a channel, so requests from the app reach it live.
+    Q_PROPERTY(QString channelCommand READ channelCommand CONSTANT)
+    // Whether an agent that can take channel events (Claude Code) is connected now.
+    Q_PROPERTY(bool liveClient READ liveClient NOTIFY stateChanged)
 public:
     explicit AgentBridge(Editor* editor, QObject* parent = nullptr);
     // Starts serving agents. Only the interactive app (and the MCP check) calls this.
@@ -32,6 +36,10 @@ public:
     QString shimPath() const;
     QString claudeCommand() const;
     QString codexCommand() const;
+    QString channelCommand() const { return "claude --dangerously-load-development-channels server:ChorusCut"; }
+    bool liveClient() const;
+    // Pushes a user's message to every connected Claude Code; true when one was there to take it.
+    bool push(const QJsonObject& event);
     Q_INVOKABLE void copy(const QString& text) const;
 
     // One tool call: {content: [...], isError}.
@@ -55,4 +63,7 @@ private:
     QJsonObject schema() const;
     QJsonObject apply(const QJsonObject& arguments);
     QJsonObject reference(int id) const;
+    QJsonObject requestsTool(const QJsonObject& arguments);
+    QJsonObject replyTool(const QJsonObject& arguments);
+    QJsonObject askTool(const QJsonObject& arguments);
 };

@@ -10,7 +10,7 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavutil)
 add_library(chorus_editor STATIC src/lyrics.cpp src/editor.cpp src/editor.h src/xml.cpp src/project.cpp
             src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h
             src/agent.cpp src/agent.h src/agent_tools.cpp src/agent_tools.h
-            src/workflows.cpp src/workflows.h src/generate.cpp src/generate.h)
+            src/workflows.cpp src/workflows.h src/generate.cpp src/generate.h src/requests.cpp src/requests.h)
 target_include_directories(chorus_editor PUBLIC src)
 target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain)
 set(CHORUS_ALIGNMENT_PYTHON "python3" CACHE STRING "Python with torch and torchaudio for local lyric alignment")
@@ -18,7 +18,7 @@ target_compile_definitions(chorus_editor PRIVATE CHORUS_ALIGNMENT_PYTHON="${CHOR
 set_source_files_properties(alignment/align.py PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManager.qml src/PlanWorkspace.qml
                src/PlanField.qml src/PlanText.qml src/PlanCombo.qml src/Checks.qml src/ReferenceStrip.qml
-               src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml)
+               src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml)
 qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py)
 qt_add_resources(ChorusCut ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCut PRIVATE chorus_editor Qt6::QuickControls2)

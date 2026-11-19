@@ -27,6 +27,40 @@ QString quoted(const QString& path) { return "\"" + QString(path).replace("\"", 
 
 AgentBridge::AgentBridge(Editor* editor, QObject* parent) : QObject(parent), editor(editor) {
     connect(&server, &QLocalServer::newConnection, this, &AgentBridge::accept);
+    connect(editor->requests(), &Requests::posted, this, [this, editor](const QJsonObject& event) {
+        editor->requests()->markSent(event["thread"].toInt(), push(event));
+    });
+}
+
+bool AgentBridge::liveClient() const {
+    for (const QString& name : peers) if (name.contains("claude", Qt::CaseInsensitive)) return true;
+    return false;
+}
+
+bool AgentBridge::push(const QJsonObject& event) {
+    const int thread = event["thread"].toInt();
+    const auto about = event["about"].toObject();
+    const QString label = event["label"].toString();
+    QString content;
+    if (event["kind"] == "answer")
+        content = QString("The user answered your question about %1 (request %2): %3").arg(label).arg(thread).arg(event["text"].toString());
+    else
+        content = QString("The user asks, about %1 (request %2): %3").arg(label).arg(thread).arg(event["text"].toString());
+    QJsonObject meta{{"request_id", QString::number(thread)}};
+    if (!about["kind"].toString().isEmpty()) {
+        meta["about_kind"] = about["kind"].toString();
+        meta["about_id"] = QString::number(about["id"].toInt());
+        if (!about["field"].toString().isEmpty()) meta["field"] = about["field"].toString();
+    }
+    const QByteArray line = QJsonDocument(QJsonObject{{"event", QJsonObject{{"content", content}, {"meta", meta}}}}).toJson(QJsonDocument::Compact) + '\n';
+    bool reached = false;
+    for (auto it = peers.begin(); it != peers.end(); ++it) {
+        if (!it.value().contains("claude", Qt::CaseInsensitive)) continue;
+        it.key()->write(line);
+        it.key()->flush();
+        reached = true;
+    }
+    return reached;
 }
 
 bool AgentBridge::start() {
@@ -106,6 +140,9 @@ QJsonObject AgentBridge::call(const QString& tool, const QJsonObject& arguments)
     if (tool == "get_schema") return text(schema());
     if (tool == "view_reference") return reference(arguments.value("id").toInt());
     if (tool == "apply_plan") return apply(arguments);
+    if (tool == "get_requests") return requestsTool(arguments);
+    if (tool == "reply_request") return replyTool(arguments);
+    if (tool == "ask_user") return askTool(arguments);
     return failure("Unknown tool: " + tool);
 }
 
@@ -122,7 +159,8 @@ QJsonObject AgentBridge::project() const {
                                    {"flaggedLines", lyrics->flaggedLines()}}},
             {"plan", QJsonObject{{"characters", plan->characters().size()}, {"locations", plan->locations().size()},
                                  {"shots", plan->shots().size()}, {"references", plan->references().size()}}},
-            {"gates", gates}, {"openChecks", plan->errorCount()}};
+            {"gates", gates}, {"openChecks", plan->errorCount()},
+            {"requests", QJsonObject{{"waitingForYou", editor->requests()->waitingOnAgent()}, {"waitingForUser", editor->requests()->waitingOnUser()}}}};
 }
 
 QJsonObject AgentBridge::song(bool words) const {
@@ -323,6 +361,29 @@ QJsonObject AgentBridge::apply(const QJsonObject& arguments) {
     if (!changes) out["note"] = "Nothing changed: every field already had that value or is the user's.";
     else emit passApplied(undoLabel, changes, currentClient);
     return text(out);
+}
+
+QJsonObject AgentBridge::requestsTool(const QJsonObject& arguments) {
+    const QJsonArray threads = editor->requests()->forAgent(arguments.value("include_done").toBool());
+    return text({{"requests", threads},
+                 {"note", threads.isEmpty() ? "No open requests." : "Do what each request waiting for you asks (apply_plan, labelled after it), then answer it with reply_request."}});
+}
+
+QJsonObject AgentBridge::replyTool(const QJsonObject& arguments) {
+    QString error;
+    const int id = arguments.value("request_id").toVariant().toInt();
+    if (!editor->requests()->agentReply(id, arguments.value("text").toString(), arguments.value("done").toBool(), error)) return failure(error);
+    return text({{"sent", true}, {"request", id}, {"waitingFor", arguments.value("done").toBool() ? "nobody (done)" : "user"}});
+}
+
+QJsonObject AgentBridge::askTool(const QJsonObject& arguments) {
+    QString error;
+    QStringList options;
+    for (const auto& o : arguments.value("options").toArray()) if (!o.toString().trimmed().isEmpty()) options << o.toString().trimmed();
+    const int id = editor->requests()->agentAsk(arguments.value("question").toString(), arguments.value("about").toObject(), options, error);
+    if (!id) return failure(error);
+    return text({{"asked", true}, {"request", id},
+                 {"note", "The question is shown in Chorus Cut. The answer arrives as a channel event if this session has Chorus Cut as a channel; otherwise read it later with get_requests. Don't wait for it: carry on or end your turn."}});
 }
 
 QJsonObject AgentBridge::reference(int id) const {

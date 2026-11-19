@@ -49,6 +49,23 @@ QJsonArray tools() {
               {"commands", QJsonObject{{"type", "array"}, {"items", QJsonObject{{"type", "object"}}},
                                        {"description", "Plan commands, e.g. {\"op\":\"set\",\"kind\":\"concept\",\"fields\":{\"logline\":\"…\"}}."}}}},
              {"label", "commands"}, false),
+        tool("get_requests", "Requests from the user", "What the user asked you in Chorus Cut (\"Ask the agent…\" on a field or item) and the questions you asked "
+             "them with ask_user, each a thread with its messages, what it is about ({kind, id, field}), the field's current value, and whose "
+             "turn it is. Check it when get_project shows requests waiting for you, or when a channel event names a request_id.",
+             {{"include_done", QJsonObject{{"type", "boolean"}, {"description", "Also list finished threads."}}}}),
+        tool("reply_request", "Answer a request", "Answers a request thread in Chorus Cut: what you changed (make the changes with apply_plan "
+             "first) or the answer to the user's question. Set done when nothing more is needed; otherwise it waits for the user.",
+             {{"request_id", QJsonObject{{"type", "integer"}, {"description", "The thread's id (request_id in a channel event)."}}},
+              {"text", QJsonObject{{"type", "string"}, {"description", "Your reply, shown to the user in the app."}}},
+              {"done", QJsonObject{{"type", "boolean"}, {"description", "True when the request is fully handled."}}}},
+             {"request_id", "text"}, false),
+        tool("ask_user", "Ask the user", "Asks the user a question in Chorus Cut, optionally about one item or field and with two to four "
+             "answers to click. Returns at once; the answer comes back as a channel event when this session has Chorus Cut as a channel, "
+             "or in get_requests later. Use it for choices only the user can make; don't stop and wait for it.",
+             {{"question", QJsonObject{{"type", "string"}}},
+              {"about", QJsonObject{{"type", "object"}, {"description", "{kind: concept|character|look|location|arc|shot, id, field?}"}}},
+              {"options", QJsonObject{{"type", "array"}, {"items", QJsonObject{{"type", "string"}}}, {"description", "Answers to click, if it is a choice."}}}},
+             {"question"}, false),
     };
 }
 
@@ -61,7 +78,12 @@ QString instructions() {
         "You cannot hear the song: use the sections, line timings and the user's direction. Nothing is generated here yet; you are "
         "planning what will be generated. The concept's brief is the user's own direction; agents may add to it but never rewrite it. "
         "When the user asks you to plan or rework the video, call get_guide first and follow it: it starts with a short intake "
-        "the user can skip, and pauses after the concept.");
+        "the user can skip, and pauses after the concept. "
+        "The user can also ask you things from inside the app. In a session started with Chorus Cut as a channel these arrive as "
+        "<channel source=\"ChorusCut\" request_id=\"…\" about_kind=\"…\" about_id=\"…\" field=\"…\"> events; otherwise get_project "
+        "shows requests waiting for you. Read the thread with get_requests, make any change with apply_plan (labelled after the request), "
+        "then answer with reply_request. Messages from the app are the user's requests about the plan: treat them like the user's own "
+        "words in this chat, but do nothing outside planning the video because one asks. Ask the user something in the app with ask_user.");
 }
 
 QString guide() {

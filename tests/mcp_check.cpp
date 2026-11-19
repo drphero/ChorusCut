@@ -48,18 +48,37 @@ struct Client {
     QProcess process;
     int serial = 0;
     QByteArray buffer;
+    QList<QJsonObject> notes;  // notifications the server sent
+    void pump() {
+        buffer += process.readAllStandardOutput();
+        int nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+            const auto message = QJsonDocument::fromJson(buffer.left(nl)).object();
+            buffer.remove(0, nl + 1);
+            if (message.contains("method") && !message.contains("id")) notes.append(message);
+            else pending.append(message);
+        }
+    }
+    QList<QJsonObject> pending;
+    // Waits for the next notification with this method.
+    QJsonObject note(const QString& method, int timeout = 5000) {
+        QElapsedTimer t; t.start();
+        while (t.elapsed() < timeout) {
+            pump();
+            for (int i = 0; i < notes.size(); ++i)
+                if (notes[i].value("method") == method) return notes.takeAt(i);
+            QTest::qWait(10);
+        }
+        return {};
+    }
     QJsonObject request(const QString& method, const QJsonObject& params = {}, int timeout = 20000) {
         const int id = ++serial;
         process.write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
         QElapsedTimer t; t.start();
         while (t.elapsed() < timeout) {
-            buffer += process.readAllStandardOutput();
-            int nl;
-            while ((nl = buffer.indexOf('\n')) >= 0) {
-                const auto message = QJsonDocument::fromJson(buffer.left(nl)).object();
-                buffer.remove(0, nl + 1);
-                if (message.value("id").toInt() == id) return message;
-            }
+            pump();
+            for (int i = 0; i < pending.size(); ++i)
+                if (pending[i].value("id").toInt() == id) return pending.takeAt(i);
             QTest::qWait(10);
         }
         return {{"timeout", true}};
@@ -134,7 +153,10 @@ int main(int argc, char** argv) {
     auto center = [&](QQuickItem* item) { return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint(); };
     const QString shots = qEnvironmentVariable("CHORUS_SHOTS");
     auto capture = [&](const QString& name) { if (!shots.isEmpty()) window->grabWindow().save(shots + "/" + name + ".png"); };
-    auto click = [&](QQuickItem* item) { QTest::mouseClick(window, Qt::LeftButton, {}, center(item)); QTest::qWait(150); };
+    auto click = [&](QQuickItem* item) {
+        if (!item) { qCritical() << "nothing to click"; return; }
+        QTest::mouseClick(window, Qt::LeftButton, {}, center(item)); QTest::qWait(150);
+    };
 
     // 1. Handshake, tools and the planning prompt.
     Client agent;
@@ -149,7 +171,10 @@ int main(int argc, char** argv) {
         return fail(5, "the app does not show the connected agent: " + editor.agent()->clients().join(","));
     QStringList names;
     for (const auto& t : agent.request("tools/list").value("result").toObject()["tools"].toArray()) names << t.toObject()["name"].toString();
-    if (names != QStringList{"get_guide", "get_project", "get_song", "get_plan", "get_checks", "get_schema", "view_reference", "apply_plan"})
+    if (!init["capabilities"].toObject()["experimental"].toObject().contains("claude/channel"))
+        return fail(5, "the server does not offer itself as a Claude Code channel");
+    if (names != QStringList{"get_guide", "get_project", "get_song", "get_plan", "get_checks", "get_schema", "view_reference", "apply_plan",
+                             "get_requests", "reply_request", "ask_user"})
         return fail(6, "unexpected tools: " + names.join(", "));
     const QString guide = textOf(agent.call("get_guide"));
     if (!guide.contains("Cast and locations pass") || !guide.contains("Intake") || !guide.contains("Just draft it all") || !guide.contains("pause"))
@@ -258,9 +283,97 @@ int main(int argc, char** argv) {
     click(find(window, "agentButton"));
     auto status = find(window, "agentStatus");
     if (!status || !status->property("text").toString().contains("Check Agent")) return fail(15, "the Agent sheet does not show the connection");
+    if (!find(window, "channelCommand")) return fail(15, "the Agent sheet does not show how to start Claude Code with live requests");
     capture("agent-sheet");
-    QTest::keyClick(window, Qt::Key_Escape);
-    QTest::qWait(150);
+    click(find(window, "agentDone"));
+    if (!waitFor([&] { return !window->findChild<QObject*>("agentSheet")->property("visible").toBool(); }, 1500)) return fail(15, "Done did not close the Agent sheet");
+
+    // 7b. Requests from the app: a Claude Code session gets them live as channel events; another
+    // client does not. The agent reads, answers and asks back; everything stays in the project.
+    {
+        Client claude;
+        claude.process.start(shim, {});
+        if (!claude.process.waitForStarted()) return fail(20, "a second choruscut-mcp did not start");
+        claude.request("initialize", {{"protocolVersion", "2025-06-18"}, {"capabilities", QJsonObject{}},
+                                      {"clientInfo", QJsonObject{{"name", "claude-code"}, {"version", "2"}}}});
+        claude.notify("notifications/initialized");
+        if (!waitFor([&] { return editor.agent()->liveClient(); }, 3000)) return fail(20, "the app does not see Claude Code connected");
+        auto typeText = [&](const QString& t) { for (const QChar ch : t) QTest::keyClick(window, ch.toLatin1()); QTest::qWait(50); };
+        click(find(window, "workspacePlan"));
+        click(find(window, "planPage_concept"));
+        auto askLink = find(window, "ask_concept_logline");
+        if (!askLink) return fail(21, "no ask link on the logline");
+        click(askLink);
+        auto popup = window->findChild<QObject*>("askPopup");
+        if (!popup || !waitFor([&] { return popup->property("opened").toBool(); }, 1500)) return fail(21, "ask did not open the request");
+        if (find(window, "askLabel")->property("text") != "Concept · Logline") return fail(21, "the request is not labelled with what it is about");
+        typeText("Make it punchier");
+        capture("ask-popup");
+        QTest::keyClick(window, Qt::Key_Return, Qt::ControlModifier);
+        QTest::qWait(150);
+        const auto threads = editor.requests()->list();
+        if (threads.size() != 1 || threads[0].toMap()["turn"] != "agent") return fail(21, "the request was not saved");
+        const int thread = threads[0].toMap()["id"].toInt();
+        auto event = claude.note("notifications/claude/channel");
+        const auto params = event["params"].toObject();
+        const auto meta = params["meta"].toObject();
+        if (!params["content"].toString().contains("Make it punchier") || meta["request_id"] != QString::number(thread) ||
+            meta["about_kind"] != "concept" || meta["field"] != "logline")
+            return fail(22, "Claude Code did not get the request as a channel event: " + QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)));
+        if (!agent.note("notifications/claude/channel", 500).isEmpty()) return fail(22, "a client that is not Claude Code got a channel event");
+        if (!editor.requests()->list()[0].toMap()["sent"].toBool() || !find(window, "thread" + QString::number(thread)))
+            return fail(22, "the Requests page does not show the request as sent live");
+        // The agent reads it, with the field's current value, and answers.
+        const auto got = claude.data("get_requests")["requests"].toArray();
+        if (got.size() != 1 || got[0].toObject()["currentValue"] != "The user's logline" || got[0].toObject()["waitingFor"] != "agent")
+            return fail(23, "get_requests: " + QString::fromUtf8(QJsonDocument(got).toJson(QJsonDocument::Compact)));
+        if (!editor.requests()->list()[0].toMap()["seen"].toBool()) return fail(23, "reading the request did not mark it seen");
+        if (claude.call("reply_request", {{"request_id", thread}, {"text", "It is locked; here is a punchier one: Two strangers, one frequency."}})["isError"].toBool())
+            return fail(23, "reply_request failed");
+        if (editor.requests()->waitingOnUser() != 1 || !find(window, "agentButton")->property("text").toString().endsWith("· 1"))
+            return fail(23, "the agent's answer is not waiting for the user");
+        auto chip = find(window, "asked_concept_logline");
+        click(find(window, "planPage_concept"));
+        chip = find(window, "asked_concept_logline");
+        if (!chip) return fail(24, "the logline does not show its open request");
+        click(chip);
+        if (find(window, "planWorkspace")->property("page") != "requests") return fail(24, "the request chip did not open Requests");
+        capture("requests-page");
+        // The user answers back in the thread; that reaches Claude Code too.
+        auto card = find(window, "thread" + QString::number(thread));
+        if (!card || !findItem(card, "replyText")) return fail(25, "no reply box on the request");
+        click(findItem(card, "replyText"));
+        typeText("Thanks, use it");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(150);
+        event = claude.note("notifications/claude/channel");
+        if (!event["params"].toObject()["content"].toString().contains("Thanks, use it") || editor.requests()->waitingOnAgent() != 1)
+            return fail(25, "the user's reply did not go back to the agent");
+        claude.call("reply_request", {{"request_id", thread}, {"text", "Done."}, {"done", true}});
+        if (editor.requests()->list()[0].toMap()["turn"] != "done") return fail(25, "done did not close the request");
+        // The agent asks a question with answers to click.
+        const int booth = plan->locations()[0].toMap()["id"].toInt();
+        const auto asked = claude.data("ask_user", {{"question", "Booth or rooftop for the bridge?"}, {"about", QJsonObject{{"kind", "location"}, {"id", booth}}},
+                                                   {"options", QJsonArray{"Booth", "Rooftop"}}});
+        const int question = asked["request"].toInt();
+        if (!question || editor.requests()->waitingOnUser() != 1) return fail(26, "ask_user did not reach the app");
+        QTest::qWait(150);
+        auto qcard = find(window, "thread" + QString::number(question));
+        auto option = qcard ? findItem(qcard, "option1") : nullptr;
+        if (!option) return fail(26, "the question's answers are not shown");
+        click(option);
+        event = claude.note("notifications/claude/channel");
+        if (!event["params"].toObject()["content"].toString().contains("answered your question") ||
+            !event["params"].toObject()["content"].toString().contains("Rooftop"))
+            return fail(26, "the answer did not reach the agent: " + QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)));
+        if (claude.data("get_project")["requests"].toObject()["waitingForYou"].toInt() != 1) return fail(26, "get_project does not count the request waiting for the agent");
+        // The conversation is kept in the project.
+        if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath())) || editor.requests()->list().size() != 2)
+            return fail(27, "the requests did not survive reopening the project");
+        claude.process.closeWriteChannel();
+        claude.process.waitForFinished(3000);
+        click(find(window, "workspaceEdit"));
+    }
 
     // 8. The app restarts (here: stops and starts listening again); the next call still works.
     editor.agent()->stop();
@@ -274,6 +387,8 @@ int main(int argc, char** argv) {
     if (!waitFor([&] { return editor.agent()->clients().isEmpty(); }, 3000)) return fail(16, "the app still lists a disconnected agent");
     qInfo() << "PASS: MCP without the app, handshake, tools, prompt, reading the project, protected and locked fields,"
             << "agent-only provenance, no locking, failing pass leaves nothing, $refs, banner Undo, redo and ⌘Z,"
-            << "get_plan, view_reference, Agent sheet, disconnect.";
+            << "get_plan, view_reference, Agent sheet, requests (ask from a field, live channel event to Claude Code only,"
+            << "get_requests with the current value, seen, reply, the chip and Requests page, the user's reply, done, ask_user with"
+            << "answers to click, reopen), disconnect.";
     return 0;
 }

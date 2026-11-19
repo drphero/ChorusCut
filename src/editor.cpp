@@ -44,7 +44,8 @@ Editor::Editor() {
     planState = new Plan(&lyricState, this);
     planState->setHistory(&history);
     generatorJobs = new Generator(this);  // after the plan and the workflows it uses
-    agentBridge = new AgentBridge(this, this);  // serves agents once start() is called
+    requestThreads = new Requests(this);
+    agentBridge = new AgentBridge(this, this);  // after the requests it delivers; serves agents once start() is called
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
     connect(&history, &QUndoStack::cleanChanged, this, changed);
@@ -66,6 +67,7 @@ void Editor::closeProject() {
     thumbTimer.stop();
     comfyJobs->detach();
     generatorJobs->detach();
+    requestThreads->unload();
     stop();
     listener.reset(); output.reset(); timeline.reset();
     lyricState.unload();
@@ -187,6 +189,7 @@ bool Editor::openProject(const QUrl& folder) {
     seek(0);
     comfyJobs->resume();
     generatorJobs->resume();
+    requestThreads->load();
     return true;
 }
 
