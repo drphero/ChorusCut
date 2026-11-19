@@ -1,6 +1,7 @@
 #include "library.h"
 #include "editor.h"
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
@@ -294,7 +295,24 @@ bool ProjectLibrary::moveToTrash(const QString& path) {
 }
 
 void ProjectLibrary::reveal(const QString& path) {
+#if defined(Q_OS_MACOS)
     QProcess::startDetached("/usr/bin/open", {"-R", path});
+#elif defined(Q_OS_WIN)
+    QProcess::startDetached("explorer.exe", {"/select," + QDir::toNativeSeparators(path)});
+#else
+    // File managers differ on Linux; open the folder that contains it.
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+#endif
+}
+
+QString ProjectLibrary::revealLabel() const {
+#if defined(Q_OS_MACOS)
+    return "Show in Finder";
+#elif defined(Q_OS_WIN)
+    return "Show in Explorer";
+#else
+    return "Show in File Manager";
+#endif
 }
 
 void ProjectLibrary::create(const QString& name, const QUrl& song, const QUrl& base, const QUrl& insert) {

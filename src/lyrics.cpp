@@ -208,7 +208,7 @@ bool Lyrics::accept(const QByteArray& result) {
     if (!i || i!=spans.size()) return invalid();
     if (!store(draft,draft,spans,QJsonArray{})) return false;
     emit historyInvalidated();
-    say(QString("Aligned %1 words on this Mac.").arg(i)); return true;
+    say(QString("Aligned %1 words offline.").arg(i)); return true;
 }
 
 bool Lyrics::importAlignment(const QUrl& file) {

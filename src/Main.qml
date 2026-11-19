@@ -16,13 +16,13 @@ ApplicationWindow {
 
     // The Project Manager covers the editor at launch when no project is open, and on ⌘O.
     property bool managerOpen: false
-    Component.onCompleted: if (!editor.ready) showManager()
+    Component.onCompleted: { if (!editor.ready) showManager(); editor.comfy.testConnection() }
     function showManager() { managerOpen = true; manager.show() }
 
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -115,10 +115,45 @@ ApplicationWindow {
         onAccepted: if (editor.lyrics.importAlignment(selectedFile)) lyricsEditor.close()
     }
 
+    // Where Chorus Cut runs its GPU jobs: ComfyUI on this computer or on a rented GPU.
+    Popup {
+        id: comfySheet
+        objectName: "comfySheet"
+        anchors.centerIn: parent
+        width: Math.min(520, win.width - 80)
+        modal: true
+        padding: 20
+        background: Rectangle { color: "#1d2930"; radius: 6; border.color: "#34434a" }
+        onOpened: { comfyUrl.text = editor.comfy.url; comfyToken.text = ""; comfyUrl.forceActiveFocus() }
+        function connectNow() { editor.comfy.configure(comfyUrl.text, comfyToken.text, false); comfyToken.text = ""; editor.comfy.testConnection() }
+        contentItem: ColumnLayout {
+            spacing: 10
+            LabelText { text: "ComfyUI"; font.pixelSize: 17; font.bold: true }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet
+                text: "Chorus Cut aligns lyrics, and later generates shots, through ComfyUI: on this computer, on another machine, or on a rented GPU. Install the Chorus Cut node pack in that ComfyUI."
+            }
+            TextField { id: comfyUrl; objectName: "comfyUrl"; Layout.fillWidth: true; placeholderText: "http://127.0.0.1:8188"; selectByMouse: true
+                        Keys.onReturnPressed: comfySheet.connectNow() }
+            TextField { id: comfyToken; objectName: "comfyToken"; Layout.fillWidth: true; echoMode: TextInput.Password; selectByMouse: true
+                        placeholderText: editor.comfy.hasToken ? "Access token saved (type to replace)" : "Access token, if the server needs one (optional)"
+                        Keys.onReturnPressed: comfySheet.connectNow() }
+            Label { objectName: "comfyStatus"; Layout.fillWidth: true; wrapMode: Text.Wrap; visible: text.length > 0; text: editor.comfy.connectionText
+                    color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "checking" ? win.quiet : "#e7b75f" }
+            RowLayout {
+                Action { visible: editor.comfy.hasToken; text: "Forget token"; onClicked: editor.comfy.configure(comfyUrl.text, "", true) }
+                Item { Layout.fillWidth: true }
+                Action { objectName: "comfyConnect"; text: "Connect"; onClicked: comfySheet.connectNow() }
+                Action { text: "Done"; active: true; onClicked: comfySheet.close() }
+            }
+        }
+    }
+
     // Lyric text: paste, save, align locally or import a GPU alignment.
     Popup {
         id: lyricsEditor
         objectName: "lyricsEditor"
+        readonly property bool working: editor.lyrics.busy || editor.comfy.busy
         anchors.centerIn: parent
         width: Math.min(620, win.width - 80); height: Math.min(640, win.height - 80)
         modal: true
@@ -142,20 +177,49 @@ ApplicationWindow {
                     background: Rectangle { color: "#162027"; radius: 4 }
                 }
             }
-            Label { Layout.fillWidth: true; visible: text.length > 0; text: editor.lyrics.message; color: win.mint; wrapMode: Text.Wrap }
+            Label { Layout.fillWidth: true; visible: text.length > 0 && !editor.comfy.busy; text: editor.lyrics.message; color: win.mint; wrapMode: Text.Wrap }
+            Label { Layout.fillWidth: true; visible: text.length > 0; text: editor.comfy.jobText; color: win.quiet; wrapMode: Text.Wrap; objectName: "comfyJobText" }
+            // Secondary actions above; the main path (language, Align, Done) below.
             RowLayout {
-                Action { text: "Import alignment…"; enabled: draft.text === editor.lyrics.text && draft.text.length > 0; onClicked: importDialog.open()
-                         ToolTip.text: "Load word timings computed on the GPU for these exact lyrics" }
-                Item { Layout.fillWidth: true }
-                Action { visible: editor.lyrics.busy; text: "Cancel alignment"; onClicked: editor.lyrics.cancel() }
-                Action { text: "Save lyrics"; enabled: draft.text !== editor.lyrics.text && !editor.lyrics.busy; onClicked: editor.lyrics.saveText(draft.text) }
-                Action { objectName: "alignWords"; text: "Align on this Mac"; enabled: draft.text.trim().length > 0 && !editor.lyrics.busy
+                Layout.fillWidth: true
+                Action { text: "Import alignment…"; enabled: draft.text === editor.lyrics.text && draft.text.length > 0 && !lyricsEditor.working; onClicked: importDialog.open()
+                         ToolTip.text: "Load a saved alignment JSON for these exact lyrics" }
+                Action { objectName: "alignWords"; text: "Basic offline align"; enabled: draft.text.trim().length > 0 && !lyricsEditor.working
+                         ToolTip.text: "Older single-model aligner that runs without ComfyUI; less accurate"
                          onClicked: { if (editor.lyrics.saveText(draft.text)) editor.lyrics.align() } }
-                Action { text: "Done"; enabled: !editor.lyrics.busy; active: true; onClicked: lyricsEditor.close() }
+                Item { Layout.fillWidth: true }
+                Action { text: "Save lyrics"; enabled: draft.text !== editor.lyrics.text && !lyricsEditor.working; onClicked: editor.lyrics.saveText(draft.text) }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Action { visible: lyricsEditor.working; text: "Cancel alignment"; onClicked: { editor.lyrics.cancel(); editor.comfy.cancel() } }
+                ComboBox {
+                    id: alignLanguage
+                    objectName: "alignLanguage"
+                    implicitHeight: 32; implicitWidth: 120
+                    enabled: !lyricsEditor.working
+                    textRole: "label"; valueRole: "code"
+                    model: [{label: "English", code: "en"}, {label: "French", code: "fr"}, {label: "German", code: "de"}, {label: "Spanish", code: "es"}]
+                    Component.onCompleted: currentIndex = Math.max(0, indexOfValue(editor.comfy.language))
+                    Accessible.name: "Language of the lyrics"
+                    contentItem: Text { leftPadding: 10; text: alignLanguage.displayText; color: win.ink; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: alignLanguage.hovered ? "#3b4b52" : "#2b383f"; radius: 5 }
+                    indicator: Text { x: alignLanguage.width - width - 10; anchors.verticalCenter: parent.verticalCenter; text: "▾"; color: win.quiet }
+                }
+                Action { objectName: "alignComfy"; text: "Align"; active: true
+                         enabled: draft.text.trim().length > 0 && !lyricsEditor.working
+                         ToolTip.text: "Align every word on ComfyUI (" + editor.comfy.url + ")"
+                         onClicked: { if (editor.lyrics.saveText(draft.text)) editor.comfy.alignLyrics(alignLanguage.currentValue) } }
+                Action { text: "Done"; enabled: !lyricsEditor.working; onClicked: lyricsEditor.close() }
             }
         }
         Connections {
             target: editor.lyrics
+            function onFinished(success) { if (success) lyricsEditor.close() }
+        }
+        Connections {
+            target: editor.comfy
             function onFinished(success) { if (success) lyricsEditor.close() }
         }
     }
@@ -169,6 +233,18 @@ ApplicationWindow {
             LabelText { text: "Chorus Cut"; font.pixelSize: 22; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
             Action { objectName: "openManager"; text: "Projects"; onClicked: win.showManager(); ToolTip.text: "Project Manager (⌘O)" }
             Action { objectName: "openLyrics"; text: "Lyrics…"; enabled: editor.ready; onClicked: lyricsEditor.open() }
+            Action {
+                objectName: "comfyButton"
+                text: "ComfyUI"
+                leftPadding: 26
+                onClicked: comfySheet.open()
+                ToolTip.text: editor.comfy.connectionText || editor.comfy.url
+                Rectangle {
+                    width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
+                    color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "missingNode" ? "#e7b75f"
+                         : editor.comfy.connection === "unreachable" ? "#f0a08f" : "#748084"
+                }
+            }
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }
             Action { text: "Redo"; enabled: editor.canRedo; onClicked: editor.redo(); ToolTip.text: editor.redoText ? "Redo " + editor.redoText.toLowerCase() : "" }
@@ -267,7 +343,7 @@ ApplicationWindow {
 
         LabelText {
             Layout.fillWidth: true; elide: Text.ElideMiddle; color: win.quiet; font.pixelSize: 12
-            text: editor.status || editor.lyrics.message ||
+            text: editor.status || (editor.comfy.busy ? editor.comfy.jobText : "") || editor.lyrics.message ||
                   "Drag lyrics to move them, drag edges to trim. Pinch or ⌘-scroll to zoom; scroll to pan."
         }
     }

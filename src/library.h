@@ -18,6 +18,7 @@ class ProjectLibrary : public QObject {
     Q_PROPERTY(QVariantList projects READ projects NOTIFY projectsChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString message READ message NOTIFY messageChanged)
+    Q_PROPERTY(QString revealLabel READ revealLabel CONSTANT)
 public:
     explicit ProjectLibrary(Editor* editor, QObject* parent = nullptr);
     QVariantList libraries() const;
@@ -27,6 +28,7 @@ public:
     QVariantList projects() const { return list; }
     bool busy() const { return working; }
     QString message() const { return note; }
+    QString revealLabel() const;
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void addLibrary(const QUrl& folder);

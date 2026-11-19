@@ -38,6 +38,7 @@ private:
 }
 
 Editor::Editor() {
+    comfyJobs = new ComfyJobs(this);
     lyricState.setHistory(&history);
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
@@ -58,6 +59,7 @@ void Editor::closeProject() {
     if (!project) return;
     saveThumbnail();
     thumbTimer.stop();
+    comfyJobs->detach();
     stop();
     listener.reset(); output.reset(); timeline.reset();
     lyricState.unload();
@@ -172,6 +174,7 @@ bool Editor::openProject(const QUrl& folder) {
     info({});
     emit projectChanged(); emit edited();
     seek(0);
+    comfyJobs->resume();
     return true;
 }
 

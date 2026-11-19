@@ -287,14 +287,14 @@ FocusScope {
         MItem { objectName: "menuOpen"; text: "Open"; onTriggered: pm.openProject(cardMenu.card.path) }
         MItem { objectName: "menuRename"; text: "Rename…"; onTriggered: pm.askRename(cardMenu.card) }
         MItem { objectName: "menuDuplicate"; text: "Duplicate"; enabled: !library.busy; onTriggered: library.duplicate(cardMenu.card.path) }
-        MItem { text: "Show in Finder"; onTriggered: library.reveal(cardMenu.card.path) }
+        MItem { text: library.revealLabel; onTriggered: library.reveal(cardMenu.card.path) }
         MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: pm.line } }
         MItem { objectName: "menuTrash"; text: "Move to Trash…"; danger: true; onTriggered: pm.askTrash(cardMenu.card) }
     }
     DarkMenu {
         id: libMenu
         property int which: -1
-        MItem { text: "Show in Finder"; onTriggered: library.reveal(library.libraries[libMenu.which].path) }
+        MItem { text: library.revealLabel; onTriggered: library.reveal(library.libraries[libMenu.which].path) }
         MItem { text: "Remove from list"; enabled: library.libraries.length > 1; onTriggered: library.removeLibrary(libMenu.which) }
     }
     FolderDialog { id: addLibraryDialog; title: "Choose a folder to use as a project library"; onAccepted: library.addLibrary(selectedFolder) }
@@ -337,7 +337,7 @@ FocusScope {
             Text { text: "Move “" + (trash.card ? trash.card.name : "") + "” to the Trash?"; color: pm.ink; font.pixelSize: 16; font.weight: Font.DemiBold
                    Layout.fillWidth: true; wrapMode: Text.Wrap }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.quiet; font.pixelSize: 13
-                   text: "The whole project folder goes, including its copies of the media. You can put it back from the Trash in Finder." }
+                   text: "The whole project folder goes, including its copies of the media. You can restore it from the Trash." }
             RowLayout {
                 Item { Layout.fillWidth: true }
                 Action { objectName: "trashCancel"; text: "Cancel"; onClicked: trash.close() }

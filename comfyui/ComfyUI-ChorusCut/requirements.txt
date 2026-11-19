@@ -1,0 +1,2 @@
+# Beyond what ComfyUI already installs (torch, torchaudio, numpy, einops, huggingface_hub):
+transformers>=4.48
