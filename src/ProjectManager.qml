@@ -351,14 +351,15 @@ FocusScope {
     Sheet {
         id: newProject
         objectName: "newProjectSheet"
-        width: Math.min(560, pm.width - 60)
+        width: Math.min(620, pm.width - 60)
         closePolicy: editor.importing ? Popup.NoAutoClose : Popup.CloseOnEscape
         property url master
         property string failure: ""
         property string suggested: ""
         readonly property string problem: library.checkName(nameField.text)
         onOpened: {
-            failure = ""; master = ""
+            failure = ""; master = ""; newLyrics.text = ""
+            newLanguage.currentIndex = Math.max(0, newLanguage.indexOfValue(editor.comfy.language))
             let name = "Untitled Project", n = 1
             while (library.checkName(name)) name = "Untitled Project " + (++n)
             suggested = name
@@ -376,7 +377,12 @@ FocusScope {
         Connections {
             target: library
             function onCreated(success) {
-                if (success) { newProject.close(); pm.finished() } else newProject.failure = library.message
+                if (!success) { newProject.failure = library.message; return }
+                // With lyrics pasted, save them and start aligning when ComfyUI is connected.
+                const text = newLyrics.text.trim()
+                if (text.length && editor.lyrics.saveText(text) && editor.comfy.connection === "ready")
+                    editor.comfy.alignLyrics(newLanguage.currentValue)
+                newProject.close(); pm.finished()
             }
         }
         FileDialog { id: pick; title: "Choose the song"
@@ -400,7 +406,37 @@ FocusScope {
             Text { Layout.fillWidth: true; elide: Text.ElideMiddle; color: pm.faint; font.pixelSize: 12
                    text: "Saved in " + (library.libraries.length ? library.libraries[library.current].shown : "") }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.faint; font.pixelSize: 12
-                   text: "The song is copied into the project folder, so the project moves as one piece. Add lyrics once it opens." }
+                   text: "The song is copied into the project folder, so the project moves as one piece." }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { Layout.fillWidth: true; text: "Lyrics (optional)"; color: pm.quiet; font.pixelSize: 13 }
+                ComboBox {
+                    id: newLanguage
+                    objectName: "newProjectLanguage"
+                    implicitHeight: 28; implicitWidth: 110
+                    textRole: "label"; valueRole: "code"
+                    model: [{label: "English", code: "en"}, {label: "French", code: "fr"}, {label: "German", code: "de"}, {label: "Spanish", code: "es"}]
+                    Accessible.name: "Language of the lyrics"
+                    contentItem: Text { leftPadding: 10; text: newLanguage.displayText; color: pm.ink; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: newLanguage.hovered ? "#3b4b52" : "#2b383f"; radius: 5 }
+                    indicator: Text { x: newLanguage.width - width - 10; anchors.verticalCenter: parent.verticalCenter; text: "▾"; color: pm.quiet }
+                }
+            }
+            ScrollView {
+                Layout.fillWidth: true; Layout.preferredHeight: 170
+                TextArea {
+                    id: newLyrics
+                    objectName: "newProjectLyrics"
+                    wrapMode: TextEdit.Wrap; selectByMouse: true
+                    color: pm.ink; font.pixelSize: 13; placeholderTextColor: pm.faint
+                    placeholderText: "Paste the lyrics as sung, with section names like [Chorus] on their own lines."
+                    background: Rectangle { color: "#162027"; radius: 4; border.color: newLyrics.activeFocus ? pm.mint : pm.line }
+                }
+            }
+            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.faint; font.pixelSize: 12
+                   text: !newLyrics.text.trim().length ? "You can also add lyrics after the project opens."
+                       : editor.comfy.connection === "ready" ? "The lyrics are aligned on ComfyUI as soon as the project opens."
+                       : "ComfyUI is not connected, so the lyrics are saved; choose Align in Lyrics… once it is." }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#f0a08f"; font.pixelSize: 12
                    visible: text.length > 0; text: newProject.failure }
             RowLayout {

@@ -36,7 +36,7 @@ def main():
     vocals = decode(args.vocals)[0] if args.vocals else None
     result = align(wave, rate, open(args.lyrics, encoding="utf-8").read(), args.language, args.device,
                    args.voters, args.cache_dir, vocals=vocals,
-                   progress=lambda f, label: print(f"{round(100 * f):3d}% {label}", flush=True))
+                   progress=lambda f, label: label and print(f"{round(100 * f):3d}% {label}", flush=True))
     json.dump(result, open(args.out, "w", encoding="utf-8"), ensure_ascii=False)
     flagged = len({w["line"] for w in result["words"] if w.get("flag")})
     print(f"{len(result['words'])} words, {flagged} lines flagged, {len(result['sections'])} instrumental sections,"

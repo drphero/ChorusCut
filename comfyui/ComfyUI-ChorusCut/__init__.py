@@ -55,7 +55,8 @@ class ChorusCutAlignLyrics:
         def progress(fraction, label):
             mm.throw_exception_if_processing_interrupted()
             bar.update_absolute(int(1000 * fraction))
-            print(f"[Chorus Cut] {round(100 * fraction)}% {label}")
+            if label:
+                print(f"[Chorus Cut] {round(100 * fraction)}% {label}")
 
         result = align(audio["waveform"][0], audio["sample_rate"], lyrics, language, device,
                        cache_dir=_models_dir(), progress=progress)

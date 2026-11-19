@@ -21,7 +21,9 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QClipboard>
 #include <QSqlQuery>
+#include <qt6keychain/keychain.h>
 #include <QStyleHints>
 #include <QTest>
 #include <QDebug>
@@ -93,6 +95,7 @@ int main(int argc, char** argv) {
     app.setOrganizationName("Chorus Cut Tests");
     app.setApplicationName("Comfy Check");
     { QSettings s; s.clear(); }
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     Mlt::Factory::init();
 
     // The stand-in ComfyUI server.
@@ -115,10 +118,30 @@ int main(int argc, char** argv) {
         return ok ? out : QJsonObject{{"unreachable", true}};
     };
     if (!waitFor([&] { return !call("/system_stats").contains("unreachable"); }, 10000)) return fail(1, "stub did not start");
+    // Reads this test's own keychain entry ("Comfy Check" service), as the app would.
+    auto keychainToken = [&](const QString& server) {
+        QKeychain::ReadPasswordJob job(QCoreApplication::applicationName());
+        job.setAutoDelete(false);
+        job.setKey("ComfyUI token " + server);
+        QEventLoop loop;
+        QObject::connect(&job, &QKeychain::Job::finished, &loop, &QEventLoop::quit);
+        job.start();
+        loop.exec();
+        return job.error() == QKeychain::NoError ? job.textData() : QString();
+    };
+    // An older build left a plain-text token in the settings; it moves to the keychain.
+    { QSettings s; s.setValue("comfyui/url", stubUrl); s.setValue("comfyui/token", "legacy-token"); }
+    // New projects go to a scratch library beside the project copy, never the user's.
+    const QString scratchLibrary = QDir(QFileInfo(argv[1]).absolutePath()).filePath("Library");
+    QDir().mkpath(scratchLibrary);
+    { QSettings s; s.setValue("projects/libraries", QStringList{scratchLibrary}); s.setValue("projects/current", 0); }
     auto stubLog = [&] { return call("/_stub/log"); };
     auto mode = [&](const QString& m, int shift) { call("/_stub/mode", {{"mode", m}, {"shift", shift}}, true); };
 
     Editor editor;
+    if (!waitFor([&] { return editor.comfy()->hasToken() && keychainToken(stubUrl) == "legacy-token"; }, 5000) ||
+        QSettings().contains("comfyui/token"))
+        return fail(2, "the plain-text token was not moved to the keychain");
     const QUrl project = QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath());
     if (!editor.openProject(project)) return fail(2, editor.status());
     auto lyrics = editor.lyrics();
@@ -177,6 +200,8 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_Return);
     if (!waitFor([&] { return comfy->connection() == "ready"; })) return fail(5, "did not connect: " + comfy->connectionText());
     if (!comfy->hasToken() || comfy->url() != stubUrl) return fail(5, "settings not kept");
+    if (!waitFor([&] { return keychainToken(stubUrl) == "secret-token"; }, 5000) || QSettings().contains("comfyui/token"))
+        return fail(5, "the token should be in the keychain and nowhere in the settings");
     shot("comfy-sheet");
     QTest::keyClick(window, Qt::Key_Escape);
     QTest::qWait(200);
@@ -203,11 +228,18 @@ int main(int argc, char** argv) {
     mode("hold", 80);
     if (!click("openLyrics") || !click("alignComfy")) return fail(8, "Align again");
     if (!waitFor([&] { return jobState() == "running"; })) return fail(8, "job did not start: " + comfy->jobText());
+    // Live progress arrives over the WebSocket as a percentage.
+    if (!waitFor([&] { return comfy->jobText().contains("%"); }, 5000)) return fail(8, "no live percentage: " + comfy->jobText());
     QTest::keyClick(window, Qt::Key_Escape);
     editor.closeProject();
     if (comfy->busy()) return fail(8, "closing the project should stop watching the job");
     if (!editor.openProject(project)) return fail(8, editor.status());
     if (!waitFor([&] { return comfy->busy(); }, 3000)) return fail(8, "reopening did not resume the job");
+    // The reopened project listens with the job's own client ID, so progress keeps coming.
+    if (!waitFor([&] { return comfy->jobText().contains("%"); }, 5000)) return fail(8, "no percentage after reopening: " + comfy->jobText());
+    if (stubLog()["sockets"].toArray().size() < 2 ||
+        stubLog()["sockets"].toArray().last().toString() != stubLog()["sockets"].toArray()[stubLog()["sockets"].toArray().size() - 2].toString())
+        return fail(8, "the reopened project should listen with the same client ID");
     call("/_stub/release", {}, true);
     if (!waitFor([&] { return !comfy->busy() && firstStart() == base + 80; }, 15000)) return fail(8, "resumed job not imported: " + comfy->jobText());
 
@@ -233,8 +265,45 @@ int main(int argc, char** argv) {
     if (!comfy->jobText().contains("Stub failure for testing") || !find(window, "comfyJobText")) return fail(10, "failure message not shown: " + comfy->jobText());
     if (firstStart() != base + 80) return fail(10, "a failed job changed the timings");
 
+    // Forget token removes it from the keychain.
+    auto clickText = [&](const QString& text) {
+        QQuickItem* found = nullptr;
+        for (auto item : window->findChildren<QQuickItem*>())
+            if (item->isVisible() && item->isEnabled() && item->property("text").toString() == text) found = item;
+        if (!found) return false;
+        QTest::mouseClick(window, Qt::LeftButton, {}, found->mapToScene(QPointF(found->width() / 2, found->height() / 2)).toPoint());
+        QTest::qWait(gap);
+        return true;
+    };
+    if (!clickText("Done") || !waitFor([&] { return !find(window, "lyricsEditor"); }, 2000)) return fail(11, "could not close the lyrics window");
+
+    // New Project with pasted lyrics opens the project and aligns it on ComfyUI by itself.
+    const QString lyricsText = lyrics->text();
+    const QString song = editor.current()->file(editor.current()->master);
+    mode("finish", 200);
+    QTest::keySequence(window, QKeySequence::Open);
+    if (!click("newProject")) return fail(12, "no New Project button");
+    window->findChild<QObject*>("newProjectSheet")->setProperty("master", QUrl::fromLocalFile(song));  // as the file dialog would
+    if (!click("newProjectName")) return fail(12, "no name field");
+    QTest::keySequence(window, QKeySequence::SelectAll);
+    typeText(window, "Auto Aligned");
+    if (!click("newProjectLyrics")) return fail(12, "no lyrics box");
+    QGuiApplication::clipboard()->setText(lyricsText);
+    QTest::keySequence(window, QKeySequence::Paste);
+    if (find(window, "newProjectLyrics")->property("text").toString() != lyricsText) return fail(12, "paste did not fill the lyrics");
+    shot("new-project-lyrics");
+    if (!click("createProject")) return fail(12, "Create");
+    if (!waitFor([&] { return editor.projectName() == "Auto Aligned" && !comfy->busy() && firstStart() == base + 200; }, 20000))
+        return fail(12, "the new project was not aligned automatically: " + comfy->jobText() + " / " + editor.status());
+    if (lyrics->text() != lyricsText) return fail(12, "lyrics not saved in the new project");
+
+    if (!click("comfyButton")) return fail(11, "ComfyUI sheet for Forget token");
+    if (!clickText("Forget token")) return fail(11, "no Forget token button");
+    if (!waitFor([&] { return !comfy->hasToken() && keychainToken(stubUrl).isEmpty(); }, 5000)) return fail(11, "token not forgotten");
+
     stub.kill();
     stub.waitForFinished();
-    qInfo() << "PASS: unreachable, connect with token, align and import, resume after reopen, cancel, failure.";
+    qInfo() << "PASS: token moved to the keychain, unreachable, connect with token, align and import, live progress, resume after reopen"
+               " with progress, cancel, failure, new project with lyrics aligns itself, forget token.";
     return 0;
 }

@@ -52,16 +52,67 @@ def romanize(word):
 
 
 def parse(text):
-    """(line number, word as written, romanized) for every sung word; [Section] lines are skipped."""
+    """(line number, word as written, romanized) for every word Chorus Cut shows; [Section] lines are skipped.
+
+    Words with nothing to sound out (digits such as "24/7", or scripts outside the alphabet)
+    come back with an empty romanized form. They are not aligned acoustically; place_unvoiced()
+    times them between their neighbours afterwards, so the result matches the app's words.
+    """
     words = []
     for n, line in enumerate(text.splitlines()):
         if re.fullmatch(r"\s*\[[^\]]+\]\s*", line):
             continue
         for m in re.finditer(r"[^\W_]+(?:['’][^\W_]+)*", line):
-            plain = romanize(m.group())
-            if plain:
-                words.append((n, m.group(), plain))
+            words.append((n, m.group(), romanize(m.group())))
     return words
+
+
+def place_unvoiced(words, voiced, slot=300):
+    """Merge aligned words back into the full word list, timing the unvoiced ones.
+
+    words: all (line, word, plain) tuples; voiced: aligned dicts for the words with letters,
+    in order. Each run of unvoiced words shares the gap between its neighbours (taking time
+    from the previous word when the gap is short), and its line is flagged for review.
+    """
+    out, it = [], iter(voiced)
+    for line, original, plain in words:
+        out.append(next(it) if plain else {"line": line, "word": original, "start": None, "end": None})
+    i = 0
+    while i < len(out):
+        if out[i]["start"] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(out) and out[j]["start"] is None:
+            j += 1
+        prev = out[i - 1] if i > 0 else None
+        nxt = out[j] if j < len(out) else None
+        k = j - i
+        if prev and nxt:
+            a, b = prev["end"], nxt["start"]
+            if prev["line"] != out[i]["line"]:
+                a = max(a, b - slot * k)  # the run starts its line: sit just before the next word
+            elif b - a < 120 * k:
+                # Too little room mid-line: take up to half of the previous word.
+                a = max(prev["start"] + (prev["end"] - prev["start"]) // 2, b - slot * k)
+                prev["end"] = min(prev["end"], a)
+        elif nxt:
+            b = nxt["start"]
+            a = max(0, b - slot * k)
+        else:
+            a = prev["end"]
+            b = a + slot * k
+        step = max(0, (b - a) // k)  # starts never pass the next word, even with no room
+        for n in range(k):
+            w = out[i + n]
+            w["start"] = a + n * step
+            w["end"] = max(w["start"] + 1, a + (n + 1) * step)
+        for line in {out[i + n]["line"] for n in range(k)}:
+            for w in out:
+                if w["line"] == line:
+                    w["flag"] = True
+        i = j
+    return out
 
 
 def tokenize(plain):
@@ -286,19 +337,28 @@ def align(waveform, sample_rate, lyrics, language="en", device="auto", voters=DE
     """
     from . import separate
     device = pick_device(device)
-    words = parse(lyrics)
+    all_words = parse(lyrics)
+    words = [w for w in all_words if w[2]]  # the ones with letters to align
     if not words:
-        raise ValueError("Paste at least one line of sung words.")
+        raise ValueError("Write the lyrics with letters as they are sung; there is nothing to align.")
     if language not in LANGUAGES:
         raise ValueError(f"Language must be one of {', '.join(LANGUAGES)}.")
     specs = [s for s in voters.split(",") if MODELS[s.partition("@")[0]].get(language)]
-    steps = 1 + len(specs) + 1
-    done = [0]
+    # Progress is weighted by typical run time on an RTX 3090 (seconds), so the bar moves evenly.
+    cost = {"separate": 12.0, "parakeet": 7.0}
+    weights = [cost["separate"]] + [cost.get(spec.partition("@")[0], 2.4) for spec in specs] + [0.5]
+    total = sum(weights)
+    done = [0, 0.0]  # steps finished, their weight
 
     def step(label):
+        done[1] += weights[done[0]]
         done[0] += 1
         if progress:
-            progress(done[0] / steps, label)
+            progress(done[1] / total, label)
+
+    def within(fraction):  # progress inside the current step
+        if progress:
+            progress((done[1] + fraction * weights[done[0]]) / total, "")
 
     timings = {}
     started = time.monotonic()
@@ -309,7 +369,7 @@ def align(waveform, sample_rate, lyrics, language="en", device="auto", voters=DE
     if vocals is None:
         model = separate.load_model(device, cache_dir)
         vocals = separate.vocals(model, _resample(waveform, sample_rate, separate.SAMPLE_RATE), device,
-                                 batch=4 if device == "cuda" else 1)
+                                 batch=4 if device == "cuda" else 1, progress=within)
         del model
         if device == "cuda":
             torch.cuda.empty_cache()
@@ -340,6 +400,8 @@ def align(waveform, sample_rate, lyrics, language="en", device="auto", voters=DE
     result = vote(runs, agree, need) if len(runs) > 1 else runs[0]
     loud = extend_ends(result, db, hop, hold_db)
     sections = instrumental(result, loud, hop, len(db) * hop, gap)
+    if len(words) != len(all_words):
+        result = place_unvoiced(all_words, result)
     step("Combined the results")
     return {"pipeline": "chorus_align", "voters": [s for s in specs], "device": device, "language": language,
             "timings_s": timings, "words": result, "sections": sections}

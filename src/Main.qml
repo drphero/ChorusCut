@@ -176,6 +176,7 @@ ApplicationWindow {
             TextField { id: comfyToken; objectName: "comfyToken"; Layout.fillWidth: true; echoMode: TextInput.Password; selectByMouse: true
                         placeholderText: editor.comfy.hasToken ? "Access token saved (type to replace)" : "Access token, if the server needs one (optional)"
                         Keys.onReturnPressed: comfySheet.connectNow() }
+            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; visible: text.length > 0; text: editor.comfy.tokenNote; color: win.quiet; font.pixelSize: 12 }
             Label { objectName: "comfyStatus"; Layout.fillWidth: true; wrapMode: Text.Wrap; visible: text.length > 0; text: editor.comfy.connectionText
                     color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "checking" ? win.quiet : "#e7b75f" }
             RowLayout {
@@ -373,8 +374,9 @@ ApplicationWindow {
                 anchors.centerIn: parent; width: 420; height: 110; radius: 8; color: "#1d2930"; border.color: "#34434a"
                 ColumnLayout {
                     anchors.centerIn: parent
-                    LabelText { text: editor.lyrics.text.length ? "The lyrics are not aligned yet." : "Start by adding the lyrics."; Layout.alignment: Qt.AlignHCenter }
-                    Action { text: "Lyrics…"; active: true; Layout.alignment: Qt.AlignHCenter; onClicked: lyricsEditor.open() }
+                    LabelText { text: editor.comfy.busy ? editor.comfy.jobText : editor.lyrics.text.length ? "The lyrics are not aligned yet." : "Start by adding the lyrics."
+                                Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 380; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter }
+                    Action { text: "Lyrics…"; active: true; visible: !editor.comfy.busy; Layout.alignment: Qt.AlignHCenter; onClicked: lyricsEditor.open() }
                 }
             }
         }

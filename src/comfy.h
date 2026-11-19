@@ -9,6 +9,7 @@
 
 class Editor;
 class QNetworkReply;
+class QWebSocket;
 
 // Runs Chorus Cut jobs on a ComfyUI server: the user's own machine or a rented GPU.
 // Jobs are recorded in the project (table "jobs"), so closing the project or the app,
@@ -18,6 +19,7 @@ class ComfyJobs : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString url READ url NOTIFY settingsChanged)
     Q_PROPERTY(bool hasToken READ hasToken NOTIFY settingsChanged)
+    Q_PROPERTY(QString tokenNote READ tokenNote NOTIFY settingsChanged)   // where the token is kept
     Q_PROPERTY(QString connection READ connection NOTIFY connectionChanged)   // unknown, checking, ready, unreachable, missingNode
     Q_PROPERTY(QString connectionText READ connectionText NOTIFY connectionChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY jobChanged)
@@ -27,6 +29,7 @@ public:
     explicit ComfyJobs(Editor* editor);
     QString url() const { return server; }
     bool hasToken() const { return !token.isEmpty(); }
+    QString tokenNote() const { return tokenWhere; }
     QString connection() const { return state; }
     QString connectionText() const { return stateText; }
     bool busy() const { return !promptId.isEmpty() || uploading; }
@@ -52,6 +55,22 @@ private:
     QNetworkAccessManager net;
     QString server, token, state = "unknown", stateText, status, lastLanguage = "en";
     QString promptId, jobLyrics;
+    // ComfyUI streams progress over a WebSocket, only to the client ID that queued the job,
+    // so each job keeps its client ID and a reopened project listens with the same one.
+    QString clientId;
+    QWebSocket* socket = nullptr;
+    int percent = -1;
+    void listen();
+    void stopListening();
+    void showRunning();
+    // The access token lives in the system keychain (macOS Keychain, Windows Credential
+    // Manager, Secret Service on Linux), one entry per server. Without a keychain it is
+    // kept for this session only, never written to disk.
+    QString tokenWhere;
+    bool tokenLoading = false, testWaiting = false, keychainMissing = false;
+    QString keychainService() const;
+    void loadToken();
+    void storeToken(const QString& value);
     bool uploading = false;
     int serial = 0;          // Replies from an earlier project or job are ignored.
     int probe = 0;           // Likewise for connection tests.
