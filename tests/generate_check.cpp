@@ -120,10 +120,18 @@ int main(int argc, char** argv) {
         }
         return out.join(" ");
     };
-    if (slotsOf(textId) != "3/seed=seed 5/height=height 5/width=width 6/text=prompt 7/text=negative 9/filename_prefix=prefix")
+    const QString samplerSettings = "/cfg=setting %1/denoise=setting %1/sampler_name=setting %1/scheduler=setting %1/seed=seed %1/steps=setting";
+    if (slotsOf(textId) != "3" + samplerSettings.arg(3) + " 5/height=height 5/width=width 6/text=prompt 7/text=negative 9/filename_prefix=prefix")
         return fail(11, "text workflow adapter: " + slotsOf(textId));
-    if (slotsOf(editId) != "10/image=picture0 11/image=picture1 20/prompt=prompt 30/height=height 30/width=width 40/seed=seed 60/filename_prefix=prefix")
+    if (slotsOf(editId) != "10/image=picture0 11/image=picture1 20/prompt=prompt 30/height=height 30/width=width 40" + samplerSettings.arg(40) + " 60/filename_prefix=prefix")
         return fail(11, "edit workflow adapter: " + slotsOf(editId));
+    {
+        // The usual sampler inputs are offered as settings, with the workflow's own values.
+        QStringList labels;
+        for (const auto& v : flows->settings(textId)) labels << v.toMap()["label"].toString() + "=" + v.toMap()["value"].toString() + ":" + v.toMap()["type"].toString();
+        if (labels.join(" ") != "CFG=7:number Denoise=1:number Sampler name=euler:text Scheduler=normal:text Steps=20:number")
+            return fail(14, "the text workflow's settings: " + labels.join(" "));
+    }
     if (flows->get(textId)["use"] != "ref-text" || flows->get(editId)["use"] != "ref-edit" || flows->forUse("ref-text") != textId ||
         flows->forUse("ref-edit") != editId || !flows->get(editId)["ready"].toBool() || flows->pictureCount(editId) != 2)
         return fail(12, "uses, defaults or readiness: " + json(flows->list()));
@@ -272,14 +280,38 @@ int main(int argc, char** argv) {
             return fail(35, "the job record does not keep the graph it queued");
     }
 
-    // ---- D. From approved pictures: approve it with its menu, add a second, generate an edit
+    // ---- D. The picture, large: approve it there, see its seed, step through; then an edit
     auto thumb = findItem(refs, "ref_character_0");
     click(thumb);
+    auto viewer = window->findChild<QObject*>("refViewer");
+    if (!viewer || !waitFor([&] { return viewer->property("opened").toBool(); }, 1500)) return fail(40, "clicking a picture did not open it large");
+    {
+        auto picture = find(window, "refViewerPicture");
+        if (!picture || picture->width() < 600 || picture->height() < 500)
+            return fail(40, QString("the large picture is small: %1×%2").arg(picture ? picture->width() : 0).arg(picture ? picture->height() : 0));
+    }
+    if (find(window, "refViewerSeed")->property("text").toString() != QString::number(qint64(seed)) ||
+        find(window, "refViewerPrompt")->property("text") != portrait || find(window, "refViewerState")->property("text") != "To approve")
+        return fail(40, "the viewer does not show how the picture was made");
+    capture("reference-viewer");
+    click(find(window, "refViewerApprove"));
+    if (!plan->referencesFor("character", mara)[0].toMap()["approved"].toBool()) return fail(40, "Approve in the viewer did not approve the picture");
+    if (find(window, "refViewerState")->property("text") != "Approved") return fail(40, "the viewer did not show the approval");
+    // Click the picture for full size, click again to fit; Esc closes.
+    click(find(window, "refViewerPicture"));
+    if (!viewer->property("zoomed").toBool()) return fail(40, "clicking the large picture did not show it at full size");
+    click(find(window, "refViewerPicture"));
+    if (viewer->property("zoomed").toBool()) return fail(40, "clicking again did not fit it");
+    QTest::keyClick(window, Qt::Key_Escape);
+    if (!waitFor([&] { return !viewer->property("visible").toBool(); }, 1500)) return fail(40, "Esc did not close the viewer");
+    // Right-click still has the menu. (Approving rebuilt the thumbnails: find it again.)
+    thumb = findItem(refs, "ref_character_0");
+    QTest::mouseClick(window, Qt::RightButton, {}, center(thumb));
     QQuickItem* approve = nullptr;
     waitFor([&] { for (auto i : thumb->findChildren<QQuickItem*>("refApproved")) if (i->isVisible()) approve = i; return approve != nullptr; }, 1500);
-    if (!approve) return fail(40, "the picture's menu did not open");
-    click(approve);
-    if (!plan->referencesFor("character", mara)[0].toMap()["approved"].toBool()) return fail(40, "the menu did not approve the picture");
+    if (!approve) return fail(40, "right-clicking a picture did not open its menu");
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTest::qWait(150);
     if (!plan->run({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", mara}, {"path", samplePath}})["ok"].toBool()) return fail(40, plan->message());
     mode("finish");
     pause();
@@ -294,6 +326,90 @@ int main(int argc, char** argv) {
         return fail(41, "the edit graph is wrong: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
     if (plan->referencesFor("character", mara)[2].toMap()["generation"].toMap()["use"] != "ref-edit") return fail(41, "the edit was not recorded as one");
 
+    // ---- D2. Generate with options: a fixed seed, two pictures, changed settings, a sampler
+    //          from ComfyUI's list; then Generate again… from the viewer keeps the seed
+    {
+        const int before = plan->referencesFor("character", mara).size();
+        mode("finish");
+        pause();
+        click(genTile);
+        if (!clickMenuItem(genTile, "genOptions")) return fail(42, "no With options… item");
+        auto dialog = window->findChild<QObject*>("generatePopup");
+        if (!dialog || !waitFor([&] { return dialog->property("opened").toBool(); }, 1500)) return fail(42, "With options… did not open the Generate dialog");
+        if (dialog->property("use") != "ref-text" || dialog->property("workflow") != textId) return fail(42, "the dialog did not start on the prompt and its workflow");
+        click(find(window, "genSeedFixed"));
+        auto seedField = find(window, "genSeed");
+        click(seedField);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        typeText("1234");
+        click(find(window, "genMore"));
+        if (find(window, "genCount")->property("text") != "2") return fail(42, "+ did not make it two pictures");
+        auto steps = find(window, "genSetting_3_steps");
+        auto stepsField = steps ? findItem(steps, "genSettingField") : nullptr;
+        if (!stepsField) return fail(42, "no Steps setting in the dialog");
+        click(stepsField);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        typeText("30");
+        if (!findItem(steps, "genSettingReset")) return fail(42, "a changed setting offers no Reset");
+        // The sampler is chosen from what ComfyUI lists.
+        auto samplerChoice = [&]() -> QQuickItem* { auto row = find(window, "genSetting_3_sampler_name"); return row ? findItem(row, "genSettingChoice") : nullptr; };
+        if (!waitFor([&] { return samplerChoice() != nullptr; }, 3000))
+            return fail(43, "the sampler is not a list from ComfyUI: " + json(gen->choices()));
+        choose(samplerChoice(), 1);  // dpmpp_2m
+        capture("generate-options");
+        click(find(window, "genGo"));
+        if (!waitFor([&] { return plan->referencesFor("character", mara).size() == before + 2 && gen->jobs().isEmpty(); }))
+            return fail(44, "the two pictures did not arrive: " + json(gen->jobs()));
+        const auto prompts = stubLog()["prompts"].toArray();
+        const auto a = prompts[prompts.size() - 2].toObject(), b = prompts.last().toObject();
+        QList<double> seeds{input(a, "3", "seed").toDouble(), input(b, "3", "seed").toDouble()};
+        std::sort(seeds.begin(), seeds.end());
+        if (seeds != QList<double>{1234, 1235} || input(a, "3", "steps").toInt() != 30 || input(b, "3", "sampler_name") != "dpmpp_2m" ||
+            input(a, "3", "cfg").toInt() != 7)
+            return fail(44, "the graphs did not take the seed, count and settings: " + QString::fromUtf8(QJsonDocument(a).toJson(QJsonDocument::Compact)));
+        const auto made = plan->referencesFor("character", mara)[before].toMap()["generation"].toMap();
+        QStringList shownSettings;
+        for (const auto& v : made["settings"].toList()) shownSettings << v.toMap()["label"].toString() + "=" + v.toMap()["value"].toString();
+        if (!shownSettings.contains("Steps=30") || !shownSettings.contains("Sampler name=dpmpp_2m")) return fail(44, "the picture does not keep its settings: " + json(made));
+        // The settings stay with the workflow: the quick item uses them too.
+        for (const auto& v : flows->settings(textId))
+            if (v.toMap()["input"] == "steps" && v.toMap()["value"].toInt() != 30) return fail(45, "the chosen steps were not kept with the workflow");
+        mode("finish");
+        if (!gen->generate("character", mara, "ref-text").isEmpty() || !waitFor([&] { return gen->jobs().isEmpty() && plan->referencesFor("character", mara).size() == before + 3; }))
+            return fail(45, "the quick generate failed");
+        if (input(lastGraph(), "3", "steps").toInt() != 30) return fail(45, "the quick generate did not use the kept steps");
+        if (!gen->generateWith("character", mara, "ref-text", {{"seed", "-4"}}).contains("whole number")) return fail(45, "a negative seed was not refused");
+        if (!gen->generateWith("character", mara, "ref-text", {{"settings", QVariantMap{{"3/steps", "many"}}}}).contains("Steps must be a number"))
+            return fail(45, "a setting that is not a number was not refused");
+        // Generate again… from the viewer: the same workflow, seed and settings, ready to change.
+        const int seeded = before;  // the picture with seed 1234 or 1235
+        const double seedOf = plan->referencesFor("character", mara)[seeded].toMap()["generation"].toMap()["seed"].toDouble();
+        click(findItem(refs, QString("ref_character_%1").arg(seeded)));
+        if (!waitFor([&] { return viewer->property("opened").toBool(); }, 1500)) return fail(46, "the viewer did not open");
+        click(find(window, "refViewerNext"));
+        click(find(window, "refViewerPrev"));
+        if (viewer->property("index").toInt() != seeded) return fail(46, "‹ and › did not step through the pictures");
+        QTest::keyClick(window, Qt::Key_Right);
+        if (viewer->property("index").toInt() != seeded + 1) return fail(46, "→ did not step to the next picture");
+        QTest::keyClick(window, Qt::Key_Left);
+        click(find(window, "refViewerAgain"));
+        if (!waitFor([&] { return dialog->property("opened").toBool() && !viewer->property("visible").toBool(); }, 1500))
+            return fail(46, "Generate again… did not open the dialog");
+        if (!dialog->property("fixedSeed").toBool() || dialog->property("seedText").toString() != QString::number(qint64(seedOf)))
+            return fail(46, "Generate again… did not keep the seed: " + dialog->property("seedText").toString());
+        // Reset puts a setting back to the workflow's own value.
+        steps = find(window, "genSetting_3_steps");
+        click(findItem(steps, "genSettingReset"));
+        if (findItem(steps, "genSettingField")->property("text") != "20") return fail(47, "Reset did not put Steps back to 20");
+        QTest::keyClick(window, Qt::Key_Escape);
+        if (!waitFor([&] { return !dialog->property("visible").toBool(); }, 1500)) return fail(47, "Esc did not close the dialog");
+        // Leave the kept settings as the workflow had them, for the later checks.
+        flows->setValues(textId, QJsonObject{{"3/steps", 20}, {"3/sampler_name", "euler"}});
+        QFile adapterFile(scratch.filePath("Workflows/" + textId + "/adapter.json"));
+        if (!adapterFile.open(QIODevice::ReadOnly) || QJsonDocument::fromJson(adapterFile.readAll()).object().contains("values"))
+            return fail(47, "values equal to the workflow's own were kept as changes");
+    }
+
     // ---- E. A failure: Try again, and Dismiss
     mode("error");
     pause();
@@ -303,11 +419,13 @@ int main(int argc, char** argv) {
     if (!gen->jobs()[0].toMap()["text"].toString().contains("Stub failure")) return fail(50, "the failure lost ComfyUI's reason: " + json(gen->jobs()));
     capture("generate-failed");
     auto failedTile = find(window, "genJob_character_0");
+    const QJsonValue failedSeed = input(lastGraph(), "3", "seed");
     mode("finish");
     pause();
     click(failedTile);
-    if (!clickMenuItem(failedTile, "genRetry") || !waitFor([&] { return plan->referencesFor("character", mara).size() == 4 && gen->jobs().isEmpty(); }))
+    if (!clickMenuItem(failedTile, "genRetry") || !waitFor([&] { return plan->referencesFor("character", mara).size() == 7 && gen->jobs().isEmpty(); }))
         return fail(51, "Try again did not generate the picture: " + json(gen->jobs()));
+    if (input(lastGraph(), "3", "seed") != failedSeed) return fail(51, "Try again did not keep the seed");
     mode("error");
     pause();
     click(genTile);
@@ -343,13 +461,13 @@ int main(int argc, char** argv) {
     if (!editor.openProject(project)) return fail(70, editor.status());
     if (gen->jobs().size() != 1) return fail(70, "the job was not picked up again after reopening: " + json(gen->jobs()));
     call("/_stub/release", {}, true);
-    if (!waitFor([&] { return plan->referencesFor("character", mara).size() == 5 && gen->jobs().isEmpty(); })) return fail(71, "the resumed job did not finish: " + json(gen->jobs()));
+    if (!waitFor([&] { return plan->referencesFor("character", mara).size() == 8 && gen->jobs().isEmpty(); })) return fail(71, "the resumed job did not finish: " + json(gen->jobs()));
 
     // ---- H. Undo takes the generated picture off again
     click(find(window, "planPage_cast"));
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
     QTest::qWait(150);
-    if (plan->referencesFor("character", mara).size() != 4) return fail(80, "⌘Z did not remove the generated picture");
+    if (plan->referencesFor("character", mara).size() != 7) return fail(80, "⌘Z did not remove the generated picture");
 
     // ---- I. A location is generated in the video's frame
     plan->run({{"op", "set"}, {"kind", "concept"}, {"fields", QVariantMap{{"aspect", "16:9"}}}});
@@ -382,6 +500,8 @@ int main(int argc, char** argv) {
     qInfo() << "PASS: library (import, saved-workflow refusal, guessed adapters, uses and defaults), Workflows sheet (open, select,"
             << "remap and unmap an input, show every input, refusal note, remove with confirmation), generation (picture prompt,"
             << "Generate menu, the queued graph, arrival unapproved with its workflow, prompt and seed, one undo step, job record),"
+            << "the large viewer (approve, full size, ‹ › and arrow keys, Esc, right-click menu), Generate with options (fixed seed,"
+            << "two pictures, settings kept with the workflow, sampler from ComfyUI's list, Reset, refusals), Generate again keeps the seed,"
             << "from approved pictures (uploads in order), failure with Try again and Dismiss, cancel from the queue, resume after"
             << "reopening, ⌘Z, a location in 16:9, agents cannot mark pictures generated.";
     return 0;

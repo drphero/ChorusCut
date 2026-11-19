@@ -48,9 +48,22 @@ public:
     Q_INVOKABLE QString forUse(const QString& use) const;
     // How many pictures a workflow takes (its highest picture index + 1).
     Q_INVOKABLE int pictureCount(const QString& id) const;
+    // The ready workflows for a use: [{id, name, isDefault}].
+    Q_INVOKABLE QVariantList ready(const QString& use) const;
+    Q_INVOKABLE bool hasSlot(const QString& id, const QString& slot) const;
+    // The inputs marked "Adjust when generating", for the Generate dialog: [{key ("node/input"),
+    // node, input, classType, label, type ("number", "text" or "switch"), value, original}].
+    // value is what the next generation uses (the last one chosen), original the workflow's own.
+    Q_INVOKABLE QVariantList settings(const QString& id) const;
+    // Keeps chosen setting values ({key: value}) as the workflow's, for the next generation;
+    // a value equal to the workflow's own clears the change. Returns "" or why not.
+    QString setValues(const QString& id, const QJsonObject& values);
+    // The values as the graph takes them ({key: value}), or why one is not right.
+    QJsonObject checkValues(const QString& id, const QVariantMap& values, QString& error) const;
 
     // What to put into a workflow. Pictures are names ComfyUI gave the uploads, in order.
-    struct Values { QString prompt, negative, prefix; qint64 seed = -1; int width = 0, height = 0; QStringList pictures; };
+    // settings: {key: value} for inputs marked "Adjust when generating", over the kept values.
+    struct Values { QString prompt, negative, prefix; qint64 seed = -1; int width = 0, height = 0; QStringList pictures; QJsonObject settings; };
     // The graph to queue, or an empty object with the reason in error.
     QJsonObject build(const QString& id, const Values& values, QString& error) const;
     // The workflow's own width and height, when its adapter maps them; else 0.

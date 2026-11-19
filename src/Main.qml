@@ -64,7 +64,7 @@ ApplicationWindow {
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -276,6 +276,11 @@ ApplicationWindow {
     // The ComfyUI workflows Chorus Cut generates with, and their adapters.
     WorkflowsSheet { id: workflowsSheet }
     function openWorkflows() { comfySheet.close(); workflowsSheet.open() }
+    // A reference picture, large; and Generate with a seed, a count and the workflow's settings.
+    ReferenceViewer { id: refViewer; onGenerateAgain: (owner, ownerId, prefill) => win.openGenerate(owner, ownerId, prefill) }
+    function viewReference(owner, ownerId, index) { refViewer.show(owner, ownerId, index, aboutName(owner, ownerId)) }
+    GeneratePopup { id: generatePopup; onWorkflowsRequested: win.openWorkflows() }
+    function openGenerate(owner, ownerId, prefill) { if (editor.ready) generatePopup.start(owner, ownerId, prefill, aboutName(owner, ownerId)) }
 
     // Connecting an agent: Claude Code, Codex or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {

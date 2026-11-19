@@ -6,8 +6,8 @@ import QtQuick.Dialogs
 // Reference pictures of a character, look or location, in order. Add them with the button or
 // by dropping image files on the strip; they are copied into the project. Generate makes new
 // ones through the user's ComfyUI workflows; they appear here while they run and arrive waiting
-// for approval. Click a picture to set its role, approve it, move it or take it off. Every
-// change is one undo step.
+// for approval. Click a picture to see it large (and approve it, set its role, move it or take
+// it off there); right-click for the same in a menu. Every change is one undo step.
 Item {
     id: strip
     property string owner
@@ -104,12 +104,16 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
-                    onClicked: menu.popup()
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: m => {
+                        if (m.button === Qt.RightButton) menu.popup()
+                        else strip.Window.window.viewReference(strip.owner, strip.ownerId, thumb.index)
+                    }
                 }
                 ToolTip.visible: thumbMouse.containsMouse && !menu.visible
                 ToolTip.delay: 500
                 ToolTip.text: thumb.modelData.name + "  ·  " + thumb.modelData.width + "×" + thumb.modelData.height
-                              + (thumb.modelData.generation ? "\nSeed " + thumb.modelData.generation.seed + "\n" + thumb.modelData.generation.prompt : "")
+                              + "\nClick to view large; right-click for options"
 
                 Menu {
                     id: menu
@@ -263,6 +267,11 @@ Item {
                     enabled: strip.gen.edit.ready
                     text: "From approved pictures" + (strip.gen.edit.workflow ? "  ·  " + strip.gen.edit.workflow : "")
                     onTriggered: strip.generate("ref-edit")
+                }
+                MenuItem {
+                    objectName: "genOptions"
+                    text: "With options…  (seed, how many, settings)"
+                    onTriggered: strip.Window.window.openGenerate(strip.owner, strip.ownerId, null)
                 }
                 MenuSeparator {}
                 MenuItem {

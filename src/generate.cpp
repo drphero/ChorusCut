@@ -70,51 +70,139 @@ QStringList Generator::picturesFor(const QString& owner, int ownerId) const {
     return out;
 }
 
-QVariantMap Generator::options(const QString& owner, int ownerId) const {
+QString Generator::whyNot(const QString& owner, int ownerId, const QString& use, const QString& workflow) const {
     auto flows = editor->workflows();
     const auto item = editor->plan()->item(owner, ownerId);
-    const QString prompt = item["fields"].toMap()["prompt"].toString().trimmed();
-    const QString noPrompt = "Write a picture prompt first, or ask your agent to write one.";
-    QVariantMap text, edit;
-    const QString t = flows->forUse("ref-text");
-    text["workflow"] = t.isEmpty() ? QString() : flows->nameOf(t);
-    text["why"] = item.isEmpty() ? "Nothing to generate for." : t.isEmpty() ? "Set up a workflow for reference pictures from a prompt."
-                : prompt.isEmpty() ? noPrompt : QString();
-    text["ready"] = text["why"].toString().isEmpty();
-    const QString e = flows->forUse("ref-edit");
-    const int need = e.isEmpty() ? 0 : flows->pictureCount(e), have = picturesFor(owner, ownerId).size();
-    edit["workflow"] = e.isEmpty() ? QString() : flows->nameOf(e);
-    edit["pictures"] = need;
-    edit["why"] = item.isEmpty() ? "Nothing to generate for." : e.isEmpty() ? "Set up a workflow for reference pictures from pictures."
-                : prompt.isEmpty() ? noPrompt
-                : have < need ? QString("%1 takes %2 approved %3; this %4 has %5.").arg(flows->nameOf(e)).arg(need)
-                                    .arg(need == 1 ? "picture" : "pictures").arg(ownerNoun(owner)).arg(have)
-                : QString();
-    edit["ready"] = edit["why"].toString().isEmpty();
-    return {{"prompt", prompt}, {"text", text}, {"edit", edit}};
+    if (item.isEmpty()) return "Nothing to generate for.";
+    if (workflow.isEmpty())
+        return use == "ref-text" ? "Set up a workflow for reference pictures from a prompt." : "Set up a workflow for reference pictures from pictures.";
+    bool ready = false;
+    for (const auto& w : flows->ready(use)) ready |= w.toMap()["id"] == workflow;
+    if (!ready) return flows->nameOf(workflow) + " is not ready for this kind of picture. Check it in Workflows.";
+    if (item["fields"].toMap()["prompt"].toString().trimmed().isEmpty()) return "Write a picture prompt first, or ask your agent to write one.";
+    if (use == "ref-edit") {
+        const int need = flows->pictureCount(workflow), have = picturesFor(owner, ownerId).size();
+        if (have < need)
+            return QString("%1 takes %2 approved %3; this %4 has %5.").arg(flows->nameOf(workflow)).arg(need)
+                .arg(need == 1 ? "picture" : "pictures").arg(ownerNoun(owner)).arg(have);
+    }
+    return {};
+}
+
+QVariantMap Generator::options(const QString& owner, int ownerId) const {
+    auto flows = editor->workflows();
+    const QString prompt = editor->plan()->item(owner, ownerId)["fields"].toMap()["prompt"].toString().trimmed();
+    auto one = [&](const QString& use) {
+        const QString w = flows->forUse(use);
+        QVariantMap m{{"workflow", w.isEmpty() ? QString() : flows->nameOf(w)}, {"id", w}, {"why", whyNot(owner, ownerId, use, w)},
+                      {"workflows", flows->ready(use)}};
+        if (use == "ref-edit") m["pictures"] = w.isEmpty() ? 0 : flows->pictureCount(w);
+        m["ready"] = m["why"].toString().isEmpty();
+        return m;
+    };
+    return {{"prompt", prompt}, {"text", one("ref-text")}, {"edit", one("ref-edit")}};
 }
 
 QString Generator::generate(const QString& owner, int ownerId, const QString& use) {
+    return generateWith(owner, ownerId, use, {});
+}
+
+QString Generator::generateWith(const QString& owner, int ownerId, const QString& use, const QVariantMap& o) {
     if (!editor->current()) return "Open a project first.";
     if (use != "ref-text" && use != "ref-edit") return "Unknown kind of picture.";
-    const auto o = options(owner, ownerId)[use == "ref-text" ? "text" : "edit"].toMap();
-    if (!o["ready"].toBool()) return o["why"].toString();
-    if (!ensureTable()) return "Could not record the job in the project.";
     auto flows = editor->workflows();
-    Job job;
-    job.id = ++serial;
-    job.owner = owner;
-    job.ownerId = ownerId;
-    job.use = use;
-    job.workflow = flows->forUse(use);
-    job.workflowName = flows->nameOf(job.workflow);
-    job.prompt = options(owner, ownerId)["prompt"].toString();
-    job.seed = qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
-    list.append(job);
-    QStringList files = use == "ref-edit" ? picturesFor(owner, ownerId).mid(0, flows->pictureCount(job.workflow)) : QStringList{};
-    say(list.last(), "uploading", files.isEmpty() ? "Preparing…" : "Uploading pictures…");
-    upload(job.id, files, {});
+    const QString workflow = o.value("workflow").toString().isEmpty() ? flows->forUse(use) : o.value("workflow").toString();
+    const QString why = whyNot(owner, ownerId, use, workflow);
+    if (!why.isEmpty()) return why;
+    // A seed fits in a double exactly below 2^53, and every sampler takes it.
+    constexpr qint64 kMaxSeed = (qint64(1) << 53) - 1;
+    qint64 seed = -1;
+    const QVariant given = o.value("seed");
+    if (given.isValid() && !given.isNull() && given.toString().trimmed() != "") {
+        bool ok = false;
+        if (given.typeId() == QMetaType::Double || given.typeId() == QMetaType::Float) {
+            const double d = given.toDouble();
+            ok = std::isfinite(d) && d == std::floor(d) && d >= 0 && d <= double(kMaxSeed);
+            seed = ok ? qint64(d) : -1;
+        } else {
+            seed = given.toString().trimmed().toLongLong(&ok);
+        }
+        if (!ok || seed < 0 || seed > kMaxSeed) return "The seed must be a whole number from 0 to " + QString::number(kMaxSeed) + ".";
+    }
+    const int count = o.contains("count") ? o.value("count").toInt() : 1;
+    if (count < 1 || count > 8) return "Generate 1 to 8 pictures at a time.";
+    QString error;
+    const QJsonObject chosen = flows->checkValues(workflow, o.value("settings").toMap(), error);
+    if (!error.isEmpty()) return error;
+    if (!ensureTable()) return "Could not record the job in the project.";
+    if (!chosen.isEmpty()) { error = flows->setValues(workflow, chosen); if (!error.isEmpty()) return error; }
+    // What the pictures were made with, as the reference will show it.
+    QJsonArray shown;
+    QJsonObject used;
+    for (const auto& v : flows->settings(workflow)) {
+        const auto s = v.toMap();
+        const QJsonValue value = chosen.contains(s["key"].toString()) ? chosen[s["key"].toString()] : QJsonValue::fromVariant(s["value"]);
+        used[s["key"].toString()] = value;
+        shown.append(QJsonObject{{"key", s["key"].toString()}, {"label", s["label"].toString()}, {"value", value}});
+    }
+    const QString prompt = editor->plan()->item(owner, ownerId)["fields"].toMap()["prompt"].toString().trimmed();
+    const QStringList files = use == "ref-edit" ? picturesFor(owner, ownerId).mid(0, flows->pictureCount(workflow)) : QStringList{};
+    const qint64 first = seed >= 0 ? seed : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+    for (int i = 0; i < count; ++i) {
+        Job job;
+        job.id = ++serial;
+        job.owner = owner;
+        job.ownerId = ownerId;
+        job.use = use;
+        job.workflow = workflow;
+        job.workflowName = flows->nameOf(workflow);
+        job.prompt = prompt;
+        job.hasSeed = flows->hasSlot(workflow, "seed");
+        // Fixed: this seed and the ones after it. Random: a fresh one for each picture.
+        job.seed = seed >= 0 ? std::min(kMaxSeed, first + i) : i == 0 ? first : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+        job.settings = used;
+        job.shown = shown;
+        list.append(job);
+        say(list.last(), "uploading", files.isEmpty() ? "Preparing…" : "Uploading pictures…");
+        upload(job.id, files, {});
+    }
     return {};
+}
+
+void Generator::fetchChoices(const QString& workflow) {
+    // Each node type is asked once per run of the app; ComfyUI lists its samplers, schedulers
+    // and models in /object_info.
+    QSet<QString> classes;
+    for (const auto& v : editor->workflows()->settings(workflow))
+        if (v.toMap()["type"] == "text") classes << v.toMap()["classType"].toString();
+    for (const QString& cls : classes) {
+        const QString key = editor->comfy()->url() + "|" + cls;
+        if (asked.contains(key)) continue;
+        asked.insert(key);
+        auto reply = net.get(editor->comfy()->request("/object_info/" + QString::fromUtf8(QUrl::toPercentEncoding(cls))));
+        connect(reply, &QNetworkReply::finished, this, [this, reply, cls, key] {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) { asked.remove(key); return; }
+            const auto info = QJsonDocument::fromJson(reply->readAll()).object()[cls].toObject()["input"].toObject();
+            bool any = false;
+            for (const char* group : {"required", "optional"}) {
+                const auto inputs = info[group].toObject();
+                for (auto it = inputs.begin(); it != inputs.end(); ++it) {
+                    // A combo input is [[choice, ...], {...}]; newer servers write ["COMBO", {options: [...]}].
+                    const auto spec = it.value().toArray();
+                    QJsonArray values = spec.at(0).toArray();
+                    if (values.isEmpty() && spec.at(0).toString() == "COMBO") values = spec.at(1).toObject()["options"].toArray();
+                    if (values.isEmpty()) continue;
+                    QVariantList choices;
+                    for (const auto& c : values) if (c.isString()) choices << c.toString();
+                    if (choices.isEmpty()) continue;
+                    choiceMap[cls + "/" + it.key()] = choices;
+                    any = true;
+                }
+            }
+            if (any) emit choicesChanged();
+        });
+    }
 }
 
 void Generator::upload(int id, QStringList files, QStringList names) {
@@ -158,6 +246,7 @@ void Generator::submit(int id, const QStringList& names) {
     v.prompt = job->prompt;
     v.seed = job->seed;
     v.pictures = names;
+    v.settings = job->settings;
     v.prefix = "ChorusCut/reference";
     // Locations take the video's frame; people and looks a portrait. The workflow's own size
     // sets the scale its model prefers.
@@ -201,7 +290,8 @@ void Generator::submit(int id, const QStringList& names) {
         QSqlQuery q(project->db);
         q.prepare("INSERT OR REPLACE INTO jobs(prompt_id,kind,server,language,lyrics,submitted,state,detail,client_id) VALUES(?,?,?,?,?,?,?,?,?)");
         const QJsonObject detail{{"owner", job->owner}, {"ownerId", job->ownerId}, {"use", job->use}, {"workflow", job->workflow},
-                                 {"workflowName", job->workflowName}, {"prompt", job->prompt}, {"seed", double(job->seed)}, {"graph", job->graph}};
+                                 {"workflowName", job->workflowName}, {"prompt", job->prompt}, {"seed", double(job->seed)}, {"hasSeed", job->hasSeed},
+                                 {"settings", job->shown}, {"graph", job->graph}};
         for (const QVariant& value : {QVariant(job->promptId), QVariant("reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
                                       QVariant(QDateTime::currentSecsSinceEpoch()), QVariant("queued"),
                                       QVariant(QString::fromUtf8(QJsonDocument(detail).toJson(QJsonDocument::Compact))), QVariant(clientId)})
@@ -329,8 +419,10 @@ void Generator::collect(int id, const QJsonObject& outputs) {
             }
             QVariantList commands;
             files->sort();
-            const QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use},
-                                         {"prompt", job->prompt}, {"seed", double(job->seed)}, {"promptId", job->promptId}};
+            QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use},
+                                   {"prompt", job->prompt}, {"promptId", job->promptId}};
+            if (job->hasSeed) generation["seed"] = double(job->seed);
+            if (!job->shown.isEmpty()) generation["settings"] = job->shown.toVariantList();
             for (const QString& f : *files)
                 commands.append(QVariantMap{{"op", "ref.add"}, {"owner", job->owner}, {"ownerId", job->ownerId}, {"path", f},
                                             {"source", "generated"}, {"name", "Generated with " + job->workflowName}, {"generation", generation}});
@@ -409,7 +501,11 @@ void Generator::retry(int id) {
     if (!job) return;
     const QString owner = job->owner, use = job->use;
     const int ownerId = job->ownerId;
-    const QString why = generate(owner, ownerId, use);
+    // The same request again: same workflow, seed and settings.
+    QVariantMap settings;
+    for (const auto& v : job->shown) settings[v.toObject()["key"].toString()] = v.toObject()["value"].toVariant();
+    const QVariantMap again{{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}};
+    const QString why = generateWith(owner, ownerId, use, again);
     if (why.isEmpty()) dismiss(id);
     else say(*find(id), "failed", why);
 }
@@ -433,6 +529,9 @@ void Generator::resume() {
         job.workflowName = d["workflowName"].toString();
         job.prompt = d["prompt"].toString();
         job.seed = qint64(d["seed"].toDouble());
+        job.hasSeed = d["hasSeed"].toBool(true);
+        job.shown = d["settings"].toArray();
+        for (const auto& v : job.shown) job.settings[v.toObject()["key"].toString()] = v.toObject()["value"];
         job.graph = d["graph"].toObject();
         if (q.value(1).toString() != editor->comfy()->url()) {
             job.state = "failed";

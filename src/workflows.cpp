@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 struct Named { const char* value; const char* label; const char* hint; };
@@ -22,6 +23,7 @@ const QList<Named>& slotTable() {
     static const QList<Named> table = {
         {"prompt", "Prompt", ""}, {"negative", "Negative prompt", ""}, {"picture", "Picture", "indexed"},
         {"seed", "Seed", ""}, {"width", "Width", ""}, {"height", "Height", ""}, {"prefix", "File name prefix", ""},
+        {"setting", "Adjust when generating", ""},
     };
     return table;
 }
@@ -58,6 +60,27 @@ QPair<QString, QString> textFor(const QJsonObject& graph, const QJsonValue& link
             if (isLink(it.value()) && it.key() != "model" && it.key() != "vae") queue << it.value().toArray()[0].toString();
     }
     return {};
+}
+// "sampler_name" → "Sampler name"; a few short names read better in capitals.
+QString pretty(const QString& input) {
+    static const QMap<QString, QString> known = {{"cfg", "CFG"}, {"ckpt_name", "Checkpoint"}, {"unet_name", "Model"},
+                                                 {"lora_name", "LoRA"}, {"strength_model", "LoRA strength"}};
+    if (known.contains(input)) return known[input];
+    QString s = input;
+    s.replace('_', ' ');
+    if (!s.isEmpty()) s[0] = s[0].toUpper();
+    return s;
+}
+// Inputs worth adjusting from one picture to the next, offered without asking on import.
+bool usualSetting(const QString& cls, const QString& input, const QJsonValue& value) {
+    if (isLink(value) || value.isArray() || value.isObject()) return false;
+    if (cls.startsWith("KSampler") && cls != "KSamplerSelect")
+        return input == "steps" || input == "cfg" || input == "sampler_name" || input == "scheduler" || input == "denoise";
+    if (cls == "KSamplerSelect") return input == "sampler_name";
+    if (cls == "BasicScheduler") return input == "steps" || input == "scheduler" || input == "denoise";
+    if (cls == "CFGGuider") return input == "cfg";
+    if (cls == "FluxGuidance") return input == "guidance";
+    return false;
 }
 QString slug(const QString& name) {
     QString s = name.toLower();
@@ -187,6 +210,11 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
         }
         if (cls == "PreviewImage" && preview.isEmpty()) preview = node;
     }
+    for (const QString& node : order) {
+        const auto inputs = inputsOf(graph, node);
+        for (auto it = inputs.begin(); it != inputs.end(); ++it)
+            if (usualSetting(classOf(graph, node), it.key(), it.value())) add("setting", node, it.key());
+    }
     if (outs.isEmpty() && !preview.isEmpty()) outs.append(preview);
     return {{"slots", mapping}, {"outputs", outs}};
 }
@@ -262,6 +290,12 @@ QVariantMap Workflows::get(const QString& id) const {
     if (!ids().contains(id)) return {};
     const auto graph = graphOf(id);
     const auto adapter = adapterOf(id);
+    const QJsonObject keptValues = adapter["values"].toObject();
+    auto shown = [](const QJsonValue& v) {
+        QString value = v.isString() ? v.toString() : v.isBool() ? (v.toBool() ? "true" : "false") : QString::number(v.toDouble(), 'g', 12);
+        value = value.simplified();
+        return value.size() > 90 ? value.left(88) + "…" : value;
+    };
     QMap<QString, QJsonObject> mapped;
     for (const auto& s : adapter["slots"].toArray()) mapped[s.toObject()["node"].toString() + "/" + s.toObject()["input"].toString()] = s.toObject();
     QVariantList inputs;
@@ -270,12 +304,12 @@ QVariantMap Workflows::get(const QString& id) const {
         const auto in = n["inputs"].toObject();
         for (auto it = in.begin(); it != in.end(); ++it) {
             if (isLink(it.value()) || it.value().isArray() || it.value().isObject()) continue;
-            QString value = it.value().isString() ? it.value().toString() : it.value().isBool() ? (it.value().toBool() ? "true" : "false")
-                                                                                              : QString::number(it.value().toDouble(), 'g', 12);
-            value = value.simplified();
-            if (value.size() > 90) value = value.left(88) + "…";
-            const auto s = mapped.value(node + "/" + it.key());
-            inputs.append(QVariantMap{{"key", node + "/" + it.key()}, {"node", node}, {"classType", n["class_type"].toString()},
+            const QString key = node + "/" + it.key();
+            const auto s = mapped.value(key);
+            const bool kept = s["slot"] == "setting" && keptValues.contains(key);
+            QString value = shown(kept ? keptValues[key] : it.value());
+            if (kept) value += "  (workflow: " + shown(it.value()) + ")";
+            inputs.append(QVariantMap{{"key", key}, {"node", node}, {"classType", n["class_type"].toString()},
                                       {"title", n["_meta"].toObject()["title"].toString()}, {"input", it.key()}, {"value", value},
                                       {"slot", s["slot"].toString()}, {"index", s["index"].toInt()}});
         }
@@ -377,6 +411,86 @@ int Workflows::pictureCount(const QString& id) const {
     return n;
 }
 
+QVariantList Workflows::ready(const QString& use) const {
+    QVariantList out;
+    const QString chosen = forUse(use);
+    for (const QString& id : ids())
+        if (adapterOf(id)["use"].toString() == use && problems(id).isEmpty())
+            out.append(QVariantMap{{"id", id}, {"name", nameOf(id)}, {"isDefault", id == chosen}});
+    return out;
+}
+
+bool Workflows::hasSlot(const QString& id, const QString& slot) const {
+    for (const auto& s : adapterOf(id)["slots"].toArray())
+        if (s.toObject()["slot"] == slot) return true;
+    return false;
+}
+
+QVariantList Workflows::settings(const QString& id) const {
+    const auto graph = graphOf(id);
+    const auto adapter = adapterOf(id);
+    const auto kept = adapter["values"].toObject();
+    QVariantList out;
+    QMap<QString, int> names;
+    for (const auto& s : adapter["slots"].toArray())
+        if (s.toObject()["slot"] == "setting") names[s.toObject()["input"].toString()]++;
+    for (const auto& s : adapter["slots"].toArray()) {
+        const auto o = s.toObject();
+        if (o["slot"] != "setting") continue;
+        const QString node = o["node"].toString(), input = o["input"].toString(), key = node + "/" + input;
+        const auto inputs = inputsOf(graph, node);
+        if (!inputs.contains(input)) continue;
+        const QJsonValue original = inputs[input];
+        const QString type = original.isBool() ? "switch" : original.isDouble() ? "number" : "text";
+        // Two samplers' steps are told apart by their node's title.
+        QString label = pretty(input);
+        if (names[input] > 1) label += " · " + (graph[node].toObject()["_meta"].toObject()["title"].toString().isEmpty()
+                                                    ? classOf(graph, node) : graph[node].toObject()["_meta"].toObject()["title"].toString());
+        out.append(QVariantMap{{"key", key}, {"node", node}, {"input", input}, {"classType", classOf(graph, node)}, {"label", label},
+                               {"type", type}, {"value", (kept.contains(key) ? kept[key] : original).toVariant()},
+                               {"original", original.toVariant()}});
+    }
+    return out;
+}
+
+QJsonObject Workflows::checkValues(const QString& id, const QVariantMap& values, QString& error) const {
+    QJsonObject out;
+    QMap<QString, QVariantMap> known;
+    for (const auto& v : settings(id)) known[v.toMap()["key"].toString()] = v.toMap();
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        if (!known.contains(it.key())) { error = QString("%1 has no setting “%2”.").arg(nameOf(id), it.key()); return {}; }
+        const auto& s = known[it.key()];
+        const QVariant v = it.value();
+        if (s["type"] == "number") {
+            bool ok = false;
+            const double d = v.toString().trimmed().toDouble(&ok);
+            if (!ok || !std::isfinite(d)) { error = s["label"].toString() + " must be a number."; return {}; }
+            out[it.key()] = d;
+        } else if (s["type"] == "switch") {
+            out[it.key()] = v.typeId() == QMetaType::Bool ? v.toBool() : v.toString() == "true";
+        } else {
+            out[it.key()] = v.toString();
+        }
+    }
+    return out;
+}
+
+QString Workflows::setValues(const QString& id, const QJsonObject& values) {
+    if (!ids().contains(id)) return "The workflow is no longer in the library.";
+    auto adapter = adapterOf(id);
+    auto kept = adapter["values"].toObject();
+    const auto graph = graphOf(id);
+    const auto before = kept;
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        const QString node = it.key().section('/', 0, 0), input = it.key().section('/', 1);
+        if (inputsOf(graph, node)[input] == it.value()) kept.remove(it.key());
+        else kept[it.key()] = it.value();
+    }
+    if (kept == before) return {};
+    if (kept.isEmpty()) adapter.remove("values"); else adapter["values"] = kept;
+    return saveAdapter(id, adapter) ? QString() : "Could not save the workflow's settings.";
+}
+
 QSize Workflows::size(const QString& id) const {
     const auto graph = graphOf(id);
     int w = 0, h = 0;
@@ -400,6 +514,23 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         return {};
     }
     QJsonObject graph = graphOf(id);
+    auto put = [&](const QString& node, const QString& input, const QJsonValue& value) {
+        auto n = graph[node].toObject();
+        auto inputs = n["inputs"].toObject();
+        inputs[input] = value;
+        n["inputs"] = inputs;
+        graph[node] = n;
+    };
+    // Settings: the values kept with the workflow, then this generation's.
+    QJsonObject chosen = adapterOf(id)["values"].toObject();
+    for (auto it = v.settings.begin(); it != v.settings.end(); ++it) chosen[it.key()] = it.value();
+    QSet<QString> adjustable;
+    for (const auto& s : adapterOf(id)["slots"].toArray())
+        if (s.toObject()["slot"] == "setting") adjustable << s.toObject()["node"].toString() + "/" + s.toObject()["input"].toString();
+    for (auto it = chosen.begin(); it != chosen.end(); ++it) {
+        const QString node = it.key().section('/', 0, 0), input = it.key().section('/', 1);
+        if (adjustable.contains(it.key()) && inputsOf(graph, node).contains(input)) put(node, input, it.value());
+    }
     for (const auto& s : adapterOf(id)["slots"].toArray()) {
         const auto o = s.toObject();
         const QString node = o["node"].toString(), input = o["input"].toString(), slot = o["slot"].toString();
@@ -412,11 +543,7 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         else if (slot == "height") { if (v.height <= 0) continue; value = v.height; }
         else if (slot == "prefix") { if (v.prefix.isEmpty()) continue; value = v.prefix; }
         else continue;
-        auto n = graph[node].toObject();
-        auto inputs = n["inputs"].toObject();
-        inputs[input] = value;
-        n["inputs"] = inputs;
-        graph[node] = n;
+        put(node, input, value);
     }
     return graph;
 }

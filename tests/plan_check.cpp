@@ -478,16 +478,18 @@ int main(int argc, char** argv) {
         QTest::qWait(200);
         if (plan->referencesFor("character", mara).size() != before + 2) return fail(47, "dropping two pictures did not add both: " + plan->message());
         if (editor.undoText() != "Add 2 references") return fail(47, "the drop was not one undo step: " + editor.undoText());
-        // Click the newest picture and turn its approval off from the menu.
+        // Right-click the newest picture and turn its approval off from the menu.
         auto thumb = findItem(maraCard, QString("ref_character_%1").arg(before + 1));
         if (!thumb) return fail(48, "no thumbnail for the dropped picture");
-        click(thumb);
+        scrollIntoView(thumb);
+        QTest::mouseClick(window, Qt::RightButton, {}, center(thumb));
+        QTest::qWait(120);
         QQuickItem* approved = nullptr;
         waitFor([&] { for (auto i : thumb->findChildren<QQuickItem*>("refApproved")) if (i->isVisible()) approved = i; return approved != nullptr; }, 1500);
         if (!approved) {
             auto menu = thumb->findChild<QObject*>("refMenu");
             const QPoint c = center(thumb);
-            return fail(48, QString("clicking a picture did not open its menu (menu %1 opened %2, thumb at %3,%4 size %5x%6, hit %7)")
+            return fail(48, QString("right-clicking a picture did not open its menu (menu %1 opened %2, thumb at %3,%4 size %5x%6, hit %7)")
                 .arg(menu != nullptr).arg(menu ? menu->property("opened").toBool() : false).arg(c.x()).arg(c.y()).arg(thumb->width()).arg(thumb->height())
                 .arg(window->contentItem()->childAt(c.x(), c.y()) ? window->contentItem()->childAt(c.x(), c.y())->metaObject()->className() : "none"));
         }

@@ -110,6 +110,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"system": {"comfyui_version": "stub"}, "devices": [{"name": "cuda:0 Stub GPU"}]})
             if self.path == "/object_info/ChorusCutAlignLyrics":
                 return self.send({"ChorusCutAlignLyrics": {"input": {}}})
+            if self.path == "/object_info/KSampler":
+                state.setdefault("object_info", []).append("KSampler")
+                return self.send({"KSampler": {"input": {"required": {
+                    "seed": ["INT", {"default": 0}], "steps": ["INT", {"default": 20}], "cfg": ["FLOAT", {"default": 8.0}],
+                    "sampler_name": [["euler", "dpmpp_2m", "uni_pc"], {}],
+                    "scheduler": ["COMBO", {"options": ["normal", "karras", "simple"]}],
+                    "denoise": ["FLOAT", {"default": 1.0}]}}}})
             if self.path == "/queue":
                 running = [[0, i, {}, {}, []] for i, j in state["jobs"].items() if j["state"] == "running"]
                 pending = [[0, i, {}, {}, []] for i, j in state["jobs"].items() if j["state"] == "waiting"]
