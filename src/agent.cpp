@@ -377,6 +377,7 @@ QJsonObject AgentBridge::schema() const {
             {"values", QJsonObject{{"who", "a list of {character: id, look?: id}, or \"none\" for no one in frame"},
                                    {"where", "a location id, or \"none\" (abstract, titles)"},
                                    {"props", "a list of prop ids: the objects that matter in the shot (optional)"},
+                                   {"workflow", "shot field set by the user when choosing a take workflow; leave it alone"},
                                    {"follows", "a shot id this shot continues from"},
                                    {"prompts", "{route: prompt text}; leave empty, prompts are written when generating"},
                                    {"rules", "concept rules: a list of strings"},

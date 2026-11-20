@@ -1264,6 +1264,39 @@ int main(int argc, char** argv) {
             click(find(window, "takeCancel"));
             if (plan->shot(shotId)["fields"].toMap()["prompts"].toMap()["h3-lipsync"] != syncPrompt) return fail(145, "Cancel kept the typed prompt");
 
+            // A workflow chosen in the dialog stays with the shot when saved, and Generate take uses it.
+            {
+                const QString use = gen->takeOptions(shotId)["use"].toString();
+                auto again = flows->importFile(QUrl::fromLocalFile(fixtures.filePath(use == "take-sync" ? "take_sync_api.json" : "take_ref_api.json")));
+                const QString other = again["id"].toString();
+                const QString usual = gen->takeOptions(shotId)["workflow"].toString();
+                if (!again["ok"].toBool() || other == usual) return fail(150, "a second take workflow: " + json(again));
+                click(find(window, "shotTakeOptions"));
+                if (!waitFor([&] { return takeDialog->property("opened").toBool(); }, 1500) || takeDialog->property("workflow") != usual)
+                    return fail(150, "the dialog did not open on the default workflow");
+                QStringList ids;
+                for (const auto& w : gen->takeOptions(shotId)["workflows"].toList()) ids << w.toMap()["id"].toString();
+                choose(find(window, "takeWorkflow"), ids.indexOf(other));
+                if (takeDialog->property("workflow") != other) return fail(150, "choosing the other workflow in the dialog");
+                click(find(window, "takeSave"));
+                if (takeDialog->property("opened").toBool() || plan->shot(shotId)["fields"].toMap()["workflow"] != other)
+                    return fail(150, "Save did not keep the workflow on the shot: " + json(plan->shot(shotId)["fields"]));
+                if (gen->takeOptions(shotId)["workflow"] != other) return fail(150, "the shot's takes do not use its saved workflow");
+                click(find(window, "shotTakeOptions"));
+                if (!waitFor([&] { return takeDialog->property("opened").toBool(); }, 1500) || takeDialog->property("workflow") != other)
+                    return fail(150, "the dialog reopened on another workflow: " + takeDialog->property("workflow").toString());
+                // Back to the default: the shot follows the library's default again.
+                choose(find(window, "takeWorkflow"), ids.indexOf(usual));
+                click(find(window, "takeSave"));
+                if (plan->shot(shotId)["fields"].toMap().contains("workflow") || gen->takeOptions(shotId)["workflow"] != usual)
+                    return fail(150, "choosing the default did not clear the shot's own workflow");
+                editor.undo();
+                if (plan->shot(shotId)["fields"].toMap()["workflow"] != other) return fail(150, "undo did not bring the saved workflow back");
+                editor.undo();
+                flows->remove(other);
+                if (gen->takeOptions(shotId)["workflow"] != usual) return fail(150, "a removed workflow is still used for the shot");
+            }
+
             // The viewer's size: drag the divider under it, and the one beside the inspector.
             window->setProperty("selection", QVariant::fromValue(nullptr));
             auto pane = find(window, "viewerPane");

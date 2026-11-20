@@ -72,8 +72,10 @@ Popup {
         picks = Array.from(editor.plan.shotPictures(shotId).picked).map(r => r.id)
         picksTouched = false
         allPictures = false
-        const list = editor.generator.takeOptions(shotId, "", handles).workflows || []
-        const found = list.find(w => w.id === p.workflow) || list.find(w => w.isDefault) || list[0]
+        const opts = editor.generator.takeOptions(shotId, "", handles)
+        const list = opts.workflows || []
+        // Asked for (Try again), else the shot's own (kept by Save), else the default.
+        const found = list.find(w => w.id === p.workflow) || list.find(w => w.id === opts.workflow) || list.find(w => w.isDefault) || list[0]
         const id = found ? found.id : ""
         if (id === workflow) loadValues(); else workflow = id
         open()
@@ -190,6 +192,13 @@ Popup {
         }
         // The pictures picked here become the shot's own, in this order.
         if (picksTouched) fields.pictures = picks
+        // The workflow chosen here stays with the shot; the library's default is kept as "follow
+        // the default", so changing the default later still reaches this shot.
+        if (workflow) {
+            const use = topts.use || ""
+            const keepAs = use && workflow === editor.workflows.forUse(use) ? "" : workflow
+            if (((s.fields || {}).workflow || "") !== keepAs) fields.workflow = keepAs
+        }
         if (Object.keys(fields).length) editor.plan.run({op: "set", kind: "shot", id: shot, fields: fields})
         picksTouched = false
         return true

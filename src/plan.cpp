@@ -101,7 +101,7 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         {"shot", {{"type", "enum"}, {"purpose", "text"}, {"who", "who"}, {"where", "where"}, {"props", "props"}, {"timeOfDay", "enum"},
                   {"framing", "enum"}, {"angle", "enum"}, {"lens", "text"}, {"move", "enum"}, {"composition", "text"},
                   {"action", "text"}, {"emotion", "text"}, {"energy", "enum"}, {"follows", "shotref"}, {"route", "enum"},
-                  {"prompts", "prompts"}, {"pictures", "refs"}, {"notes", "text"}}},
+                  {"prompts", "prompts"}, {"pictures", "refs"}, {"workflow", "text"}, {"notes", "text"}}},
     };
     return table;
 }

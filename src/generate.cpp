@@ -364,7 +364,10 @@ QVariantMap Generator::takeOptions(int shotId, const QString& wanted, double han
     QString workflow;
     if (!use.isEmpty()) {
         out["workflows"] = flows->ready(use);
-        workflow = !wanted.isEmpty() && flows->serves(wanted, use) ? wanted : flows->forUse(use);
+        // Asked for, else the one kept on the shot (the take dialog's Save), else the library's default.
+        const QString kept = f["workflow"].toString();
+        workflow = !wanted.isEmpty() && flows->serves(wanted, use) ? wanted
+                 : !kept.isEmpty() && flows->serves(kept, use) ? kept : flows->forUse(use);
         if (workflow.isEmpty() && why.isEmpty())
             why = use == "take-sync" ? "Set up a workflow for takes singing to the song (Workflows…)." : "Set up a workflow for takes from reference pictures (Workflows…).";
     }
