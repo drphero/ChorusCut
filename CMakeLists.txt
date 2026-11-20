@@ -40,6 +40,10 @@ set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.chor
 qt_add_executable(ChorusCutImportCheck EXCLUDE_FROM_ALL tests/import_check.cpp)
 target_link_libraries(ChorusCutImportCheck PRIVATE chorus_editor)
 
+# Plays a project through the app's playback path and compares every frame shown with a seek.
+qt_add_executable(ChorusCutPlaybackCheck EXCLUDE_FROM_ALL tests/playback_check.cpp)
+target_link_libraries(ChorusCutPlaybackCheck PRIVATE chorus_editor Qt6::Test)
+
 qt_add_executable(ChorusCutLyricsCheck MACOSX_BUNDLE EXCLUDE_FROM_ALL tests/lyrics_check.cpp alignment/align.py)
 qt_add_resources(ChorusCutLyricsCheck lyrics_ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCutLyricsCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)

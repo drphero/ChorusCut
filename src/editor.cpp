@@ -36,6 +36,8 @@ void Monitor::paint(QPainter* p) {
     fit.scale(boundingRect().size(), Qt::KeepAspectRatio);
     QRectF rect(QPointF(), fit);
     rect.moveCenter(boundingRect().center());
+    // The viewer rarely matches the preview size; scale smoothly rather than by dropping pixels.
+    p->setRenderHint(QPainter::SmoothPixmapTransform);
     p->drawImage(rect, frame);
 }
 namespace {
@@ -434,6 +436,10 @@ void Editor::togglePlay() {
         output=std::make_unique<Mlt::Consumer>(*profile,"sdl2_audio");
         if (!output->is_valid()) { info("MLT SDL2 audio output unavailable"); output.reset(); return; }
         updateMonitorGain();
+        // MLT's SDL consumer scales pictures nearest-neighbour unless told otherwise, which made
+        // takes (1376×768 from H3) shimmer and crawl when shrunk for the viewer during playback;
+        // a seek decodes bilinear. Play the way a seek shows.
+        output->set("rescale","bilinear");
         output->set("real_time",1);
         output->set("buffer",5);
         output->set("prefill",2);
