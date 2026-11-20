@@ -77,6 +77,9 @@ public:
 signals:
     void changed();
     void choicesChanged();
+    // A job came back (ok) or failed: for notifications. owner/ownerId is what it was for
+    // ("shot" for a take); count is how many pictures or takes arrived.
+    void finished(const QString& owner, int ownerId, const QString& use, bool ok, const QString& text, int count);
 private:
     struct Job {
         int id = 0;
@@ -97,6 +100,8 @@ private:
         bool locked = false;
         QString excerpt;
         int misses = 0, waiting = 0;
+        qint64 started = 0;  // when it was asked for, in ms since the epoch
+        qint64 since = 0;    // when it entered its current state
     };
     Editor* editor;
     QNetworkAccessManager net;

@@ -7,6 +7,7 @@
 #include "workflows.h"
 #include "plan.h"
 #include "agent.h"
+#include "notify.h"
 #include <mlt++/Mlt.h>
 #include <QtQuick/QQuickPaintedItem>
 #include <QImage>
@@ -17,14 +18,24 @@
 #include <atomic>
 #include <vector>
 
+class Editor;
+// Paints the editor's current frame. Any number can show it at once (the Edit page's viewer and
+// the pop-out window): each follows the editor it is given and starts from its latest frame.
 class Monitor : public QQuickPaintedItem {
     Q_OBJECT
+    Q_PROPERTY(Editor* editor READ editor WRITE setEditor NOTIFY editorChanged)
 public:
     using QQuickPaintedItem::QQuickPaintedItem;
     void showImage(const QImage& next) { frame = next; update(); }
     void paint(QPainter* painter) override;
+    Editor* editor() const { return source; }
+    void setEditor(Editor* next);
+signals:
+    void editorChanged();
 private:
     QImage frame;
+    Editor* source = nullptr;
+    QMetaObject::Connection link;
 };
 
 class Editor : public QObject {
@@ -36,6 +47,7 @@ class Editor : public QObject {
     Q_PROPERTY(Requests* requests READ requests CONSTANT)
     Q_PROPERTY(Plan* plan READ plan CONSTANT)
     Q_PROPERTY(AgentBridge* agent READ agent CONSTANT)
+    Q_PROPERTY(Notifier* notifier READ notifier CONSTANT)
     Q_PROPERTY(bool monitorMuted READ monitorMuted WRITE setMonitorMuted NOTIFY monitorChanged)
     Q_PROPERTY(int monitorDb READ monitorDb WRITE setMonitorDb NOTIFY monitorChanged)
     Q_PROPERTY(int frame READ frame NOTIFY cursorChanged)
@@ -61,6 +73,11 @@ class Editor : public QObject {
     Q_PROPERTY(QString redoText READ redoText NOTIFY edited)
     Q_PROPERTY(bool peaksReady READ peaksReady NOTIFY peaksChanged)
     Q_PROPERTY(bool looping READ looping WRITE loop NOTIFY loopingChanged)
+    // Track switches, kept with the project: hidden picture tracks ("v1", "v2") drop out of the
+    // viewer, hidden "lyrics" leave the viewer's lyric line off, and a muted "a1" is silent in the
+    // monitor. None of them changes the plan or the exported timeline.
+    Q_PROPERTY(QStringList hiddenTracks READ hiddenTracks NOTIFY tracksChanged)
+    Q_PROPERTY(QStringList mutedTracks READ mutedTracks NOTIFY tracksChanged)
 public:
     Editor();
     Lyrics* lyrics() { return &lyricState; }
@@ -70,6 +87,7 @@ public:
     Requests* requests() { return requestThreads; }
     Plan* plan() { return planState; }
     AgentBridge* agent() { return agentBridge; }
+    Notifier* notifier() { return notices; }
     Project* current() { return project.get(); }
     Q_INVOKABLE void seekLyric(int startMs);
     Q_INVOKABLE void playLyric(int startMs, int endMs);
@@ -121,6 +139,12 @@ public:
     void setMonitorDb(int dbValue);
     bool playing() const { return running; }
     QString status() const { return message; }
+    QStringList hiddenTracks() const { return hidden; }
+    QStringList mutedTracks() const { return muted; }
+    Q_INVOKABLE void setTrackHidden(const QString& track, bool hide);
+    Q_INVOKABLE void setTrackMuted(const QString& track, bool mute);
+    // The frame the viewers show now.
+    QImage currentImage() const { return shown; }
     Q_INVOKABLE void seek(int frame);
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void change(const QString& mode, int frames);
@@ -147,7 +171,12 @@ signals:
     void monitorChanged();
     void peaksChanged();
     void loopingChanged();
+    void tracksChanged();
 private:
+    QStringList hidden, muted;
+    QImage shown;
+    void loadTracks();
+    void saveTracks();
     std::unique_ptr<Project> project;
     Lyrics lyricState;
     ComfyJobs* comfyJobs;
@@ -156,6 +185,7 @@ private:
     Requests* requestThreads;
     Plan* planState;
     AgentBridge* agentBridge;
+    Notifier* notices;
     int passageEnd = -1;
     int passageStart = -1;
     QUndoStack history;

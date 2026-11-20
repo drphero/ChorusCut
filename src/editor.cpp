@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "library.h"
+#include "notify.h"
 #include <QPainter>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -11,12 +12,23 @@
 #include <QMouseEvent>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QJsonObject>
 
 static QImage decode(Mlt::Frame& frame, QSize size) {
     int width = size.width(), height = size.height();
     auto format = mlt_image_rgb;
     auto pixels = frame.get_image(format, width, height);
     return pixels && format == mlt_image_rgb ? QImage(pixels, width, height, width * 3, QImage::Format_RGB888).copy() : QImage{};
+}
+void Monitor::setEditor(Editor* next) {
+    if (next == source) return;
+    disconnect(link);
+    source = next;
+    if (source) {
+        link = connect(source, &Editor::imageReady, this, &Monitor::showImage);
+        showImage(source->currentImage());
+    }
+    emit editorChanged();
 }
 void Monitor::paint(QPainter* p) {
     if (frame.isNull()) return;
@@ -50,6 +62,9 @@ Editor::Editor() {
     generatorJobs = new Generator(this);  // after the plan and the workflows it uses
     requestThreads = new Requests(this);
     agentBridge = new AgentBridge(this, this);  // after the requests it delivers; serves agents once start() is called
+    notices = new Notifier(this);
+    connect(generatorJobs, &Generator::finished, notices, &Notifier::jobFinished);
+    connect(this, &Editor::imageReady, this, [this](const QImage& image) { shown = image; });
     auto changed = [this] { emit edited(); };
     connect(&history, &QUndoStack::indexChanged, this, changed);
     connect(&history, &QUndoStack::cleanChanged, this, changed);
@@ -222,6 +237,7 @@ bool Editor::openProject(const QUrl& folder) {
     trim = project->trim;
     cursor = 0;
     history.clear();
+    loadTracks();
     build();
     computePeaks();
     info({});
@@ -250,22 +266,29 @@ void Editor::build() {
     black.set("length", length());
     black.set_in_and_out(0,length()-1);
     Mlt::Playlist picture(*profile);
-    if (sourceLength() == 0) {
+    const bool showV1 = !hidden.contains("v1"), showV2 = !hidden.contains("v2");
+    if (sourceLength() == 0 || (!showV1 && !showV2)) {
         picture.append(black,0,length()-1);
     } else {
         auto base = producer(*project, *profile, project->performance, false);
         auto insert = producer(*project, *profile, project->cutaway, false);
+        // A hidden V1 leaves black where the performance was; a hidden V2 shows the
+        // performance through the cutaway.
         auto appendBase = [&](int start, int end) {
-            int stop = qMin(end, baseLength());
+            int stop = showV1 ? qMin(end, baseLength()) : start;
             if (start < stop) picture.append(base, start, stop-1);
             int gap = end - qMax(start, stop);
             if (gap > 0) {
                 picture.append(black,0,gap-1);
             }
         };
-        appendBase(0,trim.start);
-        picture.append(insert,trim.source,trim.source + trim.end - trim.start - 1);
-        appendBase(trim.end,length());
+        if (showV2) {
+            appendBase(0,trim.start);
+            picture.append(insert,trim.source,trim.source + trim.end - trim.start - 1);
+            appendBase(trim.end,length());
+        } else {
+            appendBase(0,length());
+        }
     }
     picture.set("hide",2); // MLT hide-audio flag.
     audio.set("hide",1);  // MLT hide-video flag.
@@ -281,7 +304,7 @@ void Editor::build() {
         int at = 0;
         for (const auto& v : takes) {
             const auto t = v.toMap();
-            if (t["track"].toInt() != track) continue;
+            if (t["track"].toInt() != track || hidden.contains(track == 1 ? "v1" : "v2")) continue;
             const int start = t["start"].toInt(), end = t["end"].toInt(), in = t["in"].toInt();
             if (start > at) clips.blank(start - at - 1);
             Mlt::Producer take(*profile, "loader", t["file"].toString().toUtf8());
@@ -365,7 +388,43 @@ void Editor::setMonitorDb(int dbValue) {
     emit monitorChanged();
 }
 void Editor::updateMonitorGain() {
-    if (output) output->set("volume", mutedOutput ? 0.0 : std::pow(10.0, levelDb / 20.0));
+    // The master track is the monitor's only sound, so muting A1 silences it like Mute does.
+    const bool silent = mutedOutput || muted.contains("a1");
+    if (output) output->set("volume", silent ? 0.0 : std::pow(10.0, levelDb / 20.0));
+}
+static const QStringList kTracks{"v1", "v2", "lyrics", "a1"};
+void Editor::loadTracks() {
+    hidden.clear(); muted.clear();
+    QSqlQuery q(project->db);
+    if (q.exec("SELECT value FROM view_state WHERE key='tracks'") && q.next()) {
+        const auto o = QJsonDocument::fromJson(q.value(0).toString().toUtf8()).object();
+        for (const auto& v : o["hidden"].toArray()) if (kTracks.contains(v.toString()) && v.toString() != "a1") hidden << v.toString();
+        for (const auto& v : o["muted"].toArray()) if (v.toString() == "a1") muted << v.toString();
+    }
+    emit tracksChanged();
+}
+void Editor::saveTracks() {
+    if (!project) return;
+    QSqlQuery q(project->db);
+    q.exec("CREATE TABLE IF NOT EXISTS view_state(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    q.prepare("INSERT OR REPLACE INTO view_state VALUES('tracks', ?)");
+    q.addBindValue(QString::fromUtf8(QJsonDocument(QJsonObject{{"hidden", QJsonArray::fromStringList(hidden)},
+                                                               {"muted", QJsonArray::fromStringList(muted)}}).toJson(QJsonDocument::Compact)));
+    if (!q.exec()) info("Could not keep the track switches: " + q.lastError().text());
+}
+void Editor::setTrackHidden(const QString& track, bool hide) {
+    if (!kTracks.contains(track) || track == "a1" || hidden.contains(track) == hide) return;
+    if (hide) hidden << track; else hidden.removeAll(track);
+    saveTracks();
+    emit tracksChanged();
+    if (track != "lyrics" && project && timeline) { const int at = cursor; build(); seek(at); }
+}
+void Editor::setTrackMuted(const QString& track, bool mute) {
+    if (track != "a1" || muted.contains(track) == mute) return;
+    if (mute) muted << track; else muted.removeAll(track);
+    saveTracks();
+    updateMonitorGain();
+    emit tracksChanged();
 }
 void Editor::togglePlay() {
     if (!ready()) return;

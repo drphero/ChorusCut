@@ -54,8 +54,29 @@ ApplicationWindow {
     onWidthChanged: saveSoon.restart()
     onHeightChanged: saveSoon.restart()
     onVisibilityChanged: saveSoon.restart()
-    onClosing: saveWindow()
+    onClosing: { saveWindow(); if (viewerWindow.visible) { const keep = viewerState.popped; viewerWindow.close(); viewerState.popped = keep } }
     function showManager() { managerOpen = true; manager.show() }
+
+    // ---------------------------------------------------------------- viewer size and pop-out
+    Settings {
+        id: viewerState
+        category: "viewer"
+        property int height: 330
+        property int panelWidth: 340
+        property bool popped: false
+    }
+    property bool viewerPopped: false
+    function popOutViewer() { viewerPopped = true; viewerState.popped = true; viewerWindow.showAgain() }
+    ViewerWindow {
+        id: viewerWindow
+        lines: win.lines
+        onClosedByUser: { win.viewerPopped = false; viewerState.popped = false }
+    }
+    // A viewer left popped out comes back popped out, once a project is open.
+    Connections {
+        target: editor
+        function onProjectChanged() { if (editor.ready && viewerState.popped && !win.viewerPopped) win.popOutViewer() }
+    }
 
     // Edit (timeline) or Plan (concept, cast, locations, arc); and, in Edit, the right-hand panel.
     property string workspace: "edit"
@@ -116,6 +137,15 @@ ApplicationWindow {
         timeline.selectShot(id)
         editor.seekLyric(s.startMs)
         timeline.reveal(s.startMs / 1000)
+    }
+    // Opens what a job was for: a shot in Edit, or a character's, look's or location's card.
+    function showJob(owner, ownerId) {
+        if (owner === "shot") showShot(ownerId)
+        else if (owner) { workspace = "plan"; planWorkspace.reveal(owner, ownerId) }
+    }
+    Connections {
+        target: editor.notifier
+        function onActivated(owner, ownerId) { win.raise(); win.requestActivate(); win.showJob(owner, ownerId); editor.notifier.dismissLatest() }
     }
     // Opens what a plan check is about: its shot, its span of the song, or its Plan page.
     function showCheck(c) {
@@ -452,6 +482,28 @@ ApplicationWindow {
                     color: editor.agent.clients.length ? win.mint : editor.agent.note ? "#e7b75f" : "#748084"
                 }
             }
+            Action {
+                id: jobsButton
+                objectName: "jobsButton"
+                readonly property int running: editor.generator.jobs.filter(j => j.state !== "failed").length
+                readonly property int failed: editor.generator.jobs.length - running
+                text: running ? "Generating · " + running : failed ? "Jobs · " + failed + " failed" : "Jobs"
+                leftPadding: running || failed ? 26 : 12
+                onClicked: jobsPopup.opened ? jobsPopup.close() : jobsPopup.open()
+                ToolTip.text: "What is generating, and how to be told when it finishes"
+                Rectangle {
+                    visible: jobsButton.running || jobsButton.failed
+                    width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
+                    color: jobsButton.running ? "#e7b75f" : "#e07f6f"
+                    SequentialAnimation on opacity { running: jobsButton.running > 0; loops: Animation.Infinite
+                        NumberAnimation { to: 0.3; duration: 700 } NumberAnimation { to: 1; duration: 700 } }
+                }
+                JobsPopup {
+                    id: jobsPopup
+                    y: jobsButton.height + 6
+                    onShowRequested: (owner, ownerId) => win.showJob(owner, ownerId)
+                }
+            }
             RowLayout {
                 Layout.leftMargin: 18
                 spacing: 2
@@ -476,81 +528,88 @@ ApplicationWindow {
             shotColors: timeline.shotColors
         }
 
-        // Edit: monitor, transport and timeline, with the inspector or checks down the right.
-        RowLayout {
+        // Edit: viewer, transport and timeline, with the inspector or checks down the right. The
+        // dividers between them drag like any editor's; the viewer can also pop out to a window.
+        SplitView {
+            id: editSplit
+            objectName: "editSplit"
             visible: win.workspace === "edit"
             Layout.fillWidth: true; Layout.fillHeight: true
-            spacing: 8
-            ColumnLayout {
+            orientation: Qt.Horizontal
+            handle: Rectangle {
+                objectName: "panelDivider"
+                implicitWidth: 8
+                color: SplitHandle.pressed || SplitHandle.hovered ? "#3e6b75" : "transparent"
+                Rectangle { anchors.centerIn: parent; width: 2; height: 28; radius: 1; color: "#3a4950" }
+            }
+            SplitView {
                 id: editColumn
-                Layout.fillWidth: true; Layout.fillHeight: true
-                spacing: 8
-                Rectangle {
-                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 160; Layout.maximumHeight: win.height * 0.42
-                    color: "#0c1216"; radius: 5; clip: true
-                    // A picture to show: imported video, or a take chosen for any shot.
-                    readonly property bool hasPicture: editor.sourceLength > 0 || editor.plan.shots.some(s => s.chosenTake !== undefined)
-                    VideoMonitor { objectName: "monitor"; anchors.fill: parent; anchors.margins: 4; visible: parent.hasPicture }
-                    // Lyric preview: the line under the playhead, words lighting up as they are sung.
-                    Item {
-                        id: preview
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 24
-                        anchors.verticalCenter: parent.hasPicture ? undefined : parent.verticalCenter
-                        anchors.bottom: parent.hasPicture ? parent.bottom : undefined
-                        anchors.bottomMargin: 24
-                        height: previewText.implicitHeight
-                        readonly property real ms: 1000 * editor.frame / editor.fps
-                        readonly property var line: {
-                            let found = null
-                            for (const l of win.lines) if (l.start <= ms + 300) found = l
-                            return found && ms <= found.end + 1500 ? found : null
-                        }
-                        Text {
-                            id: previewText
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.Wrap
-                            textFormat: Text.RichText
-                            font.pixelSize: preview.parent.hasPicture ? 22 : 30
-                            style: Text.Outline; styleColor: "#0c1216"
-                            text: {
-                                const l = preview.line
-                                if (!l) return win.lines.length || editor.sourceLength > 0 ? "" : "<span style='color:#6f8085'>Add lyrics with “Lyrics…”</span>"
-                                return l.words.map(w => "<span style='color:" + (w.start <= preview.ms ? "#87dec7" : "#edf1ef") + "'>"
-                                                        + w.word + "</span>").join(" ")
-                            }
-                        }
-                    }
+                objectName: "editColumn"
+                SplitView.fillWidth: true; SplitView.minimumWidth: 520
+                orientation: Qt.Vertical
+                handle: Rectangle {
+                    objectName: "viewerDivider"
+                    implicitHeight: 8
+                    color: SplitHandle.pressed || SplitHandle.hovered ? "#3e6b75" : "transparent"
+                    Rectangle { anchors.centerIn: parent; width: 28; height: 2; radius: 1; color: "#3a4950" }
                 }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Action { objectName: "playPause"; enabled: editor.ready; text: editor.playing ? "Pause" : "Play"; active: true; onClicked: editor.togglePlay() }
-                    // Narrow windows drop the controls that have keyboard shortcuts.
-                    Action { visible: editColumn.width >= 820; text: "Play selection"; enabled: win.selection !== null; onClicked: editor.playRange(win.selection.start, win.selection.end) }
-                    Action { text: "Loop"; active: editor.looping; onClicked: editor.looping = !editor.looping }
-                    Action { visible: editColumn.width >= 1080; text: "−1 frame"; onClicked: editor.seek(editor.frame-1) }
-                    Action { visible: editColumn.width >= 1080; text: "+1 frame"; onClicked: editor.seek(editor.frame+1) }
-                    LabelText { text: win.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 18; color: win.mint; Layout.leftMargin: 8 }
-                    LabelText { visible: editColumn.width >= 700; text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
-                    Item { Layout.fillWidth: true }
-                    Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (⌘−)" }
-                    Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (⌘0)" }
-                    Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (⌘=)" }
-                    Action { visible: editColumn.width >= 620; text: editor.monitorMuted ? "Unmute" : "Mute"; Layout.leftMargin: 10; onClicked: editor.monitorMuted = !editor.monitorMuted }
-                    Slider {
-                        visible: editColumn.width >= 620
-                        Layout.preferredWidth: 90
-                        from: -60; to: 0; stepSize: 1
-                        value: editor.monitorDb
-                        Accessible.name: "Monitor gain in decibels"
-                        onMoved: editor.monitorDb = Math.round(value)
+                ColumnLayout {
+                    id: viewerPane
+                    objectName: "viewerPane"
+                    // Popped out, only the transport stays here and the timeline takes the room.
+                    SplitView.preferredHeight: viewerState.height
+                    SplitView.minimumHeight: win.viewerPopped ? transport.implicitHeight : 120 + transport.implicitHeight
+                    SplitView.maximumHeight: win.viewerPopped ? transport.implicitHeight : Math.max(160, editColumn.height - 160)
+                    onHeightChanged: if (!win.viewerPopped && editColumn.height > 0 && visible) viewerSave.restart()
+                    Timer { id: viewerSave; interval: 300; onTriggered: viewerState.height = Math.round(viewerPane.height) }
+                    spacing: 8
+                    MonitorView {
+                        id: inlineViewer
+                        visible: !win.viewerPopped
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        radius: 5
+                        monitorName: "monitor"
+                        lines: win.lines
+                        lyricScale: Math.max(1, Math.min(1.8, height / 420))
                     }
-                    LabelText { visible: editColumn.width >= 620; text: editor.monitorDb + " dB"; font.pixelSize: 12; color: win.quiet }
+                    RowLayout {
+                        id: transport
+                        Layout.fillWidth: true
+                        Action { objectName: "playPause"; enabled: editor.ready; text: editor.playing ? "Pause" : "Play"; active: true; onClicked: editor.togglePlay() }
+                        // Narrow windows drop the controls that have keyboard shortcuts.
+                        Action { visible: editColumn.width >= 820; text: "Play selection"; enabled: win.selection !== null; onClicked: editor.playRange(win.selection.start, win.selection.end) }
+                        Action { text: "Loop"; active: editor.looping; onClicked: editor.looping = !editor.looping }
+                        Action { visible: editColumn.width >= 1080; text: "−1 frame"; onClicked: editor.seek(editor.frame-1) }
+                        Action { visible: editColumn.width >= 1080; text: "+1 frame"; onClicked: editor.seek(editor.frame+1) }
+                        LabelText { text: win.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 18; color: win.mint; Layout.leftMargin: 8 }
+                        LabelText { visible: editColumn.width >= 700; text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
+                        Item { Layout.fillWidth: true }
+                        Action {
+                            objectName: "viewerPopOut"
+                            text: win.viewerPopped ? "Viewer back" : "Pop out"
+                            active: win.viewerPopped
+                            onClicked: win.viewerPopped ? viewerWindow.close() : win.popOutViewer()
+                            ToolTip.text: win.viewerPopped ? "Put the viewer back on this page" : "Show the viewer in its own window, for a second screen or full screen"
+                        }
+                        Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (⌘−)" }
+                        Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (⌘0)" }
+                        Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (⌘=)" }
+                        Action { visible: editColumn.width >= 620; text: editor.monitorMuted ? "Unmute" : "Mute"; Layout.leftMargin: 10; onClicked: editor.monitorMuted = !editor.monitorMuted }
+                        Slider {
+                            visible: editColumn.width >= 620
+                            Layout.preferredWidth: 90
+                            from: -60; to: 0; stepSize: 1
+                            value: editor.monitorDb
+                            Accessible.name: "Monitor gain in decibels"
+                            onMoved: editor.monitorDb = Math.round(value)
+                        }
+                        LabelText { visible: editColumn.width >= 620; text: editor.monitorDb + " dB"; font.pixelSize: 12; color: win.quiet }
+                    }
                 }
                 Timeline {
                     id: timeline
                     objectName: "timeline"
-                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 240
+                    SplitView.fillHeight: true; SplitView.minimumHeight: 160
                     selection: win.selection
                     onSelected: s => win.select(s)
                     // Empty state: a song without aligned lyrics.
@@ -567,7 +626,11 @@ ApplicationWindow {
                 }
             }
             ColumnLayout {
-                Layout.preferredWidth: 340; Layout.maximumWidth: 340; Layout.fillHeight: true
+                id: sidePanelColumn
+                objectName: "sidePanel"
+                SplitView.preferredWidth: viewerState.panelWidth; SplitView.minimumWidth: 340; SplitView.maximumWidth: 640
+                onWidthChanged: if (width >= 340 && visible) panelSave.restart()
+                Timer { id: panelSave; interval: 300; onTriggered: viewerState.panelWidth = Math.round(sidePanelColumn.width) }
                 spacing: 6
                 RowLayout {
                     spacing: 2
@@ -641,6 +704,36 @@ ApplicationWindow {
                 onClicked: { editor.undo(); passBanner.label = "" }
             }
             Tab { objectName: "agentPassDismiss"; text: "Dismiss"; onClicked: passBanner.label = "" }
+        }
+    }
+
+    // When a take or pictures arrive (or fail): a banner at the bottom right, gone after a while.
+    Rectangle {
+        id: noticeBanner
+        objectName: "noticeBanner"
+        readonly property var n: editor.notifier.latest
+        visible: n.title !== undefined && !win.managerOpen
+        z: 50
+        anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 18
+        width: Math.min(380, noticeColumn.implicitWidth + 28); height: noticeColumn.implicitHeight + 20
+        radius: 6; color: n.ok === false ? "#3a2622" : "#203530"; border.color: n.ok === false ? "#b4544a" : "#3f9c84"
+        onNChanged: if (visible) noticeHide.restart()
+        Timer { id: noticeHide; interval: 12000; onTriggered: if (!noticeHover.hovered) editor.notifier.dismissLatest(); else restart() }
+        HoverHandler { id: noticeHover }
+        ColumnLayout {
+            id: noticeColumn
+            x: 14; y: 10; width: noticeBanner.width - 28
+            spacing: 6
+            Text { objectName: "noticeTitle"; text: noticeBanner.n.title || ""; color: win.ink; font.pixelSize: 13; font.weight: Font.DemiBold
+                   Layout.fillWidth: true; elide: Text.ElideRight }
+            Text { text: noticeBanner.n.body || ""; color: win.quiet; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideRight }
+            RowLayout {
+                spacing: 6
+                Item { Layout.fillWidth: true }
+                Tab { objectName: "noticeShow"; visible: (noticeBanner.n.owner || "") !== ""; text: "Show"
+                      onClicked: { const n = noticeBanner.n; editor.notifier.dismissLatest(); win.showJob(n.owner, n.ownerId) } }
+                Tab { objectName: "noticeDismiss"; text: "Dismiss"; onClicked: editor.notifier.dismissLatest() }
+            }
         }
     }
 

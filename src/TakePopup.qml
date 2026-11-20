@@ -16,8 +16,13 @@ Popup {
     closePolicy: Popup.CloseOnEscape
     padding: 20
     anchors.centerIn: Overlay.overlay
-    width: Math.min(620, (Overlay.overlay ? Overlay.overlay.width : 620) - 60)
-    height: Math.min(implicitHeight, (Overlay.overlay ? Overlay.overlay.height : 720) - 40)
+    // Wide windows get the prompt down the left at full height (H3 prompts run long) and the
+    // options in their own column; narrow ones stack them. Each part scrolls on its own.
+    readonly property real roomW: Overlay.overlay ? Overlay.overlay.width : 1200
+    readonly property real roomH: Overlay.overlay ? Overlay.overlay.height : 800
+    readonly property bool wide: roomW >= 980
+    width: wide ? Math.min(1280, roomW - 60) : Math.min(620, roomW - 40)
+    height: wide ? Math.min(940, roomH - 40) : Math.min(implicitHeight, roomH - 40)
     background: Rectangle { color: "#1d2930"; radius: 6; border.color: "#34434a" }
 
     property int shot: 0
@@ -215,26 +220,90 @@ Popup {
         background: Rectangle { radius: 4; color: "#162027"; border.color: tf.activeFocus ? "#87dec7" : "#34434a" }
     }
 
+    Shortcut { enabled: tp.opened; sequences: ["Ctrl+Return", "Ctrl+Enter"]; onActivated: if (takeGo.enabled) tp.go() }
+
     contentItem: ColumnLayout {
         spacing: 10
-        ScrollView {
-            id: body
+        ColumnLayout {
+            spacing: 2
+            Layout.fillWidth: true
+            Text { text: tp.topts.lipSync ? "Generate a take, singing to the song" : "Generate a take"; color: "#8fa0a4"; font.pixelSize: 12 }
+            Text {
+                text: "Shot " + (tp.shotInfo.number || "") + (tp.shotInfo.label ? " · " + tp.shotInfo.label.split(" · ").slice(1).join(" · ") : "")
+                color: "#edf1ef"; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true
+            }
+        }
+        GridLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
-            Layout.preferredHeight: bodyColumn.implicitHeight
-            contentWidth: availableWidth
-            clip: true
+            columns: tp.wide ? 2 : 1
+            columnSpacing: 18; rowSpacing: 12
+            // The prompt: the shot's for its route.
             ColumnLayout {
-                id: bodyColumn
-                width: body.availableWidth
-                spacing: 12
-                ColumnLayout {
-                    spacing: 2
-                    Text { text: tp.topts.lipSync ? "Generate a take, singing to the song" : "Generate a take"; color: "#8fa0a4"; font.pixelSize: 12 }
+                id: promptPane
+                Layout.fillWidth: true
+                Layout.fillHeight: tp.wide
+                Layout.preferredWidth: tp.wide ? (tp.availableWidth - 18) * 0.58 : -1
+                Layout.preferredHeight: tp.wide ? -1 : 240
+                Layout.minimumHeight: 160
+                spacing: 4
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "Prompt"; color: "#edf1ef"; font.pixelSize: 13; font.weight: Font.DemiBold }
                     Text {
-                        text: "Shot " + (tp.shotInfo.number || "") + (tp.shotInfo.label ? " · " + tp.shotInfo.label.split(" · ").slice(1).join(" · ") : "")
-                        color: "#edf1ef"; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true
+                        objectName: "takePromptWords"
+                        readonly property int words: { const t = tp.prompt.trim(); return t ? t.split(/\s+/).length : 0 }
+                        text: words ? words + (words === 1 ? " word" : " words") : ""
+                        color: "#6f8085"; font.pixelSize: 11; Layout.leftMargin: 6
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        objectName: "takeAsk"
+                        text: tp.prompt.trim() ? "Ask your agent to improve it…" : "Ask your agent to write it…"
+                        color: takeAskMouse.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
+                        MouseArea { id: takeAskMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: tp.askAgent() }
                     }
                 }
+                ScrollView {
+                    id: promptScroll
+                    objectName: "takePromptScroll"
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                    background: Rectangle { radius: 4; color: "#162027"; border.color: promptText.activeFocus ? "#87dec7" : "#34434a" }
+                    // No rubber-banding at the ends: a long prompt scrolls and stops.
+                    Component.onCompleted: if (contentItem.boundsBehavior !== undefined) { contentItem.boundsBehavior = Flickable.StopAtBounds; contentItem.flickDeceleration = 4000 }
+                    TextArea {
+                        id: promptText
+                        objectName: "takePrompt"
+                        width: promptScroll.availableWidth
+                        text: tp.prompt
+                        wrapMode: TextEdit.Wrap; selectByMouse: true
+                        color: "#edf1ef"; font.pixelSize: 13
+                        leftPadding: 10; rightPadding: 14; topPadding: 8; bottomPadding: 8
+                        background: null
+                        placeholderText: "What happens, shot by shot and second by second, naming the pictures as " + ((tp.topts.pictures || [])[0] || {label: "<Picture 1>"}).label
+                        placeholderTextColor: "#6f8085"
+                        onTextChanged: if (text !== tp.prompt) tp.prompt = text
+                    }
+                }
+                Text { text: "⌘Return generates · Save keeps it on the shot"; color: "#6f8085"; font.pixelSize: 10 }
+            }
+        ScrollView {
+            id: body
+            objectName: "takeOptions"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.preferredWidth: tp.wide ? (tp.availableWidth - 18) * 0.42 : -1
+            Layout.minimumWidth: tp.wide ? 380 : 0
+            Layout.preferredHeight: tp.wide ? -1 : bodyColumn.implicitHeight
+            contentWidth: availableWidth
+            clip: true
+            Component.onCompleted: if (contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+            ColumnLayout {
+                id: bodyColumn
+                width: body.availableWidth - 12
+                spacing: 12
                 RowLayout {
                     Layout.fillWidth: true; spacing: 10
                     visible: (tp.topts.workflows || []).length > 0
@@ -245,40 +314,6 @@ Popup {
                         options: (tp.topts.workflows || []).map(w => ({value: w.id, label: w.name + (w.isDefault ? "  ·  default" : "")}))
                         value: tp.workflow
                         onPicked: v => tp.workflow = v
-                    }
-                }
-                // The prompt: the shot's for its route.
-                ColumnLayout {
-                    Layout.fillWidth: true; spacing: 4
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text { text: "Prompt"; color: "#edf1ef"; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                        Text {
-                            objectName: "takeAsk"
-                            text: tp.prompt.trim() ? "Ask your agent to improve it…" : "Ask your agent to write it…"
-                            color: takeAskMouse.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
-                            MouseArea { id: takeAskMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: tp.askAgent() }
-                        }
-                    }
-                    ScrollView {
-                        id: promptScroll
-                        Layout.fillWidth: true; Layout.preferredHeight: 110
-                        contentWidth: availableWidth
-                        background: Rectangle { radius: 4; color: "#162027"; border.color: promptText.activeFocus ? "#87dec7" : "#34434a" }
-                        TextArea {
-                            id: promptText
-                            objectName: "takePrompt"
-                            width: promptScroll.availableWidth
-                            text: tp.prompt
-                            wrapMode: TextEdit.Wrap; selectByMouse: true
-                            color: "#edf1ef"; font.pixelSize: 12
-                            leftPadding: 8; rightPadding: 8; topPadding: 6; bottomPadding: 6
-                            background: null
-                            placeholderText: "What happens, shot by shot and second by second, naming the pictures as " + ((tp.topts.pictures || [])[0] || {label: "<Picture 1>"}).label
-                            placeholderTextColor: "#6f8085"
-                            onTextChanged: if (text !== tp.prompt) tp.prompt = text
-                        }
                     }
                 }
                 // The pictures it sends, in the order clicked, as the prompt names them.
@@ -465,6 +500,7 @@ Popup {
                 }
             }
         }
+        }
         Text {
             objectName: "takeWhy"
             visible: (tp.note || tp.why).length > 0
@@ -483,6 +519,7 @@ Popup {
             Small { objectName: "takeSave"; text: "Save"; onClicked: tp.save()
                     ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: "Keep the prompt on the shot and the settings with the workflow, without generating" }
             Small {
+                id: takeGo
                 objectName: "takeGo"
                 active: true
                 enabled: tp.why === "" && (!tp.fixedSeed || !tp.hasSeed || tp.seedText !== "")

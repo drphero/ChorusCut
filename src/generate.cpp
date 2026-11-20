@@ -40,7 +40,8 @@ QVariantList Generator::jobs() const {
     QVariantList out;
     for (const auto& j : list)
         out.append(QVariantMap{{"id", j.id}, {"owner", j.owner}, {"ownerId", j.ownerId}, {"use", j.use}, {"view", j.view},
-                               {"workflow", j.workflowName}, {"state", j.state}, {"text", j.text}});
+                               {"workflow", j.workflowName}, {"state", j.state}, {"text", j.text},
+                               {"started", double(j.started)}, {"since", double(j.since)}});
     return out;
 }
 
@@ -51,6 +52,8 @@ Generator::Job* Generator::find(int id) {
 
 void Generator::say(Job& job, const QString& state, const QString& text) {
     if (job.state == state && job.text == text) return;
+    if (job.state != state) job.since = QDateTime::currentMSecsSinceEpoch();
+    if (!job.started) job.started = job.since ? job.since : QDateTime::currentMSecsSinceEpoch();
     job.state = state;
     job.text = text;
     emit changed();
@@ -548,8 +551,11 @@ void Generator::collectTake(int id, const QJsonObject& outputs) {
         QFile::remove(thumb);
         if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
         record(*job, "done");
+        const QString owner = job->owner, use = job->use;
+        const int ownerId = job->ownerId;
         for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
         emit changed();
+        emit finished(owner, ownerId, use, true, {}, 1);
     });
 }
 
@@ -954,8 +960,11 @@ void Generator::collect(int id, const QJsonObject& outputs) {
             if (!r.value("ok").toBool()) { failJob(id, r.value("error").toString()); return; }
             for (const QString& f : *files) QFile::remove(f);  // copied into Media/References
             record(*job, "done");
+            const QString owner = job->owner, use = job->use;
+            const int ownerId = job->ownerId, count = files->size();
             for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
             emit changed();
+            emit finished(owner, ownerId, use, true, {}, count);
         });
     }
 }
@@ -964,7 +973,9 @@ void Generator::failJob(int id, const QString& why) {
     Job* job = find(id);
     if (!job) return;
     if (!job->promptId.isEmpty()) record(*job, "failed", why);
+    const bool fresh = job->state != "failed";
     say(*job, "failed", why);
+    if (fresh) emit finished(job->owner, job->ownerId, job->use, false, why, 0);
 }
 
 void Generator::record(const Job& job, const QString& state, const QString& detail) {
@@ -1048,13 +1059,15 @@ void Generator::resume() {
     auto project = editor->current();
     if (!project || !project->db.tables().contains("jobs") || !ensureTable()) return;
     QSqlQuery q(project->db);
-    if (!q.exec("SELECT prompt_id, server, detail, state FROM jobs WHERE kind IN ('reference','take') AND state IN ('queued','running') ORDER BY submitted"))
+    if (!q.exec("SELECT prompt_id, server, detail, state, submitted FROM jobs WHERE kind IN ('reference','take') AND state IN ('queued','running') ORDER BY submitted"))
         return;
     while (q.next()) {
         const auto d = QJsonDocument::fromJson(q.value(2).toString().toUtf8()).object();
         Job job;
         job.id = ++serial;
         job.promptId = q.value(0).toString();
+        job.started = q.value(4).toLongLong() * 1000;
+        job.since = QDateTime::currentMSecsSinceEpoch();
         job.owner = d["owner"].toString();
         job.ownerId = d["ownerId"].toInt();
         job.use = d["use"].toString();

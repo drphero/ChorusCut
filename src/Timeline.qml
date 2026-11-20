@@ -272,9 +272,47 @@ Rectangle {
                 y: tops[modelData.key] - tl.rulerH
                 width: tl.header; height: tl[modelData.key]
                 color: "#18242b"
+                // Eye (V1, V2, Lyrics) and speaker (A1) switches, like any editor's track header.
+                readonly property string trackName: ({v2H: "v2", v1H: "v1", lyricH: "lyrics", audioH: "a1"})[modelData.key] || ""
+                readonly property bool off: trackName === "a1" ? editor.mutedTracks.indexOf("a1") >= 0
+                                                               : trackName !== "" && editor.hiddenTracks.indexOf(trackName) >= 0
+                Rectangle {
+                    id: trackSwitch
+                    objectName: "trackSwitch_" + trackHeader.trackName
+                    visible: trackHeader.trackName !== "" && trackHeader.height >= 18
+                    anchors.right: parent.right; anchors.rightMargin: 6; y: Math.min(6, (trackHeader.height - 18) / 2)
+                    width: 20; height: 18; radius: 3
+                    color: trackHeader.off ? "#5a3b2c" : switchMouse.containsMouse ? "#2f3e45" : "transparent"
+                    border.color: trackHeader.off ? "#c98a5a" : "#3a4950"
+                    // A1: M when muted, a note when playing. The rest: an eye, struck through when hidden.
+                    Text {
+                        visible: trackHeader.trackName === "a1"
+                        anchors.centerIn: parent
+                        text: trackHeader.off ? "M" : "♪"
+                        color: trackHeader.off ? "#f0c19a" : "#adb8ba"; font.pixelSize: 11; font.bold: trackHeader.off
+                    }
+                    Item {
+                        visible: trackHeader.trackName !== "a1"
+                        anchors.centerIn: parent; width: 13; height: 8
+                        Rectangle { anchors.fill: parent; radius: 4; color: "transparent"; border.width: 1.3; border.color: trackHeader.off ? "#f0c19a" : "#adb8ba" }
+                        Rectangle { anchors.centerIn: parent; width: 4; height: 4; radius: 2; color: trackHeader.off ? "#f0c19a" : "#adb8ba" }
+                        Rectangle { visible: trackHeader.off; anchors.centerIn: parent; width: 16; height: 1.5; rotation: -30; color: "#f0c19a" }
+                    }
+                    MouseArea {
+                        id: switchMouse
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: trackHeader.trackName === "a1" ? editor.setTrackMuted("a1", !trackHeader.off)
+                                                                  : editor.setTrackHidden(trackHeader.trackName, !trackHeader.off)
+                    }
+                    ToolTip.visible: switchMouse.containsMouse; ToolTip.delay: 400
+                    ToolTip.text: trackHeader.trackName === "a1" ? (trackHeader.off ? "Unmute the master track" : "Mute the master track in the viewer")
+                                : trackHeader.trackName === "lyrics" ? (trackHeader.off ? "Show the lyric line in the viewer" : "Hide the lyric line in the viewer")
+                                : (trackHeader.off ? "Show this track in the viewer" : "Hide this track in the viewer")
+                }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter; x: 10
-                    width: parent.width - 14; elide: Text.ElideRight
+                    width: parent.width - 14 - (trackSwitch.visible ? 24 : 0); elide: Text.ElideRight
+                    opacity: trackHeader.off ? 0.55 : 1
                     // Footage from an imported pair sits under the planned shots.
                     text: trackHeader.modelData.label + (!tl.hasPicture ? "" : trackHeader.modelData.key === "v2H" ? "  Cutaway"
                           : trackHeader.modelData.key === "v1H" ? "  Performance" : "")
@@ -485,7 +523,8 @@ Rectangle {
                 z: dragging ? 3 : 1
                 radius: 4; clip: true
                 color: colors[0]
-                opacity: dragging ? 0.85 : 1
+                readonly property bool trackHidden: editor.hiddenTracks.indexOf(track === 2 ? "v2" : "v1") >= 0
+                opacity: dragging ? 0.85 : trackHidden ? 0.45 : 1
                 border.color: chosen ? "#ecedc9" : modelData.problems ? "#e07f6f" : colors[1]
                 border.width: chosen ? 2 : 1
                 // The chosen take, as a strip of its still behind the label; and takes on their way.
@@ -501,12 +540,36 @@ Rectangle {
                                 fillMode: Image.PreserveAspectCrop; asynchronous: true; sourceSize: Qt.size(160, 90) }
                     }
                 }
-                Text {
-                    objectName: "shotTakes" + shotCard.modelData.id
-                    visible: (shotCard.modelData.takes > 0 || shotCard.makingTakes > 0) && shotCard.width > 60 && shotCard.height >= 32
-                    anchors.right: parent.right; anchors.rightMargin: 5; anchors.bottom: parent.bottom; anchors.bottomMargin: 3
-                    text: shotCard.makingTakes > 0 ? "generating " + shotCard.makingTakes : shotCard.modelData.takes + (shotCard.modelData.takes === 1 ? " take" : " takes")
-                    color: shotCard.makingTakes > 0 ? "#e7b75f" : "#ecedc9"; font.pixelSize: 9
+                readonly property int failedTakes: editor.generator.jobs.filter(j => j.owner === "shot" && j.ownerId === modelData.id && j.state === "failed").length
+                // Takes on their way: an amber sweep along the bottom of the card, at any size.
+                Rectangle {
+                    objectName: "shotGenerating" + shotCard.modelData.id
+                    visible: shotCard.makingTakes > 0 || shotCard.failedTakes > 0
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    height: 4; clip: true
+                    color: shotCard.makingTakes > 0 ? "#5a4a26" : "#7a3a32"
+                    Rectangle {
+                        visible: shotCard.makingTakes > 0
+                        width: Math.max(16, parent.width * 0.35); height: parent.height; radius: 2; color: "#e7b75f"
+                        NumberAnimation on x { running: shotCard.makingTakes > 0 && shotCard.visible; loops: Animation.Infinite
+                                               from: -shotCard.width * 0.35; to: shotCard.width; duration: 1400 }
+                    }
+                }
+                Rectangle {
+                    // The count, on a chip so it reads over a take's picture.
+                    visible: (shotCard.modelData.takes > 0 || shotCard.makingTakes > 0 || shotCard.failedTakes > 0) && shotCard.width > 60 && shotCard.height >= 26
+                    anchors.right: parent.right; anchors.rightMargin: 4; anchors.bottom: parent.bottom; anchors.bottomMargin: 6
+                    width: takesText.implicitWidth + 8; height: takesText.implicitHeight + 2; radius: 3
+                    color: "#c0121b20"
+                    Text {
+                        id: takesText
+                        objectName: "shotTakes" + shotCard.modelData.id
+                        anchors.centerIn: parent
+                        text: shotCard.makingTakes > 0 ? "generating " + shotCard.makingTakes
+                            : shotCard.failedTakes > 0 ? "take failed"
+                            : shotCard.modelData.takes + (shotCard.modelData.takes === 1 ? " take" : " takes")
+                        color: shotCard.makingTakes > 0 ? "#e7b75f" : shotCard.failedTakes > 0 ? "#f0a08f" : "#ecedc9"; font.pixelSize: 10
+                    }
                 }
                 Column {
                     x: 6; y: 3; width: parent.width - 12 - (badge.visible ? badge.width + 4 : 0)
@@ -613,6 +676,7 @@ Rectangle {
                     tl.selection.firstRow <= index && index <= tl.selection.lastRow
                 x: tl.px(shownStart / 1000); y: tl.lyricY + 4
                 width: Math.max(3, (shownEnd - shownStart) / 1000 * tl.pps); height: tl.lyricH - 8
+                opacity: editor.hiddenTracks.indexOf("lyrics") >= 0 ? 0.5 : 1
                 visible: x + width > -2 && x < lanes.width + 2
                 readonly property bool showWords: visible && tl.wordsFit(modelData.words)
                 readonly property real widest: tl.widestWord(modelData.words)
@@ -777,6 +841,7 @@ Rectangle {
             pixelsPerSecond: tl.pps
             viewStart: tl.viewStart
             color: "#4f9c85"
+            opacity: editor.mutedTracks.indexOf("a1") >= 0 ? 0.4 : 1
         }
         Text {
             visible: !editor.peaksReady && editor.ready

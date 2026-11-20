@@ -30,6 +30,8 @@
 #include <QStyleHints>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWheelEvent>
+#include <QPointingDevice>
 #include <QDebug>
 #include <functional>
 
@@ -233,6 +235,9 @@ int main(int argc, char** argv) {
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     // The test's own workflow library, never the user's.
     qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
+    // Notifications go to a file, never to macOS.
+    const QString notifyLog = scratch.filePath("notify.log");
+    qputenv("CHORUS_NOTIFY_LOG", QFile::encodeName(notifyLog));
     QGuiApplication app(argc, argv);
     app.setOrganizationName("Chorus Cut Tests");
     app.setApplicationName("Generate Check");
@@ -976,8 +981,7 @@ int main(int argc, char** argv) {
         if (!takesLabel || takesLabel->property("text") != "1 take") return fail(125, "the timeline's shot does not show its take");
         auto monitor = find(window, "monitor");
         if (!monitor) return fail(125, "the monitor is hidden though a take plays");
-        // As the app does: the monitor shows the editor's frames.
-        QObject::connect(&editor, &Editor::imageReady, qobject_cast<Monitor*>(monitor), &Monitor::showImage);
+        // The monitor follows the editor by itself (its editor property), as in the app.
         editor.seek((start + end) / 2);
         QTest::qWait(100);
         capture("take-timeline");
@@ -1104,6 +1108,266 @@ int main(int argc, char** argv) {
         const QString excerpt = QDir(QDir::tempPath()).filePath("chorus-excerpt-check.wav");
         if (!editor.writeExcerpt(-0.25, 1.0, excerpt).isEmpty() || QFileInfo(excerpt).size() != 44 + 48000 * 4) return fail(134, "the song excerpt's size");
         QFile::remove(excerpt);
+
+        // ---- N. What is generating, being told when it finishes, the take dialog's room, the
+        // viewer's size and pop-out, and track switches.
+        {
+            auto notices = [&] {
+                QStringList out;
+                QFile f(notifyLog);
+                if (f.open(QIODevice::ReadOnly)) for (const auto& line : f.readAll().split('\n')) if (!line.isEmpty()) out << QString::fromUtf8(line);
+                return out;
+            };
+            const int toldBefore = notices().size();
+            auto selectedShot = [&] { const auto sel = window->property("selection").toMap(); return sel["kind"] == "shot" ? sel["id"].toInt() : 0; };
+            const QString shotName = "Shot " + plan->shot(shotId)["number"].toString();
+            window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", shotId}, {"start", firstLine["start"]}, {"end", firstLine["end"]}});
+            QTest::qWait(150);
+            // A take held running on ComfyUI: the shot's card and the Jobs button say so.
+            mode("hold");
+            auto again = find(window, "shotGenerateTake");
+            if (!again) return fail(140, "no Generate take for the shot");
+            click(again);
+            if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["state"] == "running"; })) return fail(140, "the held take is not running: " + json(gen->jobs()));
+            auto marker = find(window, QString("shotGenerating%1").arg(shotId));
+            auto jobsButton = find(window, "jobsButton");
+            if (!marker || !jobsButton || jobsButton->property("text") != "Generating · 1" || find(window, QString("shotTakes%1").arg(shotId))->property("text") != "generating 1")
+                return fail(140, "the timeline or the Jobs button does not show the take generating");
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            QTest::qWait(100);
+            click(jobsButton);
+            auto jobsPopup = window->findChild<QObject*>("jobsPopup");
+            if (!jobsPopup || !waitFor([&] { return jobsPopup->property("opened").toBool(); }, 1500)) return fail(141, "the Jobs button did not open the list");
+            auto row = find(window, QString("jobRow_shot%1").arg(shotId));
+            if (!row) return fail(141, "the list does not show the take");
+            QTest::qWait(1100);
+            auto rowText = findItem(row, "jobText");
+            if (!rowText || !rowText->property("text").toString().contains("Generating") || !rowText->property("text").toString().contains("0:0"))
+                return fail(141, "the take's row: " + (rowText ? rowText->property("text").toString() : QString("none")));
+            // Notify even while the app is in front, so the check sees it.
+            auto background = find(window, "notifyBackground");
+            click(background);
+            if (editor.notifier()->onlyInBackground()) return fail(142, "the background-only switch did not turn off");
+            capture("jobs");
+            click(findItem(row, "jobShow"));
+            if (selectedShot() != shotId || jobsPopup->property("opened").toBool()) return fail(141, "Show did not open the shot");
+            // It arrives: the banner and the notification name the shot.
+            call("/_stub/release", {}, true);
+            if (!waitFor([&] { return plan->takesFor(shotId).size() == 4 && gen->jobs().isEmpty(); }, 20000)) return fail(142, "the held take did not arrive");
+            auto banner = find(window, "noticeBanner");
+            if (!banner || find(window, "noticeTitle")->property("text") != shotName + ": take ready") return fail(142, "no banner for the finished take");
+            const auto told = notices().mid(toldBefore);
+            if (told.size() != 2 || !told[0].contains("\"title\":\"" + shotName + ": take ready\"") || !told[0].contains("\"ownerId\":" + QString::number(shotId))
+                || !told[0].contains("\"sound\":true") || !told[1].contains("\"dock\""))
+                return fail(142, "the notification: " + told.join(" | "));
+            capture("notice");
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            QTest::qWait(100);
+            click(find(window, "noticeShow"));
+            if (selectedShot() != shotId || find(window, "noticeBanner")) return fail(142, "Show on the banner did not open the shot");
+            // A click on the macOS notification does the same.
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            editor.notifier()->activate("shot", shotId);
+            QTest::qWait(100);
+            if (selectedShot() != shotId) return fail(142, "clicking the notification did not open the shot");
+            // Pictures are off by default; failures are on. Turn the sound off first.
+            click(jobsButton);
+            waitFor([&] { return jobsPopup->property("opened").toBool(); }, 1500);
+            click(find(window, "notifySound"));
+            if (editor.notifier()->sound()) return fail(143, "the sound switch did not turn off");
+            QTest::keyClick(window, Qt::Key_Escape);
+            waitFor([&] { return !jobsPopup->property("visible").toBool(); }, 1500);
+            mode("error");
+            if (const QString why = gen->generateTake(shotId); !why.isEmpty()) return fail(143, why);
+            if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["state"] == "failed"; }, 10000)) return fail(143, "the take did not fail");
+            mode("finish");
+            const auto failedTold = notices().mid(toldBefore);
+            if (failedTold.size() != 4 || !failedTold[2].contains(shotName + ": take failed") || !failedTold[2].contains("\"sound\":false"))
+                return fail(143, "the failure's notification: " + failedTold.join(" | "));
+            if (find(window, QString("shotTakes%1").arg(shotId))->property("text") != "take failed" || jobsButton->property("text") != "Jobs · 1 failed")
+                return fail(143, "the failed take is not shown on the card and the button");
+            click(jobsButton);
+            waitFor([&] { return jobsPopup->property("opened").toBool(); }, 1500);
+            row = find(window, QString("jobRow_shot%1").arg(shotId));
+            if (!row) return fail(143, "the failed take is not listed");
+            click(findItem(row, "jobDismiss"));
+            if (!gen->jobs().isEmpty() || jobsButton->property("text") != "Jobs") return fail(143, "Dismiss did not clear the failed take");
+            QTest::keyClick(window, Qt::Key_Escape);
+            waitFor([&] { return !jobsPopup->property("visible").toBool(); }, 1500);
+            {
+                QSettings kept;
+                if (kept.value("notify/sound").toBool() || kept.value("notify/onlyInBackground").toBool()) return fail(143, "the notification choices were not kept");
+            }
+
+            // The take dialog on a normal window: the prompt fills the left, the options scroll on the right.
+            window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", shotId}, {"start", firstLine["start"]}, {"end", firstLine["end"]}});
+            QTest::qWait(150);
+            click(find(window, "shotTakeOptions"));
+            if (!waitFor([&] { return takeDialog->property("opened").toBool(); }, 1500)) return fail(144, "With options… did not open the take dialog");
+            QTest::qWait(200);
+            auto promptBox = find(window, "takePromptScroll"), optionsBox = find(window, "takeOptions");
+            if (!promptBox || !optionsBox) return fail(144, "the take dialog's parts are missing");
+            const QRectF pr = promptBox->mapRectToScene(QRectF(0, 0, promptBox->width(), promptBox->height()));
+            const QRectF orr = optionsBox->mapRectToScene(QRectF(0, 0, optionsBox->width(), optionsBox->height()));
+            if (orr.left() < pr.right() || pr.height() < 450 || pr.width() < 500)
+                return fail(144, QString("the prompt should fill the left at full height: prompt %1x%2 at %3, options at %4").arg(pr.width()).arg(pr.height()).arg(pr.left()).arg(orr.left()));
+            // A long prompt, typed: it scrolls in its own box, smoothly to its end, and the options stay put.
+            click(find(window, "takePrompt"));
+            QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            QTest::keyClick(window, Qt::Key_Backspace);
+            for (int line = 0; line < 45; ++line) {
+                for (const QChar ch : QString("Second %1: the camera holds on Picture 1 as she sings, light from the left.").arg(line)) QTest::keyClick(window, ch.toLatin1());
+                QTest::keyClick(window, Qt::Key_Return);
+            }
+            QTest::qWait(200);
+            const QString words = find(window, "takePromptWords")->property("text").toString();
+            if (!words.endsWith("words") || words.split(' ')[0].toInt() < 45 * 14) return fail(145, "the word count: " + words);
+            auto promptFlick = promptBox->property("contentItem").value<QQuickItem*>();
+            auto optionsFlick = optionsBox->property("contentItem").value<QQuickItem*>();
+            if (!promptFlick || !optionsFlick) return fail(145, "no scrolling areas");
+            promptFlick->setProperty("contentY", 0);
+            optionsFlick->setProperty("contentY", 0);
+            QTest::qWait(100);
+            const QPoint over = pr.center().toPoint();
+            QPointingDevice trackpad("trackpad", 2, QInputDevice::DeviceType::TouchPad, QPointingDevice::PointerType::Finger,
+                                     QInputDevice::Capability::Position | QInputDevice::Capability::PixelScroll, 1, 3);
+            double last = 0;
+            bool steady = true;
+            for (int k = 0; k < 30; ++k) {
+                const auto phase = k == 0 ? Qt::ScrollBegin : Qt::ScrollUpdate;
+                QWheelEvent e(over, window->mapToGlobal(over), QPoint(0, -30), QPoint(0, -90), Qt::NoButton, Qt::NoModifier, phase, false, Qt::MouseEventNotSynthesized, &trackpad);
+                QGuiApplication::sendEvent(window, &e);
+                QTest::qWait(16);
+                const double y = promptFlick->property("contentY").toDouble();
+                if (y < last - 0.5) steady = false;
+                last = y;
+            }
+            { QWheelEvent e(over, window->mapToGlobal(over), QPoint(), QPoint(), Qt::NoButton, Qt::NoModifier, Qt::ScrollEnd, false, Qt::MouseEventNotSynthesized, &trackpad);
+              QGuiApplication::sendEvent(window, &e); }
+            QTest::qWait(300);
+            const double maxY = promptFlick->property("contentHeight").toDouble() - promptFlick->height();
+            const double endY = promptFlick->property("contentY").toDouble();
+            if (!steady || maxY < 100 || endY < maxY - 1 || endY > maxY + 1 || optionsFlick->property("contentY").toDouble() != 0)
+                return fail(145, QString("scrolling the prompt: steady %1, at %2 of %3, options at %4").arg(steady).arg(endY).arg(maxY).arg(optionsFlick->property("contentY").toDouble()));
+            capture("take-dialog-long");
+            click(find(window, "takeCancel"));
+            if (plan->shot(shotId)["fields"].toMap()["prompts"].toMap()["h3-lipsync"] != syncPrompt) return fail(145, "Cancel kept the typed prompt");
+
+            // The viewer's size: drag the divider under it, and the one beside the inspector.
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            auto pane = find(window, "viewerPane");
+            auto timelineItem = find(window, "timeline");
+            auto divider = find(window, "viewerDivider");
+            if (!pane || !timelineItem || !divider) return fail(146, "the viewer, the timeline or the divider between them is missing");
+            auto drag = [&](QQuickItem* handle, QPoint by) {
+                const QPoint from = center(handle);
+                QTest::mousePress(window, Qt::LeftButton, {}, from);
+                for (int k = 1; k <= 10; ++k) { QTest::mouseMove(window, from + by * k / 10); QTest::qWait(16); }
+                QTest::mouseRelease(window, Qt::LeftButton, {}, from + by);
+                QTest::qWait(150);
+            };
+            const double paneBefore = pane->height(), timelineBefore = timelineItem->height();
+            drag(divider, QPoint(0, 120));
+            if (std::abs(pane->height() - paneBefore - 120) > 4 || std::abs(timelineBefore - timelineItem->height() - 120) > 4)
+                return fail(146, QString("dragging the divider: viewer %1 -> %2, timeline %3 -> %4").arg(paneBefore).arg(pane->height()).arg(timelineBefore).arg(timelineItem->height()));
+            auto side = find(window, "sidePanel");
+            const double sideBefore = side->width();
+            drag(find(window, "panelDivider"), QPoint(-100, 0));
+            if (std::abs(side->width() - sideBefore - 100) > 4) return fail(146, QString("dragging the inspector's divider: %1 -> %2").arg(sideBefore).arg(side->width()));
+            {
+                QSettings kept;
+                waitFor([&] { kept.sync(); return std::abs(kept.value("viewer/height").toInt() - pane->height()) <= 1; }, 3000);
+                if (std::abs(kept.value("viewer/height").toInt() - pane->height()) > 1 || std::abs(kept.value("viewer/panelWidth").toInt() - side->width()) > 1)
+                    return fail(146, "the viewer's size was not kept: " + kept.value("viewer/height").toString() + " " + kept.value("viewer/panelWidth").toString());
+            }
+            capture("viewer-larger");
+            // Pop out: the viewer moves to its own window and the timeline takes the room.
+            const QColor withTakeColour = colourAt((start + end) / 2);
+            {
+                // The page's own viewer shows the frame too (no test wiring: the app's).
+                const QImage page = window->grabWindow();
+                const QPointF mid = find(window, "monitor")->mapToScene(QPointF(find(window, "monitor")->width() / 2, find(window, "monitor")->height() / 2));
+                const QColor c = page.pixelColor((mid * page.devicePixelRatio()).toPoint());
+                if (std::abs(c.red() - withTakeColour.red()) + std::abs(c.green() - withTakeColour.green()) + std::abs(c.blue() - withTakeColour.blue()) > 24)
+                    return fail(147, "the Edit page's viewer does not show the take: " + c.name() + " where the cut is " + withTakeColour.name());
+            }
+            click(find(window, "viewerPopOut"));
+            auto viewerWin = window->findChild<QQuickWindow*>("viewerWindow");
+            if (!viewerWin || !waitFor([&] { return viewerWin->isVisible(); }, 2000)) return fail(147, "Pop out did not open the viewer window");
+            if (!QTest::qWaitForWindowExposed(viewerWin)) return fail(147, "the viewer window is not shown");
+            if (find(window, "monitor") || pane->height() > 60 || timelineItem->height() < timelineBefore + 100)
+                return fail(147, QString("popped out, the Edit page should give the room to the timeline: viewer %1, timeline %2").arg(pane->height()).arg(timelineItem->height()));
+            QTest::qWait(200);
+            {
+                const QImage seen = viewerWin->grabWindow();
+                const QColor c = seen.pixelColor(seen.width() / 2, seen.height() / 2);
+                const QColor inline_ = withTakeColour;
+                if (std::abs(c.red() - inline_.red()) + std::abs(c.green() - inline_.green()) + std::abs(c.blue() - inline_.blue()) > 24)
+                    return fail(147, "the viewer window does not show the take: " + c.name() + " where the cut shows " + inline_.name());
+                if (!shots.isEmpty()) seen.save(shots + "/viewer-window.png");
+            }
+            capture("viewer-popped");
+            auto back = findItem(viewerWin->contentItem(), "viewerWindowBack");
+            if (!back) return fail(147, "no Back to Edit in the viewer window");
+            QTest::mouseClick(viewerWin, Qt::LeftButton, {}, back->mapToScene(QPointF(back->width() / 2, back->height() / 2)).toPoint());
+            if (!waitFor([&] { return !viewerWin->isVisible(); }, 1500) || !waitFor([&] { return find(window, "monitor") != nullptr; }, 1500))
+                return fail(147, "Back to Edit did not bring the viewer back");
+            QTest::qWait(200);
+            if (std::abs(pane->height() - paneBefore - 120) > 6) return fail(147, QString("the viewer came back at %1, not its size %2").arg(pane->height()).arg(paneBefore + 120));
+
+            // Track switches: hide V1 and the take leaves the viewer; hide the lyrics and the line goes.
+            const QColor withTake = colourAt((start + end) / 2);
+            auto v1Switch = find(window, "trackSwitch_v1");
+            if (!v1Switch) return fail(148, "no eye on V1");
+            click(v1Switch);
+            const QColor hiddenV1 = colourAt((start + end) / 2);
+            if (!editor.hiddenTracks().contains("v1") || hiddenV1 == withTake || hiddenV1.red() + hiddenV1.green() + hiddenV1.blue() > 30)
+                return fail(148, "hiding V1 did not take its take out of the viewer");
+            capture("track-hidden");
+            click(find(window, "trackSwitch_v1"));
+            if (editor.hiddenTracks().contains("v1") || colourAt((start + end) / 2) != withTake) return fail(148, "showing V1 did not bring the take back");
+            editor.seekLyric(firstLine["start"].toInt() + 200);
+            QTest::qWait(100);
+            if (!find(window, "monitorLyric")) return fail(148, "the lyric line is not in the viewer");
+            click(find(window, "trackSwitch_lyrics"));
+            if (find(window, "monitorLyric") || !editor.hiddenTracks().contains("lyrics")) return fail(148, "hiding the lyrics did not leave the line off");
+            // A1's mute: nothing reaches the output while it is on.
+            QFile captureFile(scratch.filePath("capture.raw"));
+            auto loudest = [&](qint64 from) {
+                float peak = 0;
+                if (!captureFile.open(QIODevice::ReadOnly)) return -1.0f;
+                captureFile.seek(from);
+                const QByteArray b = captureFile.readAll();
+                captureFile.close();
+                const float* f = reinterpret_cast<const float*>(b.constData());
+                for (qsizetype i = 0; i < b.size() / 4; ++i) peak = std::max(peak, std::abs(f[i]));
+                return b.size() < 4 ? -1.0f : peak;
+            };
+            // SDL's disk driver starts the file over each time playback starts.
+            auto playFor = [&](int ms) {
+                const qint64 from = 0;
+                editor.seekLyric(firstLine["start"].toInt());
+                editor.togglePlay();
+                QTest::qWait(ms);
+                if (editor.playing()) editor.togglePlay();
+                QTest::qWait(200);
+                return loudest(from);
+            };
+            click(find(window, "trackSwitch_a1"));
+            if (!editor.mutedTracks().contains("a1")) return fail(149, "the A1 switch did not mute the master");
+            const float mutedPeak = playFor(700);
+            click(find(window, "trackSwitch_a1"));
+            const float openPeak = playFor(700);
+            if (mutedPeak != 0 || openPeak <= 0.001f) return fail(149, QString("A1's mute at the output: muted peak %1, unmuted %2").arg(mutedPeak).arg(openPeak));
+            // The switches stay with the project.
+            click(find(window, "trackSwitch_v2"));
+            if (!editor.openProject(project)) return fail(149, "reopening: " + editor.status());
+            QTest::qWait(300);
+            if (editor.hiddenTracks() != QStringList{"lyrics", "v2"} || !editor.mutedTracks().isEmpty())
+                return fail(149, "after reopening, hidden " + editor.hiddenTracks().join(",") + " muted " + editor.mutedTracks().join(","));
+            editor.setTrackHidden("lyrics", false);
+            editor.setTrackHidden("v2", false);
+        }
         flows->remove(syncId);
         flows->remove(refId);
     }
