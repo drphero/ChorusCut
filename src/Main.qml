@@ -138,7 +138,7 @@ ApplicationWindow {
         editor.seekLyric(s.startMs)
         timeline.reveal(s.startMs / 1000)
     }
-    // Opens what a job was for: a shot in Edit, or a character's, look's or location's card.
+    // Opens what a job was for: a shot in Edit, or a character's, look's, location's or prop's card.
     function showJob(owner, ownerId) {
         if (owner === "shot") showShot(ownerId)
         else if (owner) { workspace = "plan"; planWorkspace.reveal(owner, ownerId) }
@@ -510,7 +510,7 @@ ApplicationWindow {
                 Tab { objectName: "workspaceEdit"; text: "Edit"; active: win.workspace === "edit"; enabled: editor.ready; onClicked: win.workspace = "edit"
                       ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Timeline, shots and lyrics (⌘1)" }
                 Tab { objectName: "workspacePlan"; text: "Plan"; active: win.workspace === "plan"; enabled: editor.ready; onClicked: win.workspace = "plan"
-                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Concept, look, cast, locations and arc (⌘2)" }
+                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Concept, look, cast, locations, props and arc (⌘2)" }
             }
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }

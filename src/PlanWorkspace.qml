@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// The Plan workspace, beside Edit: concept, look, cast, locations and the arc for each song
+// The Plan workspace, beside Edit: concept, look, cast, locations, props and the arc for each song
 // section, plus the plan checks. Every field writes through editor.plan, so each edit is one
 // undo step, and agent passes (later, through MCP) use the same commands.
 Rectangle {
@@ -74,7 +74,7 @@ Rectangle {
         id: card
         default property alias body: cardBody.data
         property bool flashing: false
-        // What this card is, for the links panel: "section", "character" or "location".
+        // What this card is, for the links panel: "section", "character", "location" or "prop".
         property string linkKind: ""
         property int linkId: 0
         readonly property bool picked: linkKind !== "" && ws.sameLink(ws.linked, {kind: linkKind, id: linkId})
@@ -92,8 +92,9 @@ Rectangle {
         property int itemId
         readonly property var links: (ws.plan.revision, ws.plan.links(kind, itemId))
         readonly property var chips: !links.kind ? [] : kind === "section" ? links.characters.map(c => ({kind: "character", id: c.id, name: c.name})).concat(links.locations.map(l => ({kind: "location", id: l.id, name: l.name})))
-                                     : kind === "character" ? links.locations.map(l => ({kind: "location", id: l.id, name: l.name}))
-                                     : links.characters.map(c => ({kind: "character", id: c.id, name: c.name}))
+                                     : kind === "character" ? links.locations.map(l => ({kind: "location", id: l.id, name: l.name})).concat(links.props.map(p => ({kind: "prop", id: p.id, name: p.name})))
+                                     : kind === "prop" ? links.characters.map(c => ({kind: "character", id: c.id, name: c.name})).concat(links.locations.map(l => ({kind: "location", id: l.id, name: l.name})))
+                                     : links.characters.map(c => ({kind: "character", id: c.id, name: c.name})).concat(links.props.map(p => ({kind: "prop", id: p.id, name: p.name})))
         Layout.fillWidth: true
         spacing: 4
         Text {
@@ -106,7 +107,7 @@ Rectangle {
                 const shots = n + (n === 1 ? " shot" : " shots")
                 if (summary.kind === "section") return shots
                 const m = summary.links.sections.length
-                return shots + " in " + m + (m === 1 ? " section" : " sections") + (summary.chips.length ? (summary.kind === "character" ? ", at" : ", with") : "")
+                return shots + " in " + m + (m === 1 ? " section" : " sections") + (summary.chips.length ? (summary.kind === "character" ? ", at" : summary.kind === "prop" ? ", with" : ", with") : "")
             }
         }
         Repeater {
@@ -126,7 +127,7 @@ Rectangle {
         contentItem: Text { text: sb.text; color: sb.danger ? "#f0a08f" : "#edf1ef"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
         background: Rectangle { radius: 4; color: sb.hovered ? "#3b4b52" : "#2b383f" }
     }
-    // Opens the card for a character, look (its character's card) or location, scrolls it into
+    // Opens the card for a character, look (its character's card), location or prop, scrolls it into
     // view and highlights it for a moment: where a reference to-do is fixed.
     property string flash: ""
     Timer { id: flashTimer; interval: 1800; onTriggered: ws.flash = "" }
@@ -149,15 +150,15 @@ Rectangle {
             if (!look) return
             owner = "character"; ownerId = look.character
         }
-        const list = owner === "location" ? plan.locations : plan.characters
+        const list = owner === "location" ? plan.locations : owner === "prop" ? plan.props : plan.characters
         const index = list.findIndex(x => x.id === ownerId)
         if (index < 0) return
-        page = owner === "location" ? "locations" : "cast"
+        page = owner === "location" ? "locations" : owner === "prop" ? "props" : "cast"
         flash = owner + ":" + ownerId
         flashTimer.restart()
         Qt.callLater(() => {
-            const view = owner === "location" ? locationsPage : castPage
-            const card = (owner === "location" ? locationCards : castCards).itemAt(index)
+            const view = owner === "location" ? locationsPage : owner === "prop" ? propsPage : castPage
+            const card = (owner === "location" ? locationCards : owner === "prop" ? propCards : castCards).itemAt(index)
             if (!card) return
             const flick = view.contentItem
             flick.contentY = Math.max(0, Math.min(card.y - 12, flick.contentHeight - flick.height))
@@ -183,6 +184,7 @@ Rectangle {
             NavButton { key: "look"; text: "Look" }
             NavButton { key: "cast"; text: "Cast"; detail: ws.plan.characters.length || "" }
             NavButton { key: "locations"; text: "Locations"; detail: ws.plan.locations.length || "" }
+            NavButton { key: "props"; text: "Props"; detail: ws.plan.props.length || "" }
             NavButton { key: "arc"; text: "Arc"; detail: ws.plan.sections.length + " sections" }
             NavButton { key: "checks"; text: "Checks"; detail: ws.plan.errorCount ? ws.plan.errorCount + " open" : "" }
             NavButton { key: "requests"; text: "Requests"
@@ -217,7 +219,7 @@ Rectangle {
 
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
-            currentIndex: ["concept", "look", "cast", "locations", "arc", "checks", "requests"].indexOf(ws.page)
+            currentIndex: ["concept", "look", "cast", "locations", "props", "arc", "checks", "requests"].indexOf(ws.page)
 
             // ------------------------------------------------------ concept
             ScrollView {
@@ -609,6 +611,67 @@ Rectangle {
                                     text: "Remove location"; color: rmLocMouse.containsMouse ? "#f0a08f" : "#6f8085"; font.pixelSize: 11
                                     MouseArea { id: rmLocMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                                 onClicked: ws.plan.run({op: "remove", kind: "location", id: locationCard.itemId}) }
+                                }
+                            }
+                        }
+                    }
+                    Item { height: 12 }
+                }
+            }
+
+            // ------------------------------------------------------ props
+            ScrollView {
+                id: propsPage
+                contentWidth: availableWidth
+                clip: true
+                ColumnLayout {
+                    width: Math.min(propsPage.availableWidth - 16, 760)
+                    spacing: 14
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Heading { text: "Props"; Layout.fillWidth: true }
+                        Small { objectName: "addProp"; text: "Add prop"; onClicked: ws.plan.run({op: "add", kind: "prop"}) }
+                    }
+                    Note { text: "Objects that matter on screen and must look the same from shot to shot: an instrument, a letter, a car. Shots that list a prop send its pictures with the take." }
+                    Note { visible: ws.plan.props.length === 0; text: "No props yet."; color: "#6f8085" }
+                    Repeater {
+                        id: propCards
+                        model: ws.plan.props.length
+                        Card {
+                            id: propCard
+                            required property int index
+                            objectName: "propCard" + index
+                            readonly property var item: ws.plan.props[index] || null
+                            readonly property int itemId: item ? item.id : 0
+                            flashing: ws.flash === "prop:" + itemId
+                            linkKind: "prop"; linkId: itemId
+                            LinkSummary { objectName: "propLinks" + propCard.index; kind: "prop"; itemId: propCard.itemId }
+                            PlanField {
+                                kind: "prop"; itemId: propCard.itemId; field: "name"; label: "Name"; item: propCard.item
+                                PlanText { objectName: "propName" + propCard.index; value: parent.parent.value; onCommit: t => parent.parent.set(t) }
+                            }
+                            PlanField {
+                                kind: "prop"; itemId: propCard.itemId; field: "prompt"; label: "Appearance"; item: propCard.item
+                                hint: "What makes the object recognisable: shape, size, materials, colours, wear and markings, with no hands or setting. Every picture of it is drawn from this."
+                                expandable: true
+                                onExpandRequested: promptEditor.edit(kind, itemId, field, label)
+                                PlanText { objectName: "propPrompt" + propCard.index; multiline: true; lines: 2; collapsedLines: 3; value: parent.parent.value
+                                           placeholder: "e.g. A 1960s transistor radio: cream plastic case, a gold speaker grille, one chipped corner, a red tuning needle"; onCommit: t => parent.parent.set(t) }
+                            }
+                            PlanField {
+                                kind: "prop"; itemId: propCard.itemId; field: "notes"; label: "Notes"; item: propCard.item
+                                PlanText { objectName: "propNotes" + propCard.index; multiline: true; lines: 1; value: parent.parent.value
+                                           placeholder: "e.g. hers; it is on in every verse and broken in the last chorus"; onCommit: t => parent.parent.set(t) }
+                            }
+                            Text { text: "Pictures"; color: "#adb8ba"; font.pixelSize: 11; Layout.topMargin: 4 }
+                            ReferenceViews { objectName: "propRefs" + propCard.index; owner: "prop"; ownerId: propCard.itemId }
+                            RowLayout {
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    objectName: "removeProp" + propCard.index
+                                    text: "Remove prop"; color: rmPropMouse.containsMouse ? "#f0a08f" : "#6f8085"; font.pixelSize: 11
+                                    MouseArea { id: rmPropMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: ws.plan.run({op: "remove", kind: "prop", id: propCard.itemId}) }
                                 }
                             }
                         }

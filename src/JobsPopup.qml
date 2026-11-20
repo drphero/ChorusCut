@@ -33,7 +33,7 @@ Popup {
             return s && s.label ? "Shot " + s.label : "A removed shot"
         }
         const it = editor.plan.item(j.owner, j.ownerId)
-        const name = it && it.fields ? (it.fields.name || (j.owner === "location" ? "Unnamed location" : j.owner === "look" ? "Unnamed look" : "Unnamed character")) : "Removed"
+        const name = it && it.fields ? (it.fields.name || (j.owner === "location" ? "Unnamed location" : j.owner === "prop" ? "Unnamed prop" : j.owner === "look" ? "Unnamed look" : "Unnamed character")) : "Removed"
         const v = j.view ? editor.plan.item("view", j.view) : null
         return name + (v && v.fields && v.fields.name ? " · " + v.fields.name : "")
     }

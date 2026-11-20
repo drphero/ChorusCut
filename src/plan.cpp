@@ -38,7 +38,7 @@ const QMap<QString, QVector<Option>>& optionTable() {
         {"move", {{"static", "Static"}, {"pan", "Pan"}, {"tilt", "Tilt"}, {"push", "Push in"}, {"pull", "Pull out"},
                   {"track", "Tracking"}, {"crane", "Crane"}, {"handheld", "Handheld"}, {"orbit", "Orbit"}, {"zoom", "Zoom"}}},
         {"energy", {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}}},
-        {"refRole", {{"face", "Face"}, {"body", "Full body"}, {"look", "Look"}, {"setting", "Setting"}, {"detail", "Detail"}, {"sheet", "Sheet"}, {"other", "Other"}}},
+        {"refRole", {{"face", "Face"}, {"body", "Full body"}, {"look", "Look"}, {"setting", "Setting"}, {"object", "Object"}, {"detail", "Detail"}, {"sheet", "Sheet"}, {"other", "Other"}}},
         // How a view's pictures are made: drawn from the subject, or edited from pictures the user picks.
         {"viewFrom", {{"prompt", "From the prompt"}, {"pictures", "From pictures"}}},
         // What a look may change about its character (everything is kept unless listed).
@@ -59,12 +59,14 @@ struct ViewSpec { const char* name; const char* framing; const char* role; const
 ViewSpec firstView(const QString& kind) {
     if (kind == "look") return {"Full body", "Full body, head to shoes, standing front-on, plain neutral grey backdrop, soft even light", "look", "pictures"};
     if (kind == "location") return {"Wide", "Wide establishing view at eye level, empty of people, in the video's aspect ratio", "setting", "prompt"};
+    if (kind == "prop") return {"Object", "The object alone, centred, three-quarter view from slightly above, plain neutral grey backdrop, soft even light", "object", "prompt"};
     return {"Face", "Front view, face and shoulders, looking at the camera, plain neutral grey backdrop, soft even light", "face", "prompt"};
 }
 QString roleViewName(const QString& role) {
     if (role == "face") return "Face";
     if (role == "body" || role == "look") return "Full body";
     if (role == "setting") return "Wide";
+    if (role == "object") return "Object";
     if (role == "detail") return "Detail";
     if (role == "sheet") return "Sheet";
     return "Other";
@@ -75,7 +77,7 @@ QString optionLabel(const QString& key, const QString& value) {
 }
 
 // The fields each kind accepts: "text", "texts" (a list of strings), "enum" (named in optionTable),
-// "who", "where", "shotref", "singers", "prompts", "aspects" (a list of lookChanges), "refs"
+// "who", "where", "props" (prop ids), "shotref", "singers", "prompts", "aspects" (a list of lookChanges), "refs"
 // (reference ids) or "views" (view ids).
 const QMap<QString, QMap<QString, QString>>& fieldTable() {
     static const QMap<QString, QMap<QString, QString>> table = {
@@ -85,6 +87,8 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}, {"prompt", "text"}}},
         {"look", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}, {"changes", "aspects"}}},
         {"location", {{"name", "text"}, {"description", "text"}, {"timeOfDay", "enum"}, {"lighting", "text"}, {"prompt", "text"}}},
+        // An object that matters on screen (a guitar, a letter, a car): seen in shots that list it.
+        {"prop", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}, {"notes", "text"}}},
         {"arc", {{"happens", "text"}, {"beat", "text"}, {"density", "enum"}}},
         {"singer", {{"singers", "singers"}}},
         {"reference", {{"role", "enum"}, {"approved", "bool"}, {"notes", "text"}}},
@@ -94,7 +98,7 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         // approved one is its chosen picture. inputs: the pictures an edited view is made from, in
         // order; panels: the views a composed sheet lays side by side.
         {"view", {{"name", "text"}, {"framing", "text"}, {"role", "enum"}, {"from", "enum"}, {"inputs", "refs"}, {"panels", "views"}}},
-        {"shot", {{"type", "enum"}, {"purpose", "text"}, {"who", "who"}, {"where", "where"}, {"timeOfDay", "enum"},
+        {"shot", {{"type", "enum"}, {"purpose", "text"}, {"who", "who"}, {"where", "where"}, {"props", "props"}, {"timeOfDay", "enum"},
                   {"framing", "enum"}, {"angle", "enum"}, {"lens", "text"}, {"move", "enum"}, {"composition", "text"},
                   {"action", "text"}, {"emotion", "text"}, {"energy", "enum"}, {"follows", "shotref"}, {"route", "enum"},
                   {"prompts", "prompts"}, {"pictures", "refs"}, {"notes", "text"}}},
@@ -106,6 +110,9 @@ const QStringList kRequired = {"type", "purpose", "who", "where", "framing", "mo
 const QMap<QString, QString> kFieldNames = {
     {"type", "type"}, {"purpose", "purpose"}, {"who", "who is in frame"}, {"where", "location"},
     {"framing", "framing"}, {"move", "camera move"}, {"route", "route"}};
+
+// What has views and pictures of its own.
+bool hasPictures(const QString& kind) { return kind == "character" || kind == "look" || kind == "location" || kind == "prop"; }
 
 bool empty(const QJsonValue& v) {
     return v.isUndefined() || v.isNull() || (v.isString() && v.toString().trimmed().isEmpty()) ||
@@ -221,7 +228,7 @@ bool Plan::migrateAppearance(QString& error) {
 bool Plan::migrateViews(QString& error) {
     if (has("meta", 1) || items.isEmpty()) return true;
     pending.clear();
-    for (const QString& kind : {QStringLiteral("character"), QStringLiteral("look"), QStringLiteral("location")}) {
+    for (const QString& kind : {QStringLiteral("character"), QStringLiteral("look"), QStringLiteral("location"), QStringLiteral("prop")}) {
         for (int id : items.value(kind).keys()) {
             const ViewSpec first = firstView(kind);
             QMap<QString, int> byRole;
@@ -425,8 +432,8 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     if (op == "add" && kind == "view") {
         const QString owner = c.value("owner").toString();
         const int ownerId = c.value("ownerId").toInt();
-        if ((owner != "character" && owner != "look" && owner != "location") || !has(owner, ownerId))
-            return error("A view belongs to an existing character, look or location.");
+        if (!hasPictures(owner) || !has(owner, ownerId))
+            return error("A view belongs to an existing character, look, location or prop.");
         QVariantMap fields = c.value("fields").toMap();
         if (fields.value("name").toString().trimmed().isEmpty()) return error("Give the view a name, such as Profile.");
         if (!fields.contains("from")) fields["from"] = "prompt";
@@ -452,7 +459,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         return {};
     }
     if (op == "add") {
-        if (kind != "character" && kind != "look" && kind != "location") return error("Add a character, look, location or view.");
+        if (!hasPictures(kind)) return error("Add a character, look, location, prop or view.");
         QJsonObject fresh{{"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
         if (kind == "look") {
             const int owner = c.value("character").toInt();
@@ -464,7 +471,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         if (!has("meta", 1)) write("meta", 1, {{"views", 1}, {"appearance", 1}});  // made with views and appearance from the start
         QVariantMap fields = c.value("fields").toMap();
         if (fields.value("name").toString().trimmed().isEmpty()) {
-            const QString noun = kind == "character" ? "Character" : kind == "look" ? "Look" : "Location";
+            const QString noun = kind == "character" ? "Character" : kind == "look" ? "Look" : kind == "prop" ? "Prop" : "Location";
             fields["name"] = noun + " " + QString::number(items.value(kind).size());
         }
         label("Add " + kind);
@@ -481,7 +488,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     }
     if (op == "remove") {
         const int id = c.value("id").toInt();
-        if ((kind != "character" && kind != "look" && kind != "location" && kind != "shot" && kind != "reference" && kind != "view" && kind != "take") || !has(kind, id))
+        if ((!hasPictures(kind) && kind != "shot" && kind != "reference" && kind != "view" && kind != "take") || !has(kind, id))
             return error("There is no " + kind + " " + QString::number(id) + " to remove.");
         if (by == "agent") {
             const auto prov = row(kind, id)["prov"].toObject();
@@ -493,7 +500,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
             for (auto it = looks.begin(); it != looks.end(); ++it)
                 if (it.value()["character"].toInt() == id) { dropReferences("look", it.key()); write("look", it.key(), {}); }
         }
-        if (kind == "character" || kind == "look" || kind == "location") dropReferences(kind, id);
+        if (hasPictures(kind)) dropReferences(kind, id);
         // A view takes its pictures with it.
         if (kind == "view")
             for (int ref : refIds(row("view", id)["owner"].toString(), row("view", id)["ownerId"].toInt()))
@@ -681,6 +688,11 @@ QString Plan::checkField(const QString& kind, const QString& field, const QJsonV
         if (v.toString() == "none") return {};
         return has("location", v.toInt()) ? QString() : "where names a location that does not exist.";
     }
+    if (type == "props") {
+        if (!v.isArray()) return "props is a list of prop ids.";
+        for (const auto& e : v.toArray()) if (!has("prop", e.toInt())) return "props names a prop that does not exist.";
+        return {};
+    }
     if (type == "shotref") return has("shot", v.toInt()) ? QString() : "follows names a shot that does not exist.";
     if (type == "singers") {
         if (!v.isArray()) return "singers is a list of character ids.";
@@ -776,7 +788,7 @@ Plan::Result Plan::setFields(const QString& kind, int id, const QVariantMap& fie
         touched = true;
     }
     if (!touched) return r;
-    if (kind == "character" || kind == "look" || kind == "location")
+    if (hasPictures(kind))
         if (values["name"].toString().trimmed().isEmpty()) { r.ok = false; r.error = "Give the " + kind + " a name."; return r; }
     current["fields"] = values;
     current["prov"] = prov;
@@ -930,8 +942,8 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     auto fail = [&](const QString& e) { r.ok = false; r.error = e; return r; };
     const QString owner = c.value("owner").toString();
     const int ownerId = c.value("ownerId").toInt();
-    if ((owner != "character" && owner != "look" && owner != "location") || !has(owner, ownerId))
-        return fail("A reference belongs to an existing character, look or location.");
+    if (!hasPictures(owner) || !has(owner, ownerId))
+        return fail("A reference belongs to an existing character, look, location or prop.");
     const QString given = c.value("path").toString();
     const QString source = given.startsWith("file:") ? QUrl(given).toLocalFile() : given;
     QFile file(source);
@@ -974,7 +986,7 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     }
     QString role = c.value("role").toString();
     if (role.isEmpty()) role = row("view", view)["fields"].toObject()["role"].toString();
-    if (role.isEmpty() || role == "sheet") role = owner == "location" ? "setting" : owner == "look" ? "look" : "face";
+    if (role.isEmpty() || role == "sheet") role = owner == "location" ? "setting" : owner == "prop" ? "object" : owner == "look" ? "look" : "face";
     bool viewHasChoice = false;
     for (int other : siblings) viewHasChoice |= row("reference", other)["view"].toInt() == view && row("reference", other)["fields"].toObject()["approved"].toBool();
     const int id = nextId("reference");
@@ -1255,7 +1267,7 @@ QVariantList Plan::shots() const {
 
 QVariantList Plan::references() const {
     QVariantList out;
-    for (const QString owner : {"character", "look", "location"})
+    for (const QString owner : {"character", "look", "location", "prop"})
         for (int id : items.value(owner).keys())
             for (int ref : refIds(owner, id)) out.append(exported("reference", ref));
     return out;
@@ -1307,6 +1319,7 @@ int framingWants(const QString& framing, const QString& role) {
     if (role == "sheet") return close ? 2 : wide ? 2 : 3;
     if (role == "setting") return close ? 3 : wide ? 1 : 2;
     if (role == "detail") return close ? 2 : wide ? 5 : 4;
+    if (role == "object") return close ? 2 : wide ? 3 : 2;  // a prop is in frame because it matters
     return 3;  // the user's own kind of view: worth sending
 }
 // A view the user named without a role ("Your own…", or older projects): its role from its name.
@@ -1318,6 +1331,7 @@ QString roleFromName(const QString& role, const QString& name) {
     if (n.contains("full body") || n.contains("body") || n.contains("outfit")) return "body";
     if (n.contains("wide") || n.contains("establishing") || n.contains("reverse")) return "setting";
     if (n.contains("detail")) return "detail";
+    if (n.contains("object") || n.contains("prop") || n.contains("product")) return "object";
     return role.isEmpty() ? QString("other") : role;
 }
 }
@@ -1366,6 +1380,7 @@ QVariantMap Plan::shotPictures(int id) const {
         add("character", o["character"].toInt(), leaveOut, why);
     }
     if (f["where"].isDouble()) add("location", f["where"].toInt(), {}, {});
+    for (const auto& p : f["props"].toArray()) if (has("prop", p.toInt())) add("prop", p.toInt(), {}, {});
     // The framing's picks: wanted views in order of how much the framing wants them; over the
     // limit, a sheet stands in for the views it lays out, then the least wanted go.
     QList<Pick> picks;
@@ -1453,7 +1468,7 @@ QVariantMap Plan::links(const QString& kind, int id) const {
         const auto s = sectionList[id].toMap();
         out["name"] = s["label"]; out["start"] = s["start"]; out["end"] = s["end"];
         a = msToFrame(s["start"].toInt()); b = msToFrame(s["end"].toInt());
-    } else if (kind == "character" || kind == "location") {
+    } else if (kind == "character" || kind == "location" || kind == "prop") {
         if (!has(kind, id)) return {};
         out["name"] = nameOf(kind, id);
     } else {
@@ -1461,13 +1476,14 @@ QVariantMap Plan::links(const QString& kind, int id) const {
     }
     const auto appears = [&](const QJsonObject& f) {
         if (kind == "location") return f["where"].isDouble() && f["where"].toInt() == id;
+        if (kind == "prop") { for (const auto& p : f["props"].toArray()) if (p.toInt() == id) return true; return false; }
         for (const auto& e : f["who"].toArray()) if (e.toObject()["character"].toInt() == id) return true;
         return false;
     };
     // Counts keyed by id, kept in first-seen order.
     struct Tally { QList<int> order; QMap<int, int> count; QMap<int, QStringList> extra;
                    void add(int k) { if (!count.contains(k)) order << k; ++count[k]; } };
-    Tally cast, places, looks;
+    Tally cast, places, looks, things;
     QVariantList shots, marks;
     QList<int> sectionCount(sectionList.size(), 0);
     int empty = 0;
@@ -1487,9 +1503,15 @@ QVariantMap Plan::links(const QString& kind, int id) const {
                 if (worn && !cast.extra[c].contains(nameOf("look", o["look"].toInt()))) cast.extra[c] << nameOf("look", o["look"].toInt());
             } else if (kind == "character" && c == id) {
                 looks.add(worn ? o["look"].toInt() : 0);
-            } else if (kind == "location") {
+            } else if (kind == "location" || kind == "prop") {
                 cast.add(c);
             }
+        }
+        QStringList propNames;
+        for (const auto& p : f["props"].toArray()) {
+            if (!has("prop", p.toInt())) continue;
+            propNames << nameOf("prop", p.toInt());
+            if (kind != "prop") things.add(p.toInt());
         }
         if (kind == "section" && who.isEmpty()) ++empty;
         const bool placed = f["where"].isDouble() && has("location", f["where"].toInt());
@@ -1504,6 +1526,7 @@ QVariantMap Plan::links(const QString& kind, int id) const {
                                  {"start", start}, {"end", end}, {"startMs", frameToMs(start)}, {"endMs", frameToMs(end)},
                                  {"type", f["type"].toString()}, {"framing", f["framing"].toString().toUpper()},
                                  {"who", who.join(", ")}, {"where", placed ? nameOf("location", f["where"].toInt()) : QString()},
+                                 {"props", propNames.join(", ")},
                                  {"purpose", f["purpose"].toString()}});
         marks.append(QVariantMap{{"start", start}, {"end", end}});
     }
@@ -1516,6 +1539,7 @@ QVariantMap Plan::links(const QString& kind, int id) const {
     out["shots"] = shots;
     out["marks"] = marks;
     if (kind != "location") out["locations"] = list(places, named("location"));
+    if (kind != "prop") out["props"] = list(things, named("prop"));
     if (kind == "section") {
         out["characters"] = list(cast, [&](int c) { return QVariantMap{{"id", c}, {"name", nameOf("character", c)}, {"looks", cast.extra.value(c)}}; });
         out["empty"] = empty;
@@ -1542,7 +1566,7 @@ QVariantMap Plan::links(const QString& kind, int id) const {
         for (const auto& v : singers()) if (v.toMap()["singers"].toList().contains(id)) ++sung;
         out["sung"] = sung;
     }
-    if (kind == "location") out["characters"] = list(cast, named("character"));
+    if (kind == "location" || kind == "prop") out["characters"] = list(cast, named("character"));
     return out;
 }
 
@@ -1554,7 +1578,7 @@ QVariantMap Plan::overview() const {
         spans.append({msToFrame(s["start"].toInt()), msToFrame(s["end"].toInt())});
     }
     QVariantList rows;
-    for (const QString kind : {"character", "location"})
+    for (const QString kind : {"character", "location", "prop"})
         for (int id : items.value(kind).keys()) {
             QVariantList cells;
             int total = 0;
@@ -1564,6 +1588,7 @@ QVariantMap Plan::overview() const {
                     const auto f = r["fields"].toObject();
                     bool in = false;
                     if (kind == "location") in = f["where"].isDouble() && f["where"].toInt() == id;
+                    else if (kind == "prop") { for (const auto& p : f["props"].toArray()) in = in || p.toInt() == id; }
                     else for (const auto& e : f["who"].toArray()) in = in || e.toObject()["character"].toInt() == id;
                     if (in && inSection(r, span.first, span.second)) ++n;
                 }
@@ -1747,6 +1772,7 @@ QVariantList Plan::computeChecks() const {
                 if (o.contains("look") && !o["look"].isNull() && has("look", o["look"].toInt())) uses[{"look", o["look"].toInt()}] << id;
             }
             if (f["where"].isDouble() && has("location", f["where"].toInt())) uses[{"location", f["where"].toInt()}] << id;
+            for (const auto& p : f["props"].toArray()) if (has("prop", p.toInt())) uses[{"prop", p.toInt()}] << id;
         }
         for (auto it = uses.begin(); it != uses.end(); ++it) {
             const auto& [kind, id] = it.key();
@@ -1815,6 +1841,8 @@ QVariantList Plan::computeChecks() const {
         }
         if (f["where"].isDouble() && !has("location", f["where"].toInt()))
             add("error", "G4", "missingRef", QString("Shot %1 is set in a location that was removed.").arg(n), a, b, {id});
+        for (const auto& p : f["props"].toArray())
+            if (!has("prop", p.toInt())) { add("error", "G4", "missingRef", QString("Shot %1 shows a prop that was removed.").arg(n), a, b, {id}); break; }
         if (f.contains("follows") && !has("shot", f["follows"].toInt()))
             add("warning", "G4", "missingRef", QString("Shot %1 follows a shot that was removed.").arg(n), a, b, {id});
         // Lip-sync needs words to sync to, and someone to sing them.
@@ -1897,6 +1925,7 @@ QVariantList Plan::computeChecks() const {
             if (e.toObject().contains("look")) upstream = std::max(upstream, row("look", e.toObject()["look"].toInt())["edited"].toInt());
         }
         if (f["where"].isDouble()) upstream = std::max(upstream, row("location", f["where"].toInt())["edited"].toInt());
+        for (const auto& p : f["props"].toArray()) upstream = std::max(upstream, row("prop", p.toInt())["edited"].toInt());
         const auto [a, b] = shotMs(id);
         for (const auto& v : sections()) {
             const auto sec = v.toMap();
@@ -1908,7 +1937,7 @@ QVariantList Plan::computeChecks() const {
     if (!stale.isEmpty()) {
         QStringList names;
         for (int id : stale) names << QString::number(number(id));
-        add("warning", "G4", "stale", QString("The concept, cast, locations or arc changed after %1 %2 %3 written. Review %4, then mark %4 current.")
+        add("warning", "G4", "stale", QString("The concept, cast, locations, props or arc changed after %1 %2 %3 written. Review %4, then mark %4 current.")
             .arg(stale.size() == 1 ? "shot" : "shots", shotNumbers(names), stale.size() == 1 ? "was" : "were", stale.size() == 1 ? "it" : "them"),
             shotMs(stale.first()).first, shotMs(stale.last()).second, stale, "markCurrent");
     }

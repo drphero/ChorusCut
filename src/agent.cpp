@@ -157,7 +157,7 @@ QJsonObject AgentBridge::project() const {
             {"fps", editor->fps()}, {"frames", editor->length()}, {"durationMs", qRound(1000.0 * editor->length() / editor->fps())},
             {"lyrics", QJsonObject{{"lines", lines}, {"aligned", lines > 0}, {"hasText", !lyrics->text().trimmed().isEmpty()},
                                    {"flaggedLines", lyrics->flaggedLines()}}},
-            {"plan", QJsonObject{{"characters", plan->characters().size()}, {"locations", plan->locations().size()},
+            {"plan", QJsonObject{{"characters", plan->characters().size()}, {"locations", plan->locations().size()}, {"props", plan->props().size()},
                                  {"shots", plan->shots().size()}, {"references", plan->references().size()}}},
             {"gates", gates}, {"openChecks", plan->errorCount()},
             {"requests", QJsonObject{{"waitingForYou", editor->requests()->waitingOnAgent()}, {"waitingForUser", editor->requests()->waitingOnUser()}}}};
@@ -270,6 +270,15 @@ QJsonObject AgentBridge::planView() const {
         o["views"] = viewsOf("location", l["id"].toInt());
         locations.append(o);
     }
+    QJsonArray props;
+    for (const auto& v : plan->props()) {
+        const auto p = v.toMap();
+        QJsonObject o = fieldsOf(p);
+        o["id"] = p["id"].toInt();
+        o["references"] = refsOf("prop", p["id"].toInt());
+        o["views"] = viewsOf("prop", p["id"].toInt());
+        props.append(o);
+    }
     QJsonArray arc;
     for (const auto& v : plan->arc()) {
         const auto a = v.toMap();
@@ -319,7 +328,7 @@ QJsonObject AgentBridge::planView() const {
         if (!flows->notes(w["id"].toString()).isEmpty()) o["userNotes"] = flows->notes(w["id"].toString());
         (video ? videoWorkflows : workflows).append(o);
     }
-    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"arc", arc}, {"shots", shots}, {"imageWorkflows", workflows},
+    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"props", props}, {"arc", arc}, {"shots", shots}, {"imageWorkflows", workflows},
             {"videoWorkflows", videoWorkflows}};
 }
 
@@ -349,17 +358,17 @@ QJsonObject AgentBridge::schema() const {
     }
     const QJsonArray ops{
         QJsonObject{{"op", "set"}, {"params", "{kind, id, fields, section?}"},
-                    {"notes", "kind: concept (no id), character, look, location, arc (id = section ordinal; give \"section\": its label as a guard), shot or reference. "
+                    {"notes", "kind: concept (no id), character, look, location, prop, arc (id = section ordinal; give \"section\": its label as a guard), shot or reference. "
                               "A field set to \"\" or null is cleared."}},
-        QJsonObject{{"op", "add"}, {"params", "{kind, fields, character?}"}, {"notes", "kind: character, look (needs character id) or location. Returns the new id."}},
-        QJsonObject{{"op", "remove"}, {"params", "{kind, id}"}, {"notes", "character (with its looks), look, location, shot or reference."}},
+        QJsonObject{{"op", "add"}, {"params", "{kind, fields, character?}"}, {"notes", "kind: character, look (needs character id), location or prop. Returns the new id."}},
+        QJsonObject{{"op", "remove"}, {"params", "{kind, id}"}, {"notes", "character (with its looks), look, location, prop, shot or reference."}},
         QJsonObject{{"op", "singers"}, {"params", "{rows: [lyric rows], singers: [character ids]}"}, {"notes", "Who sings those lines; [] clears."}},
         QJsonObject{{"op", "shot.add"}, {"params", "{track: 1|2, start, end, fields}"}, {"notes", "Frames, end exclusive, within the song; shots on one track never overlap."}},
         QJsonObject{{"op", "shot.retime"}, {"params", "{id, track?, start?, end?}"}},
         QJsonObject{{"op", "shot.split"}, {"params", "{id, at}"}, {"notes", "Splits at a frame inside the shot; both parts keep the fields."}},
         QJsonObject{{"op", "shot.splitLines"}, {"params", "{id}"}, {"notes", "Splits a shot that is too long for its route between lyric lines."}},
         QJsonObject{{"op", "shot.markCurrent"}, {"params", "{ids}"}, {"notes", "After reviewing shots flagged stale."}},
-        QJsonObject{{"op", "ref.add"}, {"params", "{owner: character|look|location, ownerId, path, role?}"},
+        QJsonObject{{"op", "ref.add"}, {"params", "{owner: character|look|location|prop, ownerId, path, role?}"},
                     {"notes", "Copies a local image into the project. Pictures an agent adds wait for the user's approval."}},
         QJsonObject{{"op", "ref.move"}, {"params", "{id, position}"}},
     };
@@ -367,6 +376,7 @@ QJsonObject AgentBridge::schema() const {
             {"times", "Shots: project frames, start inclusive, end exclusive. Lyrics and sections: milliseconds, with frame equivalents in get_song."},
             {"values", QJsonObject{{"who", "a list of {character: id, look?: id}, or \"none\" for no one in frame"},
                                    {"where", "a location id, or \"none\" (abstract, titles)"},
+                                   {"props", "a list of prop ids: the objects that matter in the shot (optional)"},
                                    {"follows", "a shot id this shot continues from"},
                                    {"prompts", "{route: prompt text}; leave empty, prompts are written when generating"},
                                    {"rules", "concept rules: a list of strings"},
@@ -444,7 +454,8 @@ QJsonObject AgentBridge::reference(int id) const {
         image.save(&buffer, "JPG", 85);
         const QString owner = r["owner"].toString();
         QString ownerName;
-        const auto rows = owner == "character" ? editor->plan()->characters() : owner == "look" ? editor->plan()->looks() : editor->plan()->locations();
+        const auto rows = owner == "character" ? editor->plan()->characters() : owner == "look" ? editor->plan()->looks()
+                        : owner == "prop" ? editor->plan()->props() : editor->plan()->locations();
         for (const auto& o : rows) if (o.toMap()["id"].toInt() == r["ownerId"].toInt()) ownerName = o.toMap()["fields"].toMap()["name"].toString();
         const QString caption = QString("%1 (%2) · %3 · %4 · %5, %6×%7").arg(ownerName, owner, r["roleLabel"].toString(),
             r["approved"].toBool() ? "approved" : "not approved yet", r["name"].toString()).arg(r["width"].toInt()).arg(r["height"].toInt());

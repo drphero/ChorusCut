@@ -159,6 +159,8 @@ Popup {
             add(nameOf("character", w.character), "character", w.character)
         }
         if (f.where) add(nameOf("location", f.where), "location", f.where)
+        const props = f.props && typeof f.props === "object" && f.props.length !== undefined ? Array.from(f.props) : []
+        for (const p of props) add(nameOf("prop", p), "prop", p)
         // Pictures picked earlier from elsewhere stay in view.
         for (const id of picks) { const r = plan.item("reference", id); if (r.owner && !seen[r.owner + r.ownerId]) add(nameOf(r.owner, r.ownerId), r.owner, r.ownerId) }
         if (allPictures) {
@@ -167,6 +169,7 @@ Popup {
                 add(c.fields.name || "Character", "character", c.id)
             }
             for (const l of plan.locations) add(l.fields.name || "Location", "location", l.id)
+            for (const p of plan.props) add(p.fields.name || "Prop", "prop", p.id)
         }
         return out
     }

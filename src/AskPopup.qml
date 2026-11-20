@@ -55,7 +55,7 @@ Popup {
     function suggestionsFor(kind, field, empty) {
         const look = {style: 1, palette: 1, lighting: 1, era: 1, lens: 1, grade: 1}
         if (!kind) return [
-            "Which characters, looks and locations still lack a usable picture prompt? Write them.",
+            "Which characters, looks, locations and props still lack a usable picture prompt? Write them.",
             "Check every picture prompt: one clear subject, concrete features, the concept's style, no names or text.",
             "What would make the references inconsistent from shot to shot? Fix what you can.",
             "Check the plan against the brief and tell me what's weakest."]
@@ -77,6 +77,15 @@ Popup {
             "Make the light match this location's time of day and lighting, and the concept's grade.",
             "Remove people, vehicles and anything moving, so they don't turn up in every shot here.",
             "Suggest the views this place needs, such as a reverse angle or a detail."]
+        if (kind === "prop" && field === "prompt") return empty ? [
+            "Write this prop's appearance: shape, size, materials, colours, wear and markings, with no hands or setting."] : [
+            "Name the details that must stay the same in every shot: markings, damage, colours, materials.",
+            "Take out hands, setting and framing: those belong to the shots and views.",
+            "Suggest the views this prop needs, such as a detail or another side."]
+        if (kind === "prop" && !field) return [
+            "Is this prop ready for a reference picture? Fix what isn't.",
+            "Write or improve this prop's picture prompt: the object alone, on a plain backdrop.",
+            "Which shots should show it?"]
         if (kind === "shot" && field === "prompts") {
             const shot = (editor.plan.revision, editor.plan.shot(itemId))
             const route = shot.fields ? shot.fields.route : ""

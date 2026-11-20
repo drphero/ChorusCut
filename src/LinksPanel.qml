@@ -71,7 +71,7 @@ Rectangle {
                 Count {
                     Layout.fillWidth: true; elide: Text.ElideRight
                     text: {
-                        if (!lp.info) return "Shots per section for each character and location"
+                        if (!lp.info) return "Shots per section for each character, location and prop"
                         const n = lp.info.shots.length, shots = n + (n === 1 ? " shot" : " shots")
                         if (lp.info.kind === "section") return lp.ws.clock(lp.info.start) + "–" + lp.ws.clock(lp.info.end) + " · " + shots
                         const s = lp.info.sections.length
@@ -137,7 +137,7 @@ Rectangle {
                     ToolTip.text: modelData.label + "  " + lp.ws.clock(modelData.start)
                 }
             }
-            // Where a character or location appears.
+            // Where a character, location or prop appears.
             Repeater {
                 model: lp.info && lp.info.kind !== "section" ? lp.info.marks : []
                 Rectangle {
@@ -145,7 +145,7 @@ Rectangle {
                     y: 15; height: 10; radius: 1
                     x: songStrip.width * (modelData.start * 1000 / editor.fps) / lp.songMs
                     width: Math.max(2, songStrip.width * ((modelData.end - modelData.start) * 1000 / editor.fps) / lp.songMs - 1)
-                    color: lp.info.kind === "character" ? "#d98bb0" : "#79cdb5"
+                    color: lp.info.kind === "character" ? "#d98bb0" : lp.info.kind === "prop" ? "#e0b45f" : "#79cdb5"
                 }
             }
         }
@@ -189,6 +189,7 @@ Rectangle {
                                     height: 22; radius: 2
                                     color: modelData === 0 ? "#1d2a31"
                                          : overviewRow.modelData.kind === "character" ? Qt.rgba(0.85, 0.55, 0.69, Math.min(1, 0.3 + 0.18 * modelData))
+                                         : overviewRow.modelData.kind === "prop" ? Qt.rgba(0.88, 0.71, 0.37, Math.min(1, 0.3 + 0.18 * modelData))
                                                                                         : Qt.rgba(0.47, 0.8, 0.71, Math.min(1, 0.3 + 0.18 * modelData))
                                     Text {
                                         anchors.centerIn: parent
@@ -210,7 +211,7 @@ Rectangle {
                 Text {
                     visible: lp.overview !== null && lp.overview.rows.length === 0
                     Layout.fillWidth: true; Layout.topMargin: 8; wrapMode: Text.Wrap
-                    text: "Add characters and locations, then plan shots on V1 and V2; this shows who and where in each section."
+                    text: "Add characters, locations and props, then plan shots on V1 and V2; this shows who and where in each section."
                     color: "#6f8085"; font.pixelSize: 12
                 }
                 Text {
@@ -263,7 +264,7 @@ Rectangle {
                 // -------------------------------------------------------- cast
                 Label {
                     visible: lp.info !== null && lp.info.kind !== "character"
-                    text: lp.info && lp.info.kind === "location" ? "WHO IS HERE" : "CAST"
+                    text: lp.info && lp.info.kind === "location" ? "WHO IS HERE" : lp.info && lp.info.kind === "prop" ? "IN SHOTS WITH" : "CAST"
                 }
                 Repeater {
                     model: lp.info && lp.info.kind !== "character" ? lp.info.characters : []
@@ -280,6 +281,7 @@ Rectangle {
                 }
                 Count {
                     visible: lp.info !== null && lp.info.kind !== "character" && (lp.info.characters.length === 0 || lp.info.empty > 0)
+                             && !(lp.info.kind === "prop" && lp.info.shots.length === 0)
                     text: lp.info && lp.info.kind === "section" && lp.info.empty > 0
                           ? "No one in frame in " + lp.info.empty + (lp.info.empty === 1 ? " shot" : " shots")
                           : "No one in frame"
@@ -318,7 +320,23 @@ Rectangle {
                 }
                 Count {
                     visible: lp.info !== null && lp.info.kind !== "location" && lp.info.locations.length === 0
+                             && !(lp.info.kind === "prop" && lp.info.shots.length === 0)
                     text: "No location set"
+                }
+
+                // -------------------------------------------------------- props
+                Label {
+                    visible: lp.info !== null && lp.info.kind !== "prop" && (lp.info.props || []).length > 0
+                    text: "PROPS"
+                }
+                Repeater {
+                    model: lp.info && lp.info.kind !== "prop" ? (lp.info.props || []) : []
+                    RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true; spacing: 8
+                        LinkChip { kind: "prop"; itemId: parent.modelData.id; text: parent.modelData.name; onClicked: lp.ws.link({kind: kind, id: itemId}) }
+                        Count { Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; text: parent.modelData.shots + (parent.modelData.shots === 1 ? " shot" : " shots") }
+                    }
                 }
 
                 // -------------------------------------------------------- sections

@@ -12,7 +12,7 @@
 class Editor;
 
 // Generates pictures through the user's ComfyUI workflows (see Workflows). Today: reference
-// pictures for characters, looks and locations, from the picture prompt ("ref-text") or from
+// pictures for characters, looks, locations and props, from the picture prompt ("ref-text") or from
 // approved pictures and the prompt ("ref-edit"). Several jobs can run at once. Each is recorded
 // in the project's jobs table with the exact graph it queued, so closing the project or the app
 // does not lose it; reopening picks it up. Results come back as references waiting for approval,

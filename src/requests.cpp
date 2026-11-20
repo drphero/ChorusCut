@@ -9,7 +9,7 @@
 namespace {
 qint64 now() { return QDateTime::currentSecsSinceEpoch(); }
 bool known(const QString& kind) {
-    return kind.isEmpty() || kind == "concept" || kind == "character" || kind == "look" || kind == "location" || kind == "arc" || kind == "shot" || kind == "view";
+    return kind.isEmpty() || kind == "concept" || kind == "character" || kind == "look" || kind == "location" || kind == "prop" || kind == "arc" || kind == "shot" || kind == "view";
 }
 }
 
@@ -53,7 +53,7 @@ bool Requests::save(int id) {
 QString Requests::currentLabel(const QJsonObject& t) const {
     const auto about = t["about"].toObject();
     const QString kind = about["kind"].toString(), label = t["label"].toString();
-    if ((kind == "character" || kind == "look" || kind == "location" || kind == "shot" || kind == "view") &&
+    if ((kind == "character" || kind == "look" || kind == "location" || kind == "prop" || kind == "shot" || kind == "view") &&
         editor->plan()->item(kind, about["id"].toInt()).isEmpty())
         return label + " (removed)";
     return label;
@@ -292,7 +292,7 @@ int Requests::agentAsk(const QString& question, const QJsonObject& about, const 
     if (!editor->current()) { error = "No project is open in Chorus Cut."; return 0; }
     if (question.trimmed().isEmpty()) { error = "Write the question."; return 0; }
     const QString kind = about["kind"].toString();
-    if (!known(kind)) { error = "about.kind must be concept, character, look, location, view, arc or shot."; return 0; }
+    if (!known(kind)) { error = "about.kind must be concept, character, look, location, prop, view, arc or shot."; return 0; }
     const int id = about["id"].toInt();
     QString label = "The plan";
     Plan* plan = editor->plan();

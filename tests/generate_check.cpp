@@ -869,6 +869,17 @@ int main(int argc, char** argv) {
             click(find(window, "genGo"));
             if (!settled(n) || sentAspect() != "1:1 (Square)") return fail(107, "the 1:1 chosen in the dialog was not used: " + sentAspect());
             if (!quick() || sentAspect() != "3:4 (Portrait Standard)") return fail(107, "after Reset the aspect is not automatic again: " + sentAspect());
+            // A prop is drawn square, from its appearance, and arrives in its Object view.
+            const int radio = plan->run({{"op", "add"}, {"kind", "prop"}, {"fields", QVariantMap{{"name", "Radio"}, {"prompt", "A cream transistor radio"}}}})["id"].toInt();
+            const int before = stubLog()["prompts"].toArray().size();
+            if (const QString why = gen->generateWith("prop", radio, "ref-text", {{"workflow", anyId}}); !why.isEmpty()) return fail(108, "a prop: " + why);
+            if (!settled(before) || sentAspect() != "1:1 (Square)" || !input(lastGraph(), "10", "value").toString().contains("A cream transistor radio"))
+                return fail(108, "a prop was not drawn square from its appearance: " + sentAspect());
+            const auto radioPics = plan->referencesFor("prop", radio);
+            if (radioPics.size() != 1 || radioPics[0].toMap()["view"].toInt() != plan->viewsFor("prop", radio)[0].toMap()["id"].toInt())
+                return fail(108, "the prop's picture did not arrive in its Object view: " + json(radioPics));
+            editor.undo();
+            plan->run({{"op", "remove"}, {"kind", "prop"}, {"id", radio}});
         }
         // A picture that sets the size cannot be left out: pruning stops before an output goes.
         QJsonObject sized{{"1", QJsonObject{{"class_type", "LoadImage"}, {"inputs", QJsonObject{{"image", "a.png"}}}}},

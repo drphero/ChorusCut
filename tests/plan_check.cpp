@@ -390,6 +390,50 @@ int main(int argc, char** argv) {
     run(cmd({{"op", "remove"}, {"kind", "reference"}, {"id", strayRef}}));
     if (!checksWith(plan, "referenceMissing").isEmpty()) return fail(36, "missing-picture error stayed after removing it");
 
+    // ---- B3. Props: objects that matter on screen, with views and pictures of their own
+    const QString radioPic = picture("radio.png", QColor("#d8c090"), {512, 512});
+    r = run(cmd({{"op", "add"}, {"kind", "prop"}, {"fields", QVariantMap{{"name", "Transistor radio"}, {"prompt", "A cream plastic transistor radio, gold grille"}}}}));
+    const int radio = r["id"].toInt();
+    if (!ok(r) || plan->props().size() != 1 || viewNames("prop", radio) != "Object" || viewsOf("prop", radio)[0].toMap()["role"] != "object")
+        return fail(37, "a prop did not start with its Object view: " + plan->message() + " " + viewNames("prop", radio));
+    if (!ok(run(cmd({{"op", "add"}, {"kind", "prop"}, {"by", "agent"}}))) || plan->props().last().toMap()["fields"].toMap()["name"] != "Prop 2")
+        return fail(37, "an unnamed prop from an agent: " + plan->message());
+    editor.undo();
+    if (ok(run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"props", QVariantList{999}}}}}))))
+        return fail(37, "a shot accepted a prop that does not exist");
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"props", QVariantList{radio}}, {"framing", "cu"}}}}));
+    if (needing() != QStringList{"Leo", "Transistor radio"}) return fail(37, "a prop in a shot without a picture is not a to-do: " + needing().join(" | "));
+    r = run(cmd({{"op", "ref.add"}, {"owner", "prop"}, {"ownerId", radio}, {"path", radioPic}}));
+    if (!ok(r) || plan->referencesFor("prop", radio).value(0).toMap()["role"] != "object" || !plan->referencesFor("prop", radio).value(0).toMap()["approved"].toBool())
+        return fail(37, "the prop's picture: " + plan->message());
+    if (needing() != QStringList{"Leo"}) return fail(37, "the prop's picture did not clear its to-do");
+    // A close-up sends the face first, then the prop (it is in frame because it matters), then the rest.
+    if (sent() != "mara-face.png, radio.png, red-coat.png, mara-body.jpg, booth.png") return fail(37, "a close-up with a prop: " + sent());
+    {
+        const auto pl = plan->links("prop", radio);
+        const auto ml = plan->links("character", mara);
+        bool inOverview = false;
+        for (const auto& row : plan->overview()["rows"].toList()) inOverview |= row.toMap()["kind"] == "prop" && row.toMap()["id"].toInt() == radio && row.toMap()["total"].toInt() == 1;
+        if (pl["shots"].toList().size() != 1 || pl["characters"].toList().value(0).toMap()["name"] != "Mara" || pl["locations"].toList().value(0).toMap()["name"] != "Radio booth"
+            || ml["props"].toList().value(0).toMap()["name"] != "Transistor radio" || !inOverview)
+            return fail(38, "the prop's links: " + QString::fromUtf8(QJsonDocument::fromVariant(pl).toJson(QJsonDocument::Compact)));
+    }
+    // Changing the prop after the shot was written makes the shot stale.
+    run(cmd({{"op", "shot.markCurrent"}, {"ids", QVariantList{pieceId}}}));
+    run(cmd({{"op", "set"}, {"kind", "prop"}, {"id", radio}, {"fields", QVariantMap{{"notes", "hers; broken in the last chorus"}}}}));
+    if (!plan->shot(pieceId)["stale"].toBool()) return fail(38, "editing a prop did not mark its shot stale");
+    run(cmd({{"op", "shot.markCurrent"}, {"ids", QVariantList{pieceId}}}));
+    // Removing it is an error on the shot, and takes its pictures; undo brings both back.
+    run(cmd({{"op", "remove"}, {"kind", "prop"}, {"id", radio}}));
+    bool flagged = false;
+    for (const auto& c : checksWith(plan, "missingRef")) flagged |= c.toMap()["message"].toString().contains("shows a prop that was removed");
+    if (!flagged || !plan->referencesFor("prop", radio).isEmpty()) return fail(38, "removing the prop: no error on the shot, or its pictures stayed");
+    editor.undo();
+    if (plan->referencesFor("prop", radio).size() != 1 || sent() != "mara-face.png, radio.png, red-coat.png, mara-body.jpg, booth.png")
+        return fail(38, "undo did not bring the prop back");
+    run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"props", QVariantList{}}, {"framing", framingBefore}}}}));
+    run(cmd({{"op", "shot.markCurrent"}, {"ids", QVariantList{pieceId}}}));
+
     // ---- C. Everything persists
     const QVariantList savedShots = plan->shots(), savedSingers = plan->singers();
     const QVariantMap savedConcept = plan->concept();
@@ -658,6 +702,20 @@ int main(int argc, char** argv) {
         if (plan->shotPictures(id)["overridden"].toBool() || plan->shotReferences(id).size() != pickedBefore)
             return fail(52, "Back to the framing's picks did not restore them");
     }
+    // Props in frame: added from the inspector's list, shown as a chip, their picture offered, removed with ×.
+    {
+        const int radioId = plan->props()[0].toMap()["id"].toInt();
+        choose(find(window, "shotPropAdd"), 1);
+        if (plan->shot(id)["fields"].toMap()["props"].toList() != QVariantList{radioId}) return fail(53, "adding a prop: " + QString::fromUtf8(QJsonDocument::fromVariant(plan->shot(id)["fields"]).toJson(QJsonDocument::Compact)));
+        if (!find(window, "shotProp0")) return fail(53, "the inspector does not show the prop");
+        bool offered = false;
+        for (const auto& c : plan->shotPictures(id)["candidates"].toList()) offered |= c.toMap()["ownerName"] == "Transistor radio";
+        if (!offered) return fail(53, "the prop's picture is not offered for the shot");
+        capture("inspector-props");
+        click(find(window, "shotPropRemove0"));
+        if (!plan->shot(id)["fields"].toMap()["props"].toList().isEmpty() || find(window, "shotProp0")) return fail(53, "× did not take the prop out");
+        pause();
+    }
 
     // Trim the end toward the next line's end: it snaps there.
     auto card = find(window, QString("shotCard%1").arg(id));
@@ -812,7 +870,7 @@ int main(int argc, char** argv) {
         auto place = plan->links("location", booth);
         if (names(place["characters"].toList()) != "Mara:2" || place["sections"].toList().size() != 2) return fail(64, "the booth's links");
         const auto rows = plan->overview()["rows"].toList();
-        if (rows.size() != plan->characters().size() + plan->locations().size() || rows[0].toMap()["cells"].toList().value(1).toInt() != 1)
+        if (rows.size() != plan->characters().size() + plan->locations().size() + plan->props().size() || rows[0].toMap()["cells"].toList().value(1).toInt() != 1)
             return fail(64, "overview rows");
         if (!plan->links("character", 999).isEmpty() || !plan->links("section", 99).isEmpty()) return fail(64, "links for nothing");
 
@@ -899,6 +957,19 @@ int main(int argc, char** argv) {
         click(find(window, "workspaceEdit"));
     }
 
+    // ---- D2. The Props page, with real input
+    click(find(window, "workspacePlan"));
+    click(find(window, "planPage_props"));
+    if (!find(window, "propCard0") || find(window, "propCard1")) return fail(47, "the Props page does not show the radio alone");
+    click(find(window, "addProp"));
+    if (plan->props().size() != 2 || !waitFor([&] { return find(window, "propName1") != nullptr; }, 1500)) return fail(47, "Add prop did not add a card");
+    click(find(window, "propName1")); selectAll(); typeText("Letter"); QTest::keyClick(window, Qt::Key_Return);
+    QTest::qWait(150);
+    if (plan->props()[1].toMap()["fields"].toMap()["name"] != "Letter") return fail(47, "typing the prop's name: " + plan->props()[1].toMap()["fields"].toMap()["name"].toString());
+    if (!find(window, "propRefs1")) return fail(47, "the new prop has no pictures row");
+    capture("plan-props");
+    pause();
+
     // ---- E3. Long prompts: folded on the card, open while editing, and the large editor
     {
         QStringList many;
@@ -983,7 +1054,8 @@ int main(int argc, char** argv) {
     qInfo() << "PASS: commands (provenance, locks, agent modes, batches, undo, arc order, singers, split at lines, checks, stale)"
             << "and real input (Plan pages, typing, combos, locks, double-click a shot, snap trim, drag to V2, undo, singers,"
             << "Add shot, checks panel fix and selection, ruler coverage, Delete), reference pictures (import, roles, approval,"
-            << "order, cascade, missing files, G3, drag and drop, menu, shot references), links (section, character and location"
+            << "order, cascade, missing files, G3, drag and drop, menu, shot references), props (views, pictures, shots, links, checks,"
+            << "stale, the Props page and the inspector), links (section, character and location"
             << "links, overview, card summaries, chips, Back, focus, Show card, open a shot in Edit, narrow window), long prompts"
             << "(folded, Show all, the large editor with context, ⌘Return, ⌘Z, Esc), reopen.";
     return 0;

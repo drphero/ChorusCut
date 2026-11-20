@@ -87,6 +87,7 @@ Popup {
             for (const c of plan.characters) if (!seen["character" + c.id]) add(c.fields.name || "Character", "character", c.id)
             for (const l of plan.looks) if (!seen["look" + l.id]) add(nameOf("character", l.character) + " · " + (l.fields.name || "Look"), "look", l.id)
             for (const l of plan.locations) if (!seen["location" + l.id]) add(l.fields.name || "Location", "location", l.id)
+            for (const p of plan.props) if (!seen["prop" + p.id]) add(p.fields.name || "Prop", "prop", p.id)
         }
         return out
     }

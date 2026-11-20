@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// A large editor for one long prompt (a character's, look's or location's picture prompt), with
+// A large editor for one long prompt (a character's, look's, location's or prop's picture prompt), with
 // what it should follow beside it: the item's own description and the concept's look and rules.
 // Save (⌘Return) writes it as one undo step, like any field; Cancel (Esc) leaves it as it was.
 Popup {
@@ -27,7 +27,7 @@ Popup {
     readonly property var owner: kind === "look" && item.character ? plan.item("character", item.character) : null
     readonly property string title: {
         if (!item || !item.fields) return ""
-        const name = fields.name || (kind === "location" ? "Unnamed location" : kind === "look" ? "Unnamed look" : "Unnamed character")
+        const name = fields.name || (kind === "location" ? "Unnamed location" : kind === "prop" ? "Unnamed prop" : kind === "look" ? "Unnamed look" : "Unnamed character")
         return kind === "look" && owner ? (owner.fields.name || "Unnamed character") + " · " + name : name
     }
     readonly property int words: { const t = area.text.trim(); return t ? t.split(/\s+/).length : 0 }
@@ -63,6 +63,8 @@ Popup {
             add("The character's picture prompt", owner.fields.prompt)
         } else if (kind === "location") {
             add("Description", fields.description); add("Time of day", optionLabel("timeOfDay", fields.timeOfDay)); add("Lighting", fields.lighting)
+        } else if (kind === "prop") {
+            add("Notes", fields.notes)
         }
         const c = plan.concept.fields || {}
         add("Visual style", c.style); add("Palette", c.palette); add("Lighting (concept)", c.lighting)

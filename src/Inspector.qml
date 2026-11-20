@@ -377,6 +377,46 @@ Rectangle {
                         onPicked: v => parent.parent.set(v)
                     }
                 }
+                // The objects that matter in the shot; their pictures go with the shot's.
+                PlanField {
+                    id: propsField
+                    objectName: "shotPropsField"
+                    visible: ins.shotFields.type !== "gap"
+                    kind: "shot"; itemId: ins.hasShot ? ins.shot.id : 0; field: "props"; label: "Props"; item: ins.shot
+                    readonly property var entries: list
+                    Flow {
+                        Layout.fillWidth: true; spacing: 4
+                        visible: propsField.entries.length > 0
+                        Repeater {
+                            model: propsField.entries
+                            Rectangle {
+                                required property var modelData
+                                required property int index
+                                objectName: "shotProp" + index
+                                width: propRow.implicitWidth + 12; height: 24; radius: 4; color: "#45371c"
+                                Row {
+                                    id: propRow
+                                    x: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                                    Text { text: (ins.plan.props.find(p => p.id === parent.parent.modelData) || {fields: {name: "Removed prop"}}).fields.name
+                                           color: "#f0d39a"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                    Text {
+                                        objectName: "shotPropRemove" + parent.parent.index
+                                        text: "×"; color: propX.containsMouse ? "#f0a08f" : "#c9a96a"; font.pixelSize: 14; anchors.verticalCenter: parent.verticalCenter
+                                        MouseArea { id: propX; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: { const i = parent.parent.parent.index; propsField.set(propsField.entries.filter((e, k) => k !== i)) } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    PlanCombo {
+                        objectName: "shotPropAdd"
+                        unsetLabel: ins.plan.props.length ? "Add a prop…" : "No props yet (Plan › Props)"
+                        options: ins.plan.props.filter(p => propsField.entries.indexOf(p.id) < 0).map(p => ({value: p.id, label: p.fields.name}))
+                        value: ""
+                        onPicked: v => { if (v !== "") propsField.set(propsField.entries.concat([v])) }
+                    }
+                }
                 RowLayout {
                     visible: ins.shotFields.type !== "gap"
                     Layout.fillWidth: true
@@ -395,7 +435,7 @@ Rectangle {
                     PlanCombo { objectName: "shotRoute"; options: ins.opts.route; value: parent.parent.value; onPicked: v => parent.parent.set(v) }
                 }
                 // The pictures this shot sends to the video model (nine at most): each view's chosen
-                // picture of who and where, picked by the framing; click one to send it or not.
+                // picture of who, where and the props, picked by the framing; click one to send it or not.
                 ColumnLayout {
                     id: shotPics
                     visible: ins.shotFields.type !== "gap" && ins.hasShot
@@ -415,7 +455,7 @@ Rectangle {
                         objectName: "shotPicCount"
                         Layout.fillWidth: true; wrapMode: Text.Wrap
                         text: shotPics.pics.candidates.length ? "Pictures for the video model: " + shotPics.pics.picked.length + " of " + shotPics.pics.limit
-                                                              : "Pictures: none chosen yet for who and where"
+                                                              : "Pictures: none chosen yet for who, where and props"
                         color: shotPics.pics.picked.length > shotPics.pics.limit ? "#f0a08f" : "#8fa0a4"
                     }
                     Flow {

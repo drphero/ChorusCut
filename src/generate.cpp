@@ -22,7 +22,7 @@
 
 namespace {
 constexpr int kPollMs = 1500;
-QString ownerNoun(const QString& owner) { return owner == "look" ? "look" : owner == "location" ? "location" : "character"; }
+QString ownerNoun(const QString& owner) { return owner == "look" ? "look" : owner == "location" ? "location" : owner == "prop" ? "prop" : "character"; }
 int round16(double v) { return std::max(16, int(std::lround(v / 16.0)) * 16); }
 }
 
@@ -153,7 +153,8 @@ QVariantMap Generator::viewOptions(int view, const QString& wantedUse, const QSt
 }
 
 QString Generator::autoAspect(const QString& owner, const QString& workflow, const QString& key) const {
-    QString want = "3:4";
+    // People and looks a portrait, props square, places and shots the video's frame.
+    QString want = owner == "prop" ? "1:1" : "3:4";
     if (owner == "location" || owner == "shot") {
         want = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
         if (want.isEmpty()) want = "16:9";
@@ -769,11 +770,11 @@ void Generator::submit(int id, const QStringList& names) {
         v.fps = job->takeFps;
         v.prefix = "ChorusCut/take";
     }
-    // Locations take the video's frame; people and looks a portrait. The workflow's own size
+    // Locations take the video's frame; people and looks a portrait; props a square. The workflow's own size
     // sets the scale its model prefers.
     const QSize base = flows->size(job->workflow);
     if (base.width() > 0 && base.height() > 0) {
-        double ratio = 3.0 / 4.0;
+        double ratio = job->owner == "prop" ? 1.0 : 3.0 / 4.0;
         if (job->owner == "location" || job->owner == "shot") {
             const QString aspect = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
             const auto parts = aspect.split(':');

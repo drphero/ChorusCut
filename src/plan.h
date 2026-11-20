@@ -11,7 +11,7 @@ struct Project;
 class Lyrics;
 class QUndoStack;
 
-// Pre-production plan: concept, cast, locations, the arc for each song section, who sings each
+// Pre-production plan: concept, cast, locations, props, the arc for each song section, who sings each
 // line, and shots on the picture tracks. Everything is written through run(), one command layer
 // shared by the UI, the planned MCP server and any future in-app model runner. Each run() is one
 // undo step on the editor's stack, and every field records who wrote it (user or agent) and
@@ -25,6 +25,7 @@ class Plan : public QObject {
     Q_PROPERTY(QVariantList characters READ characters NOTIFY changed)
     Q_PROPERTY(QVariantList looks READ looks NOTIFY changed)
     Q_PROPERTY(QVariantList locations READ locations NOTIFY changed)
+    Q_PROPERTY(QVariantList props READ props NOTIFY changed)
     Q_PROPERTY(QVariantList arc READ arc NOTIFY changed)
     Q_PROPERTY(QVariantList sections READ sections NOTIFY changed)
     Q_PROPERTY(QVariantList singers READ singers NOTIFY changed)
@@ -46,9 +47,9 @@ public:
     void unload();
 
     // The command entry point. A command is {op, ...}; the result is {ok, error, id, skipped}.
-    //   set        {kind, id, fields}          concept (id 1), character, look, location, arc (id = section ordinal), shot
-    //   add        {kind, fields, character}   character, look (needs character), location
-    //   remove     {kind, id}                  character (and its looks), look, location, shot
+    //   set        {kind, id, fields}          concept (id 1), character, look, location, prop, arc (id = section ordinal), shot
+    //   add        {kind, fields, character}   character, look (needs character), location, prop
+    //   remove     {kind, id}                  character (and its looks), look, location, prop, shot
     //   lock       {kind, id, field, locked}
     //   singers    {rows: [...], singers: [character ids]}
     //   shot.add   {track, start, end, fields}
@@ -78,6 +79,7 @@ public:
     QVariantList characters() const { return listOf("character"); }
     QVariantList looks() const { return listOf("look"); }
     QVariantList locations() const { return listOf("location"); }
+    QVariantList props() const { return listOf("prop"); }
     QVariantList arc() const;
     QVariantList sections() const;
     QVariantList singers() const;
@@ -118,16 +120,16 @@ public:
     // The longest shot a route can render, in frames; 0 when unlimited.
     Q_INVOKABLE int maxFrames(const QString& route) const;
     // How one thing in the plan connects to the rest, for the Plan workspace's links panel.
-    // kind "section" (id = ordinal), "character" or "location". Always has kind, id, name,
+    // kind "section" (id = ordinal), "character", "location" or "prop". Always has kind, id, name,
     // songFrames, shots (each with number, track, start, end, framing, who, where, purpose) and
     // marks (the frame spans where it appears). A section adds start/end (ms), characters (with the
     // looks worn there and their shot counts), locations, lines (sung there, with singers) and
     // empty (shots with no one in frame). A character adds looks, locations, sections and sung;
-    // a location adds characters and sections. Counts are shots; a shot belongs to a section when
+    // a location or prop adds characters and sections; all but a prop list props. Counts are shots; a shot belongs to a section when
     // half of it, or half a second of it, falls inside. Empty map for an unknown id.
     Q_INVOKABLE QVariantMap links(const QString& kind, int id) const;
     // Who and where in each section: {sections, songFrames, rows: [{kind, id, name, cells}]},
-    // a row for every character, then every location; cells hold shot counts per section.
+    // a row for every character, then every location, then every prop; cells hold shot counts per section.
     Q_INVOKABLE QVariantMap overview() const;
     int revision() const { return clock; }
 
