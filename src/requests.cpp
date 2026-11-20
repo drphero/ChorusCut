@@ -241,9 +241,16 @@ QJsonObject Requests::takeContext(int shot) const {
     }
     o["lyrics"] = lines;
     o["timing"] = "Times are seconds from the take's first frame. The cut uses cutIn to cutOut; the rest is handle for trimming, so keep the action continuous through it.";
+    // The song is never a reference: a lip-sync workflow locks it into the audio latent with an
+    // audio-sync node (such as ComfyUI-Pixaroma's H3 Audio Sync), outside the reference-to-video
+    // node, which is given pictures only.
+    o["references"] = "Only the pictures above are references, each named as calledInPrompt. There are no audio or video references: never write <Audio n> or <Video n>, and don't define the song as a subject.";
+    if (opts["lipSync"].toBool())
+        o["song"] = "The song under the take is locked into the generated audio by the workflow's audio-sync node, not given to the model as a reference, so the prompt cannot point at it. "
+                    "What helps is the exact lyrics: name the lines she sings, quoted exactly as in lyrics (in the song's language). They need no timing; the sync node keeps the mouth on the song.";
     o["format"] = opts["lipSync"].toBool()
-        ? "MiniMax H3 reference-to-video with the song locked in: subject_definitions (each <Picture n>), summary, retention_analysis, detailed_description (what we see, second by second, with the singer's mouth on the sung words), overall_soundscape (the song), non_diegetic_music."
-        : "MiniMax H3 reference-to-video: subject_definitions (each <Picture n>), summary, retention_analysis, detailed_description (what we see, second by second), overall_soundscape, non_diegetic_music.";
+        ? "MiniMax H3 reference-to-video, pictures only: subject_definitions (each <Picture n>; the singer is one of them), summary, retention_analysis, detailed_description (what we see, second by second, and the lines sung, quoted exactly; no timing needed for them), overall_soundscape (in words, no tags: the sung vocal and the music as heard), non_diegetic_music."
+        : "MiniMax H3 reference-to-video, pictures only: subject_definitions (each <Picture n>), summary, retention_analysis, detailed_description (what we see, second by second), overall_soundscape, non_diegetic_music.";
     return o;
 }
 

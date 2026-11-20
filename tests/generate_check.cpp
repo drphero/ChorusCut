@@ -188,7 +188,7 @@ static int liveTake(int argc, char** argv) {
         "summary: A handheld close-up from a music video: the singer performs the line to camera on a dark soundstage in front of a wall of old CRT televisions, red light flaring across her face.\n"
         "retention_analysis: Keep the singer's face, hair and stage-leather outfit exactly as in the pictures; keep the stage and its wall of CRT televisions as in the location picture.\n"
         "detailed_description: " + story.join(" ") + "\n"
-        "overall_soundscape: The song, as given; her singing is its lead vocal.\n"
+        "overall_soundscape: A woman's sung lead vocal, close and dry, over a pulsing synth track.\n"
         "non_diegetic_music: The song itself.";
     auto prompts = f["prompts"].toMap();
     prompts["h3-lipsync"] = prompt;
@@ -1029,6 +1029,12 @@ int main(int argc, char** argv) {
         if (ctx["pictures"].toArray().isEmpty() || ctx["pictures"].toArray()[0].toObject()["calledInPrompt"] != "<Picture 1>" || ctx["lyrics"].toArray().isEmpty()
             || std::abs(ctx["cutIn"].toDouble() - 0.5) > 0.02 || !ctx["lipSync"].toBool())
             return fail(129, "the agent's take context: " + QString::fromUtf8(QJsonDocument(ctx).toJson(QJsonDocument::Compact)));
+        // The song is locked in by the sync node, never a reference: the agent is told not to tag
+        // it, and to quote the sung lines, with no per-word times.
+        if (!ctx["references"].toString().contains("never write <Audio n>") || !ctx["song"].toString().contains("audio-sync node")
+            || !ctx["song"].toString().contains("name the lines") || ctx["format"].toString().contains("song locked in")
+            || ctx["lyrics"].toArray()[0].toObject().contains("words") || ctx["lyrics"].toArray()[0].toObject()["text"].toString() != firstLine["text"].toString())
+            return fail(129, "the lip-sync take context should quote lines and name no audio reference: " + QString::fromUtf8(QJsonDocument(ctx).toJson(QJsonDocument::Compact)));
         // Picking the shot's pictures by hand, in order: an alternative of Mara's, then a place
         // from the rest of the plan.
         {

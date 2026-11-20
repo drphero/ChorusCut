@@ -93,10 +93,11 @@ Popup {
             const sync = route === "h3-lipsync"
             return has ? [
                 "Check this prompt against the shot's pictures and lyrics, and make the timing match the take.",
-                sync ? "Make the singing land on the sung words, second by second, with the mouth clearly visible." : "Make the action continuous through the handles, so the cut can be trimmed.",
+                sync ? "Quote the lines she sings exactly; no <Audio> tags, the song is locked in by the sync node." : "Make the action continuous through the handles, so the cut can be trimmed.",
                 "Name every picture the way the workflow does, and say what each one keeps steady.",
                 "Make the camera move and framing match the shot's fields."] : [
-                (sync ? "Write this shot's lip-sync video prompt" : "Write this shot's video prompt") + " in H3's reference-to-video format, from its fields, pictures and lyrics."]
+                sync ? "Write this shot's lip-sync video prompt in H3's reference-to-video format, pictures only, quoting the lines sung."
+                     : "Write this shot's video prompt in H3's reference-to-video format, from its fields, pictures and lyrics."]
         }
         if (kind === "view" && field === "framing" && editedView(itemId)) {
             const ev = editedView(itemId)
