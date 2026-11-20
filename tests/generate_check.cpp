@@ -933,6 +933,44 @@ int main(int argc, char** argv) {
             || !slotsOf(syncId).contains("137/image=picture0") || !slotsOf(syncId).contains("92/filename_prefix=prefix"))
             return fail(120, "the lip-sync workflow's adapter: " + slotsOf(syncId));
         if (flows->pictureCount(refId) != 9) return fail(120, "the growing reference list should offer nine pictures: " + QString::number(flows->pictureCount(refId)));
+        // Exported with no song chosen, Load Audio has no audio input at all ("inputs": {}); it is
+        // still the song excerpt, listed in the sheet, and filled when the graph is built.
+        {
+            auto bare = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_sync_noaudio_api.json")));
+            const QString bareId = bare["id"].toString();
+            const auto info = flows->get(bareId);
+            bool listed = false;
+            for (const auto& i : info["inputs"].toList()) listed |= i.toMap()["key"] == "200/audio" && i.toMap()["slot"] == "audio";
+            if (!bare["ok"].toBool() || info["use"] != "take-sync" || !info["ready"].toBool() || !slotsOf(bareId).contains("200/audio=audio") || !listed)
+                return fail(120, "a Load Audio with no file chosen: " + json(info["problems"]) + " " + slotsOf(bareId));
+            Workflows::Values values;
+            values.prompt = "sing"; values.audio = "excerpt.wav"; values.frames = 73; values.pictures = {"a.png", "b.png"};
+            // It can be mapped by hand too (the sheet lists it), after being unmapped.
+            if (!flows->setSlot(bareId, "200", "audio", "", 0) || slotsOf(bareId).contains("200/audio") || !flows->setSlot(bareId, "200", "audio", "audio", 0))
+                return fail(120, "mapping the bare Load Audio by hand");
+            QString why;
+            const QJsonObject built = flows->build(bareId, values, why);
+            if (!why.isEmpty() || input(built, "200", "audio") != "excerpt.wav") return fail(120, "the song was not filled into the bare Load Audio: " + why);
+            // One imported before this was recognised reads as having its song excerpt (nothing is
+            // written back to the user's library).
+            const QString adapterPath = scratch.filePath("Workflows/" + bareId + "/adapter.json");
+            QFile file(adapterPath);
+            file.open(QIODevice::ReadOnly);
+            QJsonObject adapter = QJsonDocument::fromJson(file.readAll()).object();
+            file.close();
+            QJsonArray kept;
+            for (const auto& sv : adapter["slots"].toArray()) if (sv.toObject()["slot"] != "audio") kept.append(sv);
+            adapter["slots"] = kept;
+            adapter["version"] = 1;  // as saved before
+            file.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            file.write(QJsonDocument(adapter).toJson());
+            file.close();
+            const QByteArray before = [&] { QFile f(adapterPath); f.open(QIODevice::ReadOnly); return f.readAll(); }();
+            Workflows reloaded;
+            if (!reloaded.get(bareId)["ready"].toBool()) return fail(120, "an older import was not given its song excerpt: " + json(reloaded.get(bareId)["problems"]));
+            if ([&] { QFile f(adapterPath); f.open(QIODevice::ReadOnly); return f.readAll(); }() != before) return fail(120, "reading the library rewrote an adapter");
+            flows->remove(bareId);
+        }
         // A lip-sync shot over the first sung line, with Mara in frame and a prompt.
         const auto firstLine = editor.lyrics()->lines()[0].toMap();
         const int start = int(std::lround(firstLine["start"].toInt() / 1000.0 * editor.fps())), end = int(std::lround(firstLine["end"].toInt() / 1000.0 * editor.fps()));

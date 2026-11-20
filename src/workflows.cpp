@@ -51,6 +51,17 @@ QStringList nodeOrder(const QJsonObject& graph) {
 }
 QString classOf(const QJsonObject& graph, const QString& node) { return graph[node].toObject()["class_type"].toString(); }
 QJsonObject inputsOf(const QJsonObject& graph, const QString& node) { return graph[node].toObject()["inputs"].toObject(); }
+// The file a loader node reads. ComfyUI's Export (API) leaves it out when no file is chosen
+// (a Load Audio with nothing picked exports "inputs": {}), but Chorus Cut fills it anyway.
+QString fileInput(const QString& cls) {
+    if (cls.contains("LoadAudio")) return "audio";
+    if (cls.contains("LoadImage") && !cls.contains("Mask")) return "image";
+    return {};
+}
+bool takesFile(const QJsonObject& graph, const QString& node, const QString& input) {
+    const QJsonValue v = inputsOf(graph, node).value(input);
+    return v.isString() || (v.isUndefined() && fileInput(graph[node].toObject()["class_type"].toString()) == input);
+}
 
 // From a conditioning link, upstream to the first node with literal prompt text.
 QPair<QString, QString> textFor(const QJsonObject& graph, const QJsonValue& link) {
@@ -147,12 +158,33 @@ QJsonObject Workflows::graphOf(const QString& id) const {
 
 QJsonObject Workflows::adapterOf(const QString& id) const {
     QFile f(root.filePath(id + "/adapter.json"));
-    return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject{};
+    QJsonObject adapter = f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject{};
+    // A workflow for takes singing to the song, saved before a Load Audio with no file chosen was
+    // recognised (version 1), gets that node as its song excerpt: read that way, never written
+    // back until the user changes the workflow, after which their mapping stands.
+    if (adapter["use"] == "take-sync" && adapter["version"].toInt() < 2) {
+        bool has = false;
+        for (const auto& s : adapter["slots"].toArray()) has |= s.toObject()["slot"] == "audio";
+        if (!has) {
+            const auto graph = graphOf(id);
+            for (const QString& node : nodeOrder(graph))
+                if (classOf(graph, node).contains("LoadAudio") && takesFile(graph, node, "audio")) {
+                    auto mapping = adapter["slots"].toArray();
+                    mapping.append(QJsonObject{{"slot", "audio"}, {"node", node}, {"input", "audio"}});
+                    adapter["slots"] = mapping;
+                    break;
+                }
+        }
+    }
+    return adapter;
 }
 
-bool Workflows::saveAdapter(const QString& id, const QJsonObject& adapter) {
+bool Workflows::saveAdapter(const QString& id, const QJsonObject& given) {
     QFile f(root.filePath(id + "/adapter.json"));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    // Version 2: a Load Audio with no file chosen is recognised (see adapterOf).
+    QJsonObject adapter = given;
+    adapter["version"] = 2;
     f.write(QJsonDocument(adapter).toJson());
     f.close();
     emit changed();
@@ -221,7 +253,7 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
     for (const QString& node : order) {
         const QString cls = classOf(graph, node);
         const auto inputs = inputsOf(graph, node);
-        if (cls.contains("LoadImage") && inputs["image"].isString()) add("picture", node, "image", picture++);
+        if (cls.contains("LoadImage") && takesFile(graph, node, "image")) add("picture", node, "image", picture++);
         for (const char* name : {"seed", "noise_seed"})
             if (inputs[name].isDouble()) add("seed", node, name);
         if (cls.contains("Latent") && inputs["width"].isDouble() && inputs["height"].isDouble()) {
@@ -235,7 +267,7 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
         }
         if (cls == "PreviewImage" && preview.isEmpty()) preview = node;
         // A video's song excerpt, and the file it is saved to.
-        if (cls.contains("LoadAudio") && inputs["audio"].isString()) add("audio", node, "audio");
+        if (cls.contains("LoadAudio") && takesFile(graph, node, "audio")) add("audio", node, "audio");
         if (isVideoSaver(cls)) {
             outs.append(node);
             if (inputs["filename_prefix"].isString()) add("prefix", node, "filename_prefix");
@@ -294,7 +326,7 @@ QVariantMap Workflows::importFile(const QUrl& file, const QString& use) {
     QFile out(root.filePath(id + "/workflow.json"));
     if (!out.open(QIODevice::WriteOnly) || out.write(doc.toJson()) < 0) return {{"ok", false}, {"error", "Cannot save the workflow."}};
     out.close();
-    adapter["version"] = 1;
+    adapter["version"] = 2;
     adapter["name"] = name;
     adapter["use"] = chosen;
     adapter["source"] = QFileInfo(path).fileName();
@@ -332,7 +364,7 @@ QStringList Workflows::problems(const QString& id) const {
     const auto graph = graphOf(id);
     for (const auto& s : adapter["slots"].toArray()) {
         const auto o = s.toObject();
-        if (!inputsOf(graph, o["node"].toString()).contains(o["input"].toString()))
+        if (!inputsOf(graph, o["node"].toString()).contains(o["input"].toString()) && !takesFile(graph, o["node"].toString(), o["input"].toString()))
             out << QString("Node %1 has no input “%2”.").arg(o["node"].toString(), o["input"].toString());
     }
     return out;
@@ -366,7 +398,10 @@ QVariantMap Workflows::get(const QString& id) const {
     QVariantList inputs;
     for (const QString& node : nodeOrder(graph)) {
         const auto n = graph[node].toObject();
-        const auto in = n["inputs"].toObject();
+        auto in = n["inputs"].toObject();
+        // A loader with no file chosen still lists its file input, so it can be mapped.
+        const QString file = fileInput(n["class_type"].toString());
+        if (!file.isEmpty() && !in.contains(file)) in[file] = QString();
         for (auto it = in.begin(); it != in.end(); ++it) {
             if (isLink(it.value()) || it.value().isArray() || it.value().isObject()) continue;
             const QString key = node + "/" + it.key();
@@ -374,6 +409,7 @@ QVariantMap Workflows::get(const QString& id) const {
             const bool kept = s["slot"] == "setting" && keptValues.contains(key);
             QString value = shown(kept ? keptValues[key] : it.value());
             if (kept) value += "  (workflow: " + shown(it.value()) + ")";
+            if (it.key() == file && value.isEmpty()) value = "no file chosen (Chorus Cut fills it)";
             inputs.append(QVariantMap{{"key", key}, {"node", node}, {"classType", n["class_type"].toString()},
                                       {"title", n["_meta"].toObject()["title"].toString()}, {"input", it.key()}, {"value", value},
                                       {"slot", s["slot"].toString()}, {"index", s["index"].toInt()}});
@@ -390,7 +426,7 @@ QVariantMap Workflows::get(const QString& id) const {
 }
 
 bool Workflows::setSlot(const QString& id, const QString& node, const QString& input, const QString& slot, int index) {
-    if (!ids().contains(id) || !inputsOf(graphOf(id), node).contains(input)) return false;
+    if (!ids().contains(id) || (!inputsOf(graphOf(id), node).contains(input) && !takesFile(graphOf(id), node, input))) return false;
     bool known = slot.isEmpty();
     for (const auto& s : slotTable()) known |= slot == s.value;
     if (!known) return false;
