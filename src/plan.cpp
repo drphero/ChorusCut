@@ -88,6 +88,8 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         {"arc", {{"happens", "text"}, {"beat", "text"}, {"density", "enum"}}},
         {"singer", {{"singers", "singers"}}},
         {"reference", {{"role", "enum"}, {"approved", "bool"}, {"notes", "text"}}},
+        // A video generated for a shot; the approved one is the take the cut uses.
+        {"take", {{"approved", "bool"}, {"notes", "text"}}},
         // One way of seeing a character, look or location. Its pictures are its references; the
         // approved one is its chosen picture. inputs: the pictures an edited view is made from, in
         // order; panels: the views a composed sheet lays side by side.
@@ -408,6 +410,16 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
                 }
             if (c.value("fields").toMap().size() == 1) pendingLabel = "Choose " + row("reference", id)["name"].toString();
         }
+        // A shot plays one take: choosing it sets the others aside.
+        if (r.ok && kind == "take" && c.value("fields").toMap().value("approved").toBool()) {
+            const int shot = row("take", id)["shot"].toInt();
+            for (int other : takeIds(shot))
+                if (other != id && row("take", other)["fields"].toObject()["approved"].toBool()) {
+                    Result off = setFields("take", other, {{"approved", false}}, "user", "replace");
+                    if (!off.ok) return off;
+                }
+            if (c.value("fields").toMap().size() == 1) pendingLabel = QString("Choose take %1 for shot %2").arg(takeIds(shot).indexOf(id) + 1).arg(shotNumber(shot));
+        }
         return r;
     }
     if (op == "add" && kind == "view") {
@@ -469,7 +481,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     }
     if (op == "remove") {
         const int id = c.value("id").toInt();
-        if ((kind != "character" && kind != "look" && kind != "location" && kind != "shot" && kind != "reference" && kind != "view") || !has(kind, id))
+        if ((kind != "character" && kind != "look" && kind != "location" && kind != "shot" && kind != "reference" && kind != "view" && kind != "take") || !has(kind, id))
             return error("There is no " + kind + " " + QString::number(id) + " to remove.");
         if (by == "agent") {
             const auto prov = row(kind, id)["prov"].toObject();
@@ -486,7 +498,10 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         if (kind == "view")
             for (int ref : refIds(row("view", id)["owner"].toString(), row("view", id)["ownerId"].toInt()))
                 if (row("reference", ref)["view"].toInt() == id) write("reference", ref, {});
-        // The image stays in Media/References, so undo can bring the reference back.
+        // A shot takes its takes with it; a removed chosen take leaves the shot without one.
+        if (kind == "shot") for (int take : takeIds(id)) write("take", take, {});
+        if (kind == "take") label(QString("Remove take %1 of shot %2").arg(takeIds(row("take", id)["shot"].toInt()).indexOf(id) + 1).arg(shotNumber(row("take", id)["shot"].toInt())));
+        // The image (or video) stays in Media, so undo can bring it back.
         write(kind, id, {});
         return {};
     }
@@ -542,6 +557,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
         return total;
     }
     if (op == "ref.add") return refAdd(c, by);
+    if (op == "take.add") return takeAdd(c, by);
     if (op == "ref.move") {
         const int id = c.value("id").toInt();
         if (!has("reference", id)) return error("There is no reference " + QString::number(id) + ".");
@@ -692,7 +708,8 @@ QString Plan::checkField(const QString& kind, const QString& field, const QJsonV
     }
     if (type == "prompts") {
         if (!v.isObject()) return "prompts maps a route to its prompt.";
-        for (auto it = v.toObject().begin(); it != v.toObject().end(); ++it) {
+        const QJsonObject prompts = v.toObject();  // one object to walk, not a temporary per call
+        for (auto it = prompts.begin(); it != prompts.end(); ++it) {
             if (checkField("shot", "route", it.key()).size()) return QString("\"%1\" is not a known route.").arg(it.key());
             if (!it.value().isString()) return "Each prompt is text.";
         }
@@ -728,6 +745,9 @@ Plan::Result Plan::setFields(const QString& kind, int id, const QVariantMap& fie
         // Choosing a view's picture is the user's: an agent can add pictures, not choose them.
         if (by == "agent" && kind == "reference" && it.key() == "approved" && v.toBool() && !values.value("approved").toBool()) {
             r.ok = false; r.error = "Only the user chooses pictures; add it and tell the user which one you suggest."; return r;
+        }
+        if (by == "agent" && kind == "take" && it.key() == "approved" && v.toBool() && !values.value("approved").toBool()) {
+            r.ok = false; r.error = "Only the user chooses takes; tell the user which one you suggest."; return r;
         }
         const QJsonObject p = prov[it.key()].toObject();
         const QJsonValue old = values.value(it.key());
@@ -776,6 +796,105 @@ QList<int> Plan::refIds(const QString& owner, int id) const {
         return pa != pb ? pa < pb : a < b;
     });
     return ids;
+}
+
+QList<int> Plan::takeIds(int shot) const {
+    QList<int> ids;
+    const auto& takes = items.value("take");
+    for (auto it = takes.begin(); it != takes.end(); ++it)
+        if (it.value()["shot"].toInt() == shot) ids.append(it.key());
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+// The project frames a take covers: its first frame at anchor, its length in the project's rate.
+QPair<int, int> Plan::takeSpan(int take) const {
+    const auto t = row("take", take);
+    const double rate = t["fps"].toDouble() > 0 ? t["fps"].toDouble() : 24;
+    const int anchor = t["anchor"].toInt();
+    return {anchor, anchor + int(std::floor(t["frames"].toInt() * fps() / rate + 1e-6))};
+}
+
+QVariantList Plan::takesFor(int shot) const {
+    QVariantList out;
+    const auto ids = takeIds(shot);
+    for (int i = 0; i < ids.size(); ++i) {
+        QVariantMap m = exported("take", ids[i]);
+        m["number"] = i + 1;
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Plan::timelineTakes() const {
+    // Each shot's chosen take, as the part of it the cut plays: [{track, start, end, file, in}].
+    QVariantList out;
+    if (!project) return out;
+    for (int shot : shotOrder()) {
+        const auto s = row("shot", shot);
+        for (int take : takeIds(shot)) {
+            const auto t = row("take", take);
+            if (!t["fields"].toObject()["approved"].toBool()) continue;
+            const auto [from, to] = takeSpan(take);
+            const int a = qMax(s["start"].toInt(), from), b = qMin(s["end"].toInt(), to);
+            const QString file = project->dir.filePath(t["file"].toString());
+            if (a < b && QFileInfo::exists(file))
+                out.append(QVariantMap{{"track", s["track"].toInt()}, {"start", a}, {"end", b}, {"file", file}, {"in", a - from}, {"take", take}, {"shot", shot}});
+            break;
+        }
+    }
+    return out;
+}
+
+Plan::Result Plan::takeAdd(const QVariantMap& c, const QString& by) {
+    Result r;
+    auto fail = [&](const QString& e) { r.ok = false; r.error = e; return r; };
+    // Takes come from the app's own generation jobs, never from an agent's command.
+    if (by != "user") return fail("Takes are generated in Chorus Cut; an agent can't add them.");
+    const int shot = c.value("shot").toInt();
+    if (!has("shot", shot)) return fail("The shot is gone.");
+    const QString source = c.value("path").toString();
+    QFile file(source);
+    if (!QFileInfo(source).isFile() || !file.open(QIODevice::ReadOnly)) return fail("Cannot read " + QFileInfo(source).fileName() + ".");
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    if (!hash.addData(&file)) return fail("Cannot read " + QFileInfo(source).fileName() + ".");
+    file.close();
+    const QString base = "Media/Takes/" + QString::fromLatin1(hash.result().toHex().left(20));
+    const QString relative = base + "." + QFileInfo(source).suffix().toLower();
+    if (!project->dir.mkpath("Media/Takes")) return fail("Cannot create Media/Takes in the project.");
+    auto copyIn = [&](const QString& from, const QString& to) {
+        const QString target = project->dir.filePath(to);
+        if (QFileInfo::exists(target)) return true;
+        QFile::remove(target + ".part");
+        if (QFile::copy(from, target + ".part") && QFile::rename(target + ".part", target)) return true;
+        QFile::remove(target + ".part");
+        return false;
+    };
+    if (!copyIn(source, relative)) return fail("Could not copy the take into the project.");
+    QString thumb;
+    if (const QString t = c.value("thumb").toString(); QFileInfo(t).isFile()) {
+        thumb = base + "." + QFileInfo(t).suffix().toLower();
+        if (!copyIn(t, thumb)) thumb.clear();
+    }
+    for (int existing : takeIds(shot))
+        if (row("take", existing)["file"].toString() == relative) return fail("That take is already on the shot.");
+    bool hasChoice = false;
+    for (int other : takeIds(shot)) hasChoice |= row("take", other)["fields"].toObject()["approved"].toBool();
+    const int id = nextId("take");
+    QJsonObject entry{{"shot", shot}, {"file", relative}, {"thumb", thumb}, {"frames", c.value("frames").toInt()},
+                      {"fps", c.value("fps", 24).toDouble()}, {"anchor", c.value("anchor").toInt()}, {"locked", c.value("locked").toBool()},
+                      {"width", c.value("width").toInt()}, {"height", c.value("height").toInt()},
+                      {"generation", QJsonObject::fromVariantMap(c.value("generation").toMap())},
+                      {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
+    write("take", id, entry);
+    // The shot's first take plays at once; later ones wait to be chosen.
+    if (!hasChoice) {
+        Result set = setFields("take", id, {{"approved", true}}, "user", "replace");
+        if (!set.ok) return set;
+    }
+    if (pendingLabel.isEmpty()) pendingLabel = QString("Add a take to shot %1").arg(shotNumber(shot));
+    r.id = id;
+    return r;
 }
 
 void Plan::dropReferences(const QString& owner, int id) {
@@ -927,6 +1046,16 @@ Plan::Result Plan::shotRetime(const QVariantMap& c) {
     const bool moved = end - start == s["end"].toInt() - s["start"].toInt();
     if (pendingLabel.isEmpty()) pendingLabel = (moved ? "Move shot " : "Trim shot ") + QString::number(shotNumber(id));
     if (track == s["track"].toInt() && start == s["start"].toInt() && end == s["end"].toInt()) return r;
+    // A moved shot carries its takes along; a lip-sync take stays on the song, so moving its shot
+    // shows another part of it. A trim keeps every take where it is, like trimming a clip.
+    const int delta = start - s["start"].toInt();
+    if (moved && delta)
+        for (int take : takeIds(id)) {
+            QJsonObject t = row("take", take);
+            if (t["locked"].toBool()) continue;
+            t["anchor"] = t["anchor"].toInt() + delta;
+            write("take", take, t);
+        }
     s["track"] = track; s["start"] = start; s["end"] = end;
     write("shot", id, s);
     r.id = id;
@@ -946,8 +1075,14 @@ Plan::Result Plan::shotSplit(int id, const QVector<int>& cuts) {
         QJsonObject piece = s;
         piece["start"] = bounds[i];
         piece["end"] = bounds[i + 1];
-        // A copy has no continuity of its own yet.
-        write("shot", nextId("shot"), piece);
+        // A copy has no continuity of its own yet. Each piece plays its part of the same takes.
+        const int pieceId = nextId("shot");
+        write("shot", pieceId, piece);
+        for (int take : takeIds(id)) {
+            QJsonObject t = row("take", take);
+            t["shot"] = pieceId;
+            write("take", nextId("take"), t);
+        }
     }
     return r;
 }
@@ -997,6 +1132,19 @@ QVariantMap Plan::exported(const QString& kind, int id) const {
         m["role"] = r["fields"].toObject()["role"].toString();
         m["roleLabel"] = optionLabel("refRole", m["role"].toString());
         m["viewName"] = row("view", r["view"].toInt())["fields"].toObject()["name"].toString();
+    }
+    if (kind == "take" && project) {
+        const QString path = project->dir.filePath(r["file"].toString());
+        m["url"] = QUrl::fromLocalFile(path).toString();
+        m["missing"] = !QFileInfo::exists(path);
+        m["thumbUrl"] = r["thumb"].toString().isEmpty() ? QString() : QUrl::fromLocalFile(project->dir.filePath(r["thumb"].toString())).toString();
+        m["chosen"] = r["fields"].toObject()["approved"].toBool();
+        m["lipSync"] = r["locked"].toBool();
+        const double rate = r["fps"].toDouble() > 0 ? r["fps"].toDouble() : 24;
+        m["seconds"] = r["frames"].toInt() / rate;
+        const auto [from, to] = takeSpan(id);
+        m["from"] = from;
+        m["to"] = to;
     }
     return m;
 }
@@ -1088,6 +1236,14 @@ QVariantMap Plan::shot(int id) const {
     m["problems"] = errors;
     m["advice"] = warnings;
     m["stale"] = stale;
+    const auto takes = takeIds(id);
+    m["takes"] = int(takes.size());
+    for (int t : takes)
+        if (row("take", t)["fields"].toObject()["approved"].toBool()) {
+            m["chosenTake"] = t;
+            m["chosenThumb"] = row("take", t)["thumb"].toString().isEmpty() ? QString()
+                               : QUrl::fromLocalFile(project->dir.filePath(row("take", t)["thumb"].toString())).toString();
+        }
     return m;
 }
 
@@ -1142,15 +1298,27 @@ QVariantList Plan::viewsFor(const QString& owner, int id) const {
 
 namespace {
 // How much a shot's framing wants a view of this role: 1 first, 3 still useful, 4+ left out.
+// H3 holds nine pictures, so a close-up still sends the outfit and the body, after the face.
 int framingWants(const QString& framing, const QString& role) {
     const bool close = framing == "ecu" || framing == "cu" || framing == "mcu";
     const bool wide = framing == "ws" || framing == "ews";
     if (role == "face") return close ? 1 : wide ? 3 : 1;
-    if (role == "body" || role == "look") return close ? 4 : wide ? 1 : 2;
+    if (role == "body" || role == "look") return close ? 3 : wide ? 1 : 2;
     if (role == "sheet") return close ? 2 : wide ? 2 : 3;
     if (role == "setting") return close ? 3 : wide ? 1 : 2;
     if (role == "detail") return close ? 2 : wide ? 5 : 4;
-    return 5;
+    return 3;  // the user's own kind of view: worth sending
+}
+// A view the user named without a role ("Your own…", or older projects): its role from its name.
+QString roleFromName(const QString& role, const QString& name) {
+    if (!role.isEmpty() && role != "other") return role;
+    const QString n = name.toLower();
+    if (n.contains("sheet") || n.contains("turnaround")) return "sheet";
+    if (n.contains("face") || n.contains("profile") || n.contains("three-quarter") || n.contains("portrait") || n.contains("head")) return "face";
+    if (n.contains("full body") || n.contains("body") || n.contains("outfit")) return "body";
+    if (n.contains("wide") || n.contains("establishing") || n.contains("reverse")) return "setting";
+    if (n.contains("detail")) return "detail";
+    return role.isEmpty() ? QString("other") : role;
 }
 }
 
@@ -1168,7 +1336,7 @@ QVariantMap Plan::shotPictures(int id) const {
             const auto view = v.toMap();
             QVariantMap ref = view["chosen"].toMap();
             if (ref.isEmpty()) continue;
-            const QString role = view["role"].toString();
+            const QString role = roleFromName(view["role"].toString(), view["name"].toString());
             ref["ownerName"] = nameOf(owner, ownerId);
             ref["viewName"] = view["name"];
             ref["viewRole"] = role;
@@ -1230,8 +1398,22 @@ QVariantMap Plan::shotPictures(int id) const {
         candidates.append(ref);
     }
     if (overridden) {
-        for (const auto& v : override_)
-            for (const auto& c : candidates) if (c.toMap()["id"].toInt() == v.toInt()) picked.append(c);
+        // Exactly what the user picked, in their order: any picture in the plan, not only the
+        // chosen ones of who and where (an alternative, another character's, a prop's place).
+        for (const auto& v : override_) {
+            bool found = false;
+            for (const auto& c : candidates)
+                if (c.toMap()["id"].toInt() == v.toInt()) { picked.append(c); found = true; break; }
+            if (found || !has("reference", v.toInt())) continue;
+            QVariantMap ref = exported("reference", v.toInt());
+            const auto r = row("reference", v.toInt());
+            ref["ownerName"] = nameOf(r["owner"].toString(), r["ownerId"].toInt());
+            ref["viewRole"] = roleFromName(row("view", r["view"].toInt())["fields"].toObject()["role"].toString(), ref["viewName"].toString());
+            ref["picked"] = true;
+            ref["extra"] = true;  // not one of who and where's chosen pictures
+            picked.append(ref);
+            candidates.append(ref);
+        }
     } else {
         for (const auto& p : picks) { QVariantMap ref = p.ref; ref["picked"] = true; picked.append(ref); }
     }
@@ -1672,6 +1854,21 @@ QVariantList Plan::computeChecks() const {
             add("error", "G4", "singer", QString(over.size() == 1 ? "\"%1\" is sung by %2, but lip-sync shot %3 shows someone else."
                                                                   : "\"%1\" is sung by %2, but lip-sync shots %3 show someone else.")
                 .arg(line["text"].toString(), joinNames(names), shotNumbers(shotNames)), a, b, over);
+        }
+    }
+    // A chosen take that doesn't reach the shot's edges (the shot was trimmed or moved past it).
+    for (int id : order) {
+        for (int take : takeIds(id)) {
+            if (!row("take", take)["fields"].toObject()["approved"].toBool()) continue;
+            const auto [from, to] = takeSpan(take);
+            const int a = shotRows[id]["start"].toInt(), b = shotRows[id]["end"].toInt();
+            const int missing = qMax(0, from - a) + qMax(0, b - to);
+            if (missing > 0)
+                add("warning", "G4", "takeShort", QString("Shot %1's take is %2 s short %3: trim the shot or generate it again.")
+                    .arg(number(id)).arg(QString::number(missing / fps(), 'f', 1))
+                    .arg(from > a && to < b ? "at both ends" : from > a ? "at its start" : "at its end"),
+                    frameToMs(a), frameToMs(b), {id});
+            break;
         }
     }
     // Advice: long runs of one framing, in picture order.

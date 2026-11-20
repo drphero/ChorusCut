@@ -163,6 +163,90 @@ QVariantList Requests::about(const QString& kind, int id, const QString& field) 
     return out;
 }
 
+// What the agent needs to write a view's framing or instruction: how it is made, the pictures it
+// is made from in order with what its workflow calls them (to look at with view_reference), and
+// what the app sends after the instruction.
+QJsonObject Requests::viewContext(int view) const {
+    Plan* plan = editor->plan();
+    const auto v = plan->item("view", view);
+    if (v.isEmpty()) return {};
+    auto nameOf = [&](const QString& kind, int id) {
+        const auto item = plan->item(kind, id);
+        const QString name = item["fields"].toMap()["name"].toString();
+        if (kind != "look") return name;
+        return plan->item("character", item["character"].toInt())["fields"].toMap()["name"].toString() + " · " + name;
+    };
+    const auto f = v["fields"].toMap();
+    const bool edited = f["from"].toString() == "pictures";
+    const auto opts = editor->generator()->viewOptions(view, edited ? "ref-edit" : "ref-text");
+    const QString workflow = opts["workflow"].toString();
+    QJsonObject o{{"name", f["name"].toString()}, {"of", nameOf(v["owner"].toString(), v["ownerId"].toInt())},
+                  {"madeFrom", edited ? "pictures the user picked" : "the appearance alone"},
+                  {"sentAs", "this field, a blank line, then the appearance below; don't repeat the appearance in it"},
+                  {"appearance", opts["subject"].toString()}};
+    if (!workflow.isEmpty()) o["workflow"] = opts["workflowName"].toString();
+    if (!edited) return o;
+    QJsonArray pictures;
+    int n = 0;
+    for (const auto& i : opts["inputs"].toList()) {
+        const auto r = plan->item("reference", i.toInt());
+        if (r.isEmpty()) continue;
+        ++n;
+        QJsonObject p{{"id", i.toInt()}, {"of", nameOf(r["owner"].toString(), r["ownerId"].toInt())},
+                      {"view", r["viewName"].toString()}, {"chosen", r["approved"].toBool()}};
+        if (!workflow.isEmpty()) p["calledInPrompt"] = editor->generator()->pictureLabel(workflow, n);
+        pictures.append(p);
+    }
+    o["pictures"] = pictures;
+    o["pictureNote"] = pictures.isEmpty() ? QString("No pictures are picked yet; ask the user to pick them in the Generate dialog.")
+                     : opts["guessed"].toBool() ? QString("The user hasn't picked these; they are the app's first guess.")
+                     : QString("The user picked these, in this order. Look at each with view_reference before writing.");
+    return o;
+}
+
+// What the agent needs to write a shot's video prompt: the route and workflow, the pictures in
+// order with what the prompt calls them, and the take's timeline: it starts before the cut by
+// its handle, so the shot's lines are given in seconds from the take's first frame.
+QJsonObject Requests::takeContext(int shot) const {
+    Plan* plan = editor->plan();
+    const auto s = plan->shot(shot);
+    if (s.isEmpty()) return {};
+    const auto opts = editor->generator()->takeOptions(shot);
+    const double fps = editor->fps();
+    const double takeStart = s["start"].toInt() / fps - opts["handles"].toDouble();
+    auto at = [&](double seconds) { return std::round((seconds - takeStart) * 100) / 100; };
+    QJsonObject o{{"route", opts["route"].toString()}, {"writeTo", QString("fields.prompts[\"%1\"] of shot %2").arg(opts["route"].toString()).arg(shot)},
+                  {"lipSync", opts["lipSync"].toBool()}, {"seconds", opts["seconds"].toDouble()}, {"frames", opts["frames"].toInt()},
+                  {"cutIn", at(s["start"].toInt() / fps)}, {"cutOut", at(s["end"].toInt() / fps)}};
+    if (!opts["workflowName"].toString().isEmpty()) o["workflow"] = opts["workflowName"].toString();
+    if (!opts["why"].toString().isEmpty()) o["notReadyBecause"] = opts["why"].toString();
+    QJsonArray pictures;
+    for (const auto& pv : opts["pictures"].toList()) {
+        const auto p = pv.toMap();
+        const auto ref = plan->item("reference", p["id"].toInt());
+        QString whose = ref["owner"].toString() == "look"
+            ? plan->item("character", plan->item("look", ref["ownerId"].toInt())["character"].toInt())["fields"].toMap()["name"].toString() + " · " +
+              plan->item("look", ref["ownerId"].toInt())["fields"].toMap()["name"].toString()
+            : plan->item(ref["owner"].toString(), ref["ownerId"].toInt())["fields"].toMap()["name"].toString();
+        pictures.append(QJsonObject{{"id", p["id"].toInt()}, {"calledInPrompt", p["label"].toString()}, {"of", whose}, {"view", p["viewName"].toString()}});
+    }
+    o["pictures"] = pictures;
+    QJsonArray lines;
+    const double from = takeStart, to = takeStart + opts["seconds"].toDouble();
+    for (const auto& lv : editor->lyrics()->lines()) {
+        const auto l = lv.toMap();
+        const double a = l["start"].toInt() / 1000.0, b = l["end"].toInt() / 1000.0;
+        if (b <= from || a >= to) continue;
+        lines.append(QJsonObject{{"text", l["text"].toString()}, {"start", at(a)}, {"end", at(b)}});
+    }
+    o["lyrics"] = lines;
+    o["timing"] = "Times are seconds from the take's first frame. The cut uses cutIn to cutOut; the rest is handle for trimming, so keep the action continuous through it.";
+    o["format"] = opts["lipSync"].toBool()
+        ? "MiniMax H3 reference-to-video with the song locked in: subject_definitions (each <Picture n>), summary, retention_analysis, detailed_description (what we see, second by second, with the singer's mouth on the sung words), overall_soundscape (the song), non_diegetic_music."
+        : "MiniMax H3 reference-to-video: subject_definitions (each <Picture n>), summary, retention_analysis, detailed_description (what we see, second by second), overall_soundscape, non_diegetic_music.";
+    return o;
+}
+
 QJsonArray Requests::forAgent(bool includeDone) {
     QJsonArray out;
     Plan* plan = editor->plan();
@@ -182,6 +266,8 @@ QJsonArray Requests::forAgent(bool includeDone) {
             else fields = plan->item(kind, about["id"].toInt())["fields"].toMap();
             o["currentValue"] = QJsonValue::fromVariant(fields.value(field));
         }
+        if (kind == "view") o["view"] = viewContext(about["id"].toInt());
+        if (kind == "shot" && (field == "prompts" || field.isEmpty())) o["take"] = takeContext(about["id"].toInt());
         out.append(o);
         if (t["turn"] == "agent" && !t["seen"].toBool()) { t["seen"] = true; save(it.key()); marked = true; }
     }

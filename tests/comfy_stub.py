@@ -38,11 +38,48 @@ def png(name):
             chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+VIDEOS = {}
+
+
+def video_frames(prompt):
+    """The length a video graph asks for: a frame count, or seconds through an expression (H3's 17n+5)."""
+    for spec in prompt.values():
+        length = spec.get("inputs", {}).get("length")
+        if isinstance(length, (int, float)):
+            return int(length)
+    for spec in prompt.values():
+        if spec.get("class_type") == "ComfyMathExpression":
+            for key, value in spec["inputs"].items():
+                if key.startswith("values.") and isinstance(value, list):
+                    seconds = prompt[value[0]]["inputs"]["value"]
+                    frames = max(5, round(seconds * 24))
+                    return frames + (5 - frames % 17) % 17
+    return 24
+
+
+def video(name, frames):
+    """A small H.264 MP4 of that many frames at 24 fps, colour taken from the name, made with ffmpeg."""
+    import subprocess
+    import tempfile
+    r, g, b = hashlib.sha1(name.encode()).digest()[:3]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = tmp + "/v.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c=0x{r:02x}{g:02x}{b:02x}:s=96x54:r=24",
+                        "-frames:v", str(frames), "-pix_fmt", "yuv420p", "-c:v", "libx264", out], check=True)
+        return open(out, "rb").read()
+
+
 def picture_outputs(prompt, number):
     outputs = {}
     for node, spec in prompt.items():
         kind = spec.get("class_type", "")
-        if kind == "SaveImage":
+        if kind == "SaveVideo":
+            prefix = spec["inputs"].get("filename_prefix", "video/ComfyUI")
+            folder, _, base = prefix.rpartition("/")
+            name = f"{base}_{number:05}_.mp4"
+            VIDEOS[name] = video(name, video_frames(prompt))
+            outputs[node] = {"images": [{"filename": name, "subfolder": folder, "type": "output"}], "animated": [True]}
+        elif kind == "SaveImage":
             prefix = spec["inputs"].get("filename_prefix", "ComfyUI")
             folder, _, base = prefix.rpartition("/")
             outputs[node] = {"images": [{"filename": f"{base}_{number:05}_.png", "subfolder": folder, "type": "output"}]}
@@ -118,6 +155,16 @@ class Handler(BaseHTTPRequestHandler):
                                       "input": {"required": {"clip": ["CLIP", {}], "prompt": ["STRING", {}], "width": ["INT", {}], "height": ["INT", {}]},
                                                 "optional": {"vae": ["VAE", {}], "images": ["COMFY_AUTOGROW_V3", {"template": {"input": {"required": {"image": ["IMAGE", {}]}}}, "prefix": "image_", "min": 0, "max": 100}]}}},
                 "ComfySwitchNode": {"input": {"required": {"switch": ["BOOLEAN", {}]}, "optional": {"on_false": ["*", {}], "on_true": ["*", {}]}}},
+                "MiniMaxH3ReferenceToVideo": {"description": "<Picture i> / <Video k> / <Audio j> reference conditioning for MiniMax H3. Use the same tags when prompting.",
+                                              "input": {"required": {"clip": ["CLIP", {}], "prompt": ["STRING", {}], "width": ["INT", {}], "height": ["INT", {}],
+                                                                     "length": ["INT", {"default": 124, "min": 5, "max": 3600, "step": 17}],
+                                                                     "ref_image_size": ["COMBO", {"options": ["match", "max"]}]},
+                                                        "optional": {"vae": ["VAE", {}], "audio_vae": ["VAE", {}],
+                                                                     "ref_images": ["COMFY_AUTOGROW_V3", {"template": {"input": {"required": {"ref_image": ["IMAGE", {}]}}}, "prefix": "ref_image_", "min": 0, "max": 16}],
+                                                                     "ref_audios": ["COMFY_AUTOGROW_V3", {}]}}},
+                "PixaromaH3AudioSync": {"input": {"required": {"model": ["MODEL", {}], "latent": ["LATENT", {}], "audio_vae": ["VAE", {}], "track": ["AUDIO", {}]}}},
+                "ResolutionSelector": {"input": {"required": {"aspect_ratio": [["1:1 (Square)", "3:4 (Portrait Standard)", "4:3 (Landscape Standard)", "16:9 (Widescreen)"], {}],
+                                                              "megapixels": ["FLOAT", {}], "multiple": ["INT", {}]}}},
             }
             name = self.path[len("/object_info/"):] if self.path.startswith("/object_info/") else ""
             if name in infos:
@@ -139,9 +186,9 @@ class Handler(BaseHTTPRequestHandler):
                 q = parse_qs(urlparse(self.path).query)
                 name = q.get("filename", [""])[0]
                 state.setdefault("views", []).append({"filename": name, "subfolder": q.get("subfolder", [""])[0], "type": q.get("type", [""])[0]})
-                body = png(name)
+                body = VIDEOS.get(name) or png(name)
                 self.send_response(200)
-                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Type", "video/mp4" if name in VIDEOS else "image/png")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -169,8 +216,12 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             if self.path == "/upload/image":
                 name = raw.split(b'filename="', 1)[1].split(b'"', 1)[0].decode()
-                state["uploads"].append({"name": name, "bytes": len(raw),
-                                         "auth": self.headers.get("Authorization", "")})
+                entry = {"name": name, "bytes": len(raw), "auth": self.headers.get("Authorization", "")}
+                # A WAV's own size, from its RIFF header (the request also carries the form around it).
+                at = raw.find(b"RIFF")
+                if at >= 0 and raw[at + 8:at + 12] == b"WAVE":
+                    entry["wavBytes"] = int.from_bytes(raw[at + 4:at + 8], "little") + 8
+                state["uploads"].append(entry)
                 return self.send({"name": name, "subfolder": "", "type": "input"})
             if self.path == "/prompt":
                 request = json.loads(raw)

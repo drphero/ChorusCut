@@ -17,6 +17,8 @@ const QList<Named>& useTable() {
         {"ref-text", "Reference picture from a prompt", "Text to image: a character, look or location from its picture prompt."},
         {"ref-edit", "Reference picture from pictures", "Image editing: a new picture from pictures you pick and an instruction, such as a look on the character's face."},
         {"ref-any", "Reference picture, from a prompt or from pictures", "Both: a model that draws from text alone or edits from any number of pictures (its picture inputs must be optional)."},
+        {"take-ref", "Shot take from reference pictures", "Reference to video: a shot's take from its prompt and the pictures picked for it (H3's <Picture n>)."},
+        {"take-sync", "Shot take singing to the song", "Reference to video with the song locked in: a lip-sync shot's take from its prompt, its pictures and the song under it, through a Load Audio node."},
     };
     return table;
 }
@@ -24,9 +26,13 @@ const QList<Named>& slotTable() {
     static const QList<Named> table = {
         {"prompt", "Prompt", ""}, {"negative", "Negative prompt", ""}, {"picture", "Picture", "indexed"},
         {"seed", "Seed", ""}, {"width", "Width", ""}, {"height", "Height", ""}, {"prefix", "File name prefix", ""},
+        {"audio", "Song excerpt (Load Audio)", ""}, {"frames", "Length in frames", ""}, {"seconds", "Length in seconds", ""},
         {"setting", "Adjust when generating", ""},
     };
     return table;
+}
+bool isVideoSaver(const QString& cls) {
+    return cls == "SaveVideo" || cls.contains("VideoCombine") || cls == "SaveWEBM" || cls == "SaveAnimatedWEBP";
 }
 QString useLabel(const QString& use) {
     for (const auto& u : useTable()) if (use == u.value) return u.label;
@@ -160,6 +166,16 @@ QString Workflows::nameOf(const QString& id) const {
 
 QJsonArray Workflows::outputs(const QString& id) const { return adapterOf(id)["outputs"].toArray(); }
 
+double Workflows::fps(const QString& id) const {
+    const auto graph = graphOf(id);
+    for (const QString& node : nodeOrder(graph)) {
+        const auto inputs = inputsOf(graph, node);
+        for (const char* name : {"fps", "frame_rate"})
+            if (inputs[name].isDouble() && inputs[name].toDouble() > 0) return inputs[name].toDouble();
+    }
+    return 24;
+}
+
 QString Workflows::checkGraph(const QJsonDocument& doc) {
     if (!doc.isObject()) return "This file is not a ComfyUI workflow.";
     const auto o = doc.object();
@@ -218,6 +234,32 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
             if (inputs["filename_prefix"].isString()) add("prefix", node, "filename_prefix");
         }
         if (cls == "PreviewImage" && preview.isEmpty()) preview = node;
+        // A video's song excerpt, and the file it is saved to.
+        if (cls.contains("LoadAudio") && inputs["audio"].isString()) add("audio", node, "audio");
+        if (isVideoSaver(cls)) {
+            outs.append(node);
+            if (inputs["filename_prefix"].isString()) add("prefix", node, "filename_prefix");
+        }
+    }
+    // A video's length: a frame count on the node that makes the video, or what feeds it (a
+    // number primitive, or a seconds value turned into frames by an expression).
+    for (const QString& node : order) {
+        const auto inputs = inputsOf(graph, node);
+        for (const char* name : {"length", "num_frames", "video_length", "frames"}) {
+            const QJsonValue v = inputs[name];
+            if (v.isDouble()) { add("frames", node, name); break; }
+            if (!isLink(v)) continue;
+            const QString from = v.toArray()[0].toString();
+            const QString fromCls = classOf(graph, from);
+            const auto fromInputs = inputsOf(graph, from);
+            if (fromCls == "PrimitiveInt" && fromInputs["value"].isDouble()) { add("frames", from, "value"); break; }
+            for (auto it = fromInputs.begin(); it != fromInputs.end(); ++it) {
+                if (!isLink(it.value())) continue;
+                const QString src = it.value().toArray()[0].toString();
+                if (classOf(graph, src) == "PrimitiveFloat" && inputsOf(graph, src)["value"].isDouble()) add("seconds", src, "value");
+            }
+            break;
+        }
     }
     for (const QString& node : order) {
         const auto inputs = inputsOf(graph, node);
@@ -238,9 +280,13 @@ QVariantMap Workflows::importFile(const QUrl& file, const QString& use) {
     const QString problem = checkGraph(doc);
     if (!problem.isEmpty()) return {{"ok", false}, {"error", problem}};
     QJsonObject adapter = detect(doc.object());
-    bool pictures = false;
-    for (const auto& s : adapter["slots"].toArray()) pictures |= s.toObject()["slot"] == "picture";
-    const QString chosen = use.isEmpty() ? (pictures ? "ref-edit" : "ref-text") : use;
+    bool pictures = false, audio = false, video = false;
+    for (const auto& s : adapter["slots"].toArray()) {
+        pictures |= s.toObject()["slot"] == "picture";
+        audio |= s.toObject()["slot"] == "audio";
+    }
+    for (const auto& o : adapter["outputs"].toArray()) video |= isVideoSaver(classOf(doc.object(), o.toString()));
+    const QString chosen = !use.isEmpty() ? use : audio ? "take-sync" : video ? "take-ref" : pictures ? "ref-edit" : "ref-text";
     const QString name = QFileInfo(path).completeBaseName();
     QString id = slug(name);
     for (int n = 2; root.exists(id); ++n) id = slug(name) + "-" + QString::number(n);
@@ -264,15 +310,25 @@ QStringList Workflows::problems(const QString& id) const {
     QStringList out;
     const auto adapter = adapterOf(id);
     const QString use = adapter["use"].toString();
-    int prompts = 0, pictures = 0;
+    int prompts = 0, pictures = 0, audio = 0, length = 0;
     for (const auto& s : adapter["slots"].toArray()) {
         prompts += s.toObject()["slot"] == "prompt";
         pictures += s.toObject()["slot"] == "picture";
+        audio += s.toObject()["slot"] == "audio";
+        length += s.toObject()["slot"] == "frames" || s.toObject()["slot"] == "seconds";
     }
     if (!prompts) out << "Choose the input that takes the prompt.";
+    const bool take = use == "take-ref" || use == "take-sync";
+    if (take && !length) out << "Choose the input that sets the video's length (in frames or seconds).";
+    if (use == "take-sync" && !audio) out << "Add a Load Audio node for the song, and choose it as the song excerpt.";
+    if (take && !adapter["outputs"].toArray().isEmpty()) {
+        bool saves = false;
+        for (const auto& o : adapter["outputs"].toArray()) saves |= isVideoSaver(classOf(graphOf(id), o.toString()));
+        if (!saves) out << "Add a Save Video node, so Chorus Cut can collect the video.";
+    }
     if ((use == "ref-edit" || use == "ref-any") && !pictures) out << "Choose the Load Image input that takes the first picture.";
     if (use == "ref-text" && pictures) out << "This workflow takes pictures: use it for “Reference picture from pictures”, or let its Load Image inputs keep their values.";
-    if (adapter["outputs"].toArray().isEmpty()) out << "Add a Save Image node, so Chorus Cut can collect the result.";
+    if (adapter["outputs"].toArray().isEmpty()) out << (take ? "Add a Save Video node, so Chorus Cut can collect the video." : "Add a Save Image node, so Chorus Cut can collect the result.");
     const auto graph = graphOf(id);
     for (const auto& s : adapter["slots"].toArray()) {
         const auto o = s.toObject();
@@ -344,7 +400,7 @@ bool Workflows::setSlot(const QString& id, const QString& node, const QString& i
         const auto o = s.toObject();
         if (o["node"].toString() == node && o["input"].toString() == input) continue;
         // A picture index or the prompt goes to one input at a time.
-        if (!slot.isEmpty() && o["slot"].toString() == slot && (slot == "prompt" || slot == "negative" || slot == "prefix" ||
+        if (!slot.isEmpty() && o["slot"].toString() == slot && (slot == "prompt" || slot == "negative" || slot == "prefix" || slot == "audio" || slot == "frames" || slot == "seconds" ||
                                                                  (slot == "picture" && o["index"].toInt() == index))) continue;
         mapping.append(o);
     }
@@ -425,11 +481,38 @@ QString Workflows::forUse(const QString& use) const {
     return {};
 }
 
-int Workflows::pictureCount(const QString& id) const {
+int Workflows::declaredPictures(const QString& id) const {
     int n = 0;
     for (const auto& s : adapterOf(id)["slots"].toArray())
         if (s.toObject()["slot"] == "picture") n = qMax(n, s.toObject()["index"].toInt() + 1);
     return n;
+}
+
+// Where the last picture goes into a growing list ("ref_images.ref_image_1"): the node and
+// input, so more pictures can be added beside it. Only for takes, whose reference lists grow.
+QPair<QString, QString> Workflows::growingInput(const QString& id) const {
+    const auto adapter = adapterOf(id);
+    const QString use = adapter["use"].toString();
+    if (use != "take-ref" && use != "take-sync") return {};
+    QString last;
+    int top = -1;
+    for (const auto& s : adapter["slots"].toArray())
+        if (s.toObject()["slot"] == "picture" && s.toObject()["index"].toInt() > top) { top = s.toObject()["index"].toInt(); last = s.toObject()["node"].toString(); }
+    if (last.isEmpty()) return {};
+    const auto graph = graphOf(id);
+    static const QRegularExpression numbered("^(.+\\..*?)(\\d+)$");
+    for (const QString& node : graph.keys()) {
+        const auto inputs = inputsOf(graph, node);
+        for (auto it = inputs.begin(); it != inputs.end(); ++it)
+            if (isLink(it.value()) && it.value().toArray()[0].toString() == last && numbered.match(it.key()).hasMatch()) return {node, it.key()};
+    }
+    return {};
+}
+
+int Workflows::pictureCount(const QString& id) const {
+    // A take's growing reference list holds as many as H3's nine picture slots.
+    const int declared = declaredPictures(id);
+    return growingInput(id).first.isEmpty() ? declared : qMax(declared, kGrownPictures);
 }
 
 QVariantList Workflows::ready(const QString& use) const {
@@ -600,9 +683,33 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         return {};
     }
     QJsonObject graph = graphOf(id);
+    // More pictures than Load Image nodes, into a growing list: a copy of the last Load Image for
+    // each, wired to the next numbered input.
+    const int declared = declaredPictures(id);
+    QJsonArray slotList = adapterOf(id)["slots"].toArray();
+    if (v.pictures.size() > declared) {
+        const auto [consumer, input] = growingInput(id);
+        QString last;
+        for (const auto& s : slotList)
+            if (s.toObject()["slot"] == "picture" && s.toObject()["index"].toInt() == declared - 1) last = s.toObject()["node"].toString();
+        static const QRegularExpression numbered("^(.+\\..*?)(\\d+)$");
+        const auto m = numbered.match(input);
+        int next = 0;
+        for (const QString& k : graph.keys()) next = qMax(next, k.toInt());
+        for (int i = declared; i < v.pictures.size(); ++i) {
+            const QString node = QString::number(++next);
+            graph[node] = graph[last];
+            auto c = graph[consumer].toObject();
+            auto in = c["inputs"].toObject();
+            in[m.captured(1) + QString::number(m.captured(2).toInt() + (i - declared + 1))] = QJsonArray{node, 0};
+            c["inputs"] = in;
+            graph[consumer] = c;
+            slotList.append(QJsonObject{{"slot", "picture"}, {"node", node}, {"input", "image"}, {"index", i}});
+        }
+    }
     // Fewer pictures than the workflow has Load Image inputs: the unused ones come out, with what
     // only they feed, where ComfyUI says the inputs they reach are optional.
-    if (v.pictures.size() < pictures) {
+    if (v.pictures.size() < declared) {
         QSet<QString> unused;
         for (const auto& s : adapterOf(id)["slots"].toArray())
             if (s.toObject()["slot"] == "picture" && s.toObject()["index"].toInt() >= v.pictures.size()) unused << s.toObject()["node"].toString();
@@ -632,7 +739,7 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         const QString node = it.key().section('/', 0, 0), input = it.key().section('/', 1);
         if (adjustable.contains(it.key()) && graph.contains(node) && inputsOf(graph, node).contains(input)) put(node, input, it.value());
     }
-    for (const auto& s : adapterOf(id)["slots"].toArray()) {
+    for (const auto& s : slotList) {
         const auto o = s.toObject();
         const QString node = o["node"].toString(), input = o["input"].toString(), slot = o["slot"].toString();
         QJsonValue value;
@@ -643,6 +750,9 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         else if (slot == "width") { if (v.width <= 0) continue; value = v.width; }
         else if (slot == "height") { if (v.height <= 0) continue; value = v.height; }
         else if (slot == "prefix") { if (v.prefix.isEmpty()) continue; value = v.prefix; }
+        else if (slot == "audio") { if (v.audio.isEmpty()) continue; value = v.audio; }
+        else if (slot == "frames") { if (v.frames <= 0) continue; value = v.frames; }
+        else if (slot == "seconds") { if (v.frames <= 0 || v.fps <= 0) continue; value = double(v.frames) / v.fps; }
         else continue;
         if (!graph.contains(node)) continue;  // pruned with an unused picture
         put(node, input, value);

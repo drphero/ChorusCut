@@ -83,13 +83,19 @@ public:
     // What to put into a workflow. Pictures are names ComfyUI gave the uploads, in order; fewer
     // than the workflow's Load Image inputs leaves the rest out (see prune).
     // settings: {key: value} for inputs marked "Adjust when generating", over the kept values.
-    struct Values { QString prompt, negative, prefix; qint64 seed = -1; int width = 0, height = 0; QStringList pictures; QJsonObject settings; OptionalInputs optional; };
+    // For a take: audio is the uploaded song excerpt; frames the length, given to a seconds input
+    // as frames / fps.
+    struct Values { QString prompt, negative, prefix, audio; qint64 seed = -1; int width = 0, height = 0, frames = 0; double fps = 24;
+                    QStringList pictures; QJsonObject settings; OptionalInputs optional; };
     // The graph to queue, or an empty object with the reason in error.
     QJsonObject build(const QString& id, const Values& values, QString& error) const;
     // The workflow's own width and height, when its adapter maps them; else 0.
     QSize size(const QString& id) const;
     QString nameOf(const QString& id) const;
     QJsonArray outputs(const QString& id) const;
+    // A take workflow's frame rate, from its video node (CreateVideo's fps, Video Combine's
+    // frame_rate); 24 when it doesn't say.
+    double fps(const QString& id) const;
 
     // The adapter guessed for a graph: {slots: [{slot, node, input, index}], outputs: [...]}.
     static QJsonObject detect(const QJsonObject& graph);
@@ -100,6 +106,10 @@ signals:
 private:
     QDir root;
     QJsonObject library() const;
+    // H3 takes up to nine reference pictures; a take workflow's growing list offers that many.
+    static constexpr int kGrownPictures = 9;
+    int declaredPictures(const QString& id) const;
+    QPair<QString, QString> growingInput(const QString& id) const;
     void saveLibrary(const QJsonObject& value);
     QJsonObject graphOf(const QString& id) const;
     QJsonObject adapterOf(const QString& id) const;

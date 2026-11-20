@@ -346,13 +346,13 @@ int main(int argc, char** argv) {
     }
     run(cmd({{"op", "set"}, {"kind", "reference"}, {"id", boothRef}, {"fields", QVariantMap{{"approved", true}}}}));
     if (needing() != QStringList{"Leo"}) return fail(32, "approving the booth picture did not clear its to-do");
-    // A shot sends each view's chosen picture, picked by its framing: a close-up her face and the
-    // booth, a wide her coat's full body first.
+    // A shot sends each view's chosen picture, picked by its framing: a close-up her face first,
+    // then the coat, her body and the booth; a wide her coat's full body first.
     const int pieceId = v1.value(1).toInt();
     auto sent = [&] { QStringList n; for (const auto& u : plan->shotReferences(pieceId)) n << u.toMap()["name"].toString(); return n.join(", "); };
     const QVariant framingBefore = plan->shot(pieceId)["fields"].toMap().value("framing");
     run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"framing", "cu"}}}}));
-    if (sent() != "mara-face.png, booth.png") return fail(33, "a close-up's pictures: " + sent());
+    if (sent() != "mara-face.png, red-coat.png, mara-body.jpg, booth.png") return fail(33, "a close-up's pictures: " + sent());
     run(cmd({{"op", "set"}, {"kind", "shot"}, {"id", pieceId}, {"fields", QVariantMap{{"framing", "ws"}}}}));
     if (sent() != "red-coat.png, mara-body.jpg, booth.png, mara-face.png") return fail(33, "a wide shot's pictures: " + sent());
     // A look that changes her hair leaves her own face and body out.
@@ -923,6 +923,20 @@ int main(int argc, char** argv) {
         QTest::keyClick(window, Qt::Key_Escape);
         QTest::qWait(150);
         if (!field->property("collapsed").toBool()) return fail(72, "leaving the field did not fold it again");
+        // Clicking empty space on the card leaves the field: it saves, and nothing stays highlighted.
+        {
+            auto input = field->property("input").value<QQuickItem*>();
+            click(input);
+            if (!input->hasActiveFocus()) return fail(72, "clicking the appearance did not start editing it");
+            typeText(" glow");
+            QTest::mouseClick(window, Qt::LeftButton, {}, card->mapToScene(QPointF(card->width() - 6, 6)).toPoint());
+            QTest::qWait(150);
+            if (input->hasActiveFocus()) return fail(72, "clicking empty space did not leave the appearance");
+            if (!plan->item("character", mara)["fields"].toMap()["prompt"].toString().contains("glow"))
+                return fail(72, "leaving the appearance by clicking elsewhere did not save it");
+            editor.undo();
+            if (plan->item("character", mara)["fields"].toMap()["prompt"] != longPrompt) return fail(72, "undo did not bring back the prompt");
+        }
         // The large editor, with what the prompt follows.
         click(findItem(card, "expand_character_prompt"));
         auto promptEditor = window->findChild<QObject*>("promptEditor");

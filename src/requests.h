@@ -41,6 +41,8 @@ public:
 
     // The agent's side, for the MCP tools. forAgent marks what it returns as seen.
     QJsonArray forAgent(bool includeDone);
+    QJsonObject viewContext(int view) const;
+    QJsonObject takeContext(int shot) const;
     bool agentReply(int thread, const QString& text, bool done, QString& error);
     int agentAsk(const QString& question, const QJsonObject& about, const QStringList& options, QString& error);
     // Whether the last push reached a client that can take channel events.

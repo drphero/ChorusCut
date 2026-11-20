@@ -8,12 +8,18 @@ import QtQuick.Layouts
 // workflow, the seed (random, or fixed to repeat or vary a picture), how many pictures, and the
 // workflow's adjustable settings (inputs marked "Adjust when generating" in Workflows). Settings
 // stay with the workflow, picked pictures with the view. Each picture is its own job and arrives
-// waiting to be chosen.
+// waiting to be chosen. Save keeps the picks and the instruction on the view without generating;
+// Ask saves them too, so the agent sees what was picked, and asks it to write the instruction.
+// Settings changed here stay with the workflow whichever way it is left except Cancel. An aspect
+// ratio nobody chose shows the automatic one (3:4 for people, the video's for places) and is not
+// kept, so the next kind of picture gets its own.
+// Clicking outside doesn't close it, so picks are never dropped by a stray click.
 Popup {
     id: gp
     objectName: "generatePopup"
     focus: true
     modal: true
+    closePolicy: Popup.CloseOnEscape
     padding: 20
     anchors.centerIn: Overlay.overlay
     width: Math.min(620, (Overlay.overlay ? Overlay.overlay.width : 620) - 60)
@@ -28,6 +34,7 @@ Popup {
     property string seedText: ""
     property int count: 1
     property var values: ({})          // {key: value} for this workflow's settings
+    property var touched: ({})         // keys the user changed here
     property var prefillSettings: null
     property string note: ""
     property int view: 0
@@ -96,6 +103,7 @@ Popup {
     readonly property bool hasSeed: (editor.workflows.list, workflow ? editor.workflows.hasSlot(workflow, "seed") : false)
     property string ownerName
     signal workflowsRequested()
+    signal askRequested(int view, string fieldLabel)
 
     // prefill: {view, use, workflow, seed, settings: {key: value}, instruction, inputs}, as the
     // strip and Generate again… pass them.
@@ -134,27 +142,74 @@ Popup {
         for (const s of editor.workflows.settings(workflow))
             v[s.key] = prefillSettings && prefillSettings[s.key] !== undefined ? prefillSettings[s.key] : s.value
         values = v
+        touched = {}
+        applyAutoAspect()
         if (workflow) editor.generator.fetchChoices(workflow)
     }
-    function setValue(key, value) { const v = Object.assign({}, values); v[key] = value; values = v }
+    // An aspect ratio nobody chose shows what will be used: 3:4 for people, the video's for places.
+    function isAspect(s) { return s.input === "aspect_ratio" }
+    function aspectIsAuto(s) {
+        return isAspect(s) && !touched[s.key] && gp.shown(s.value) === gp.shown(s.original) && !(prefillSettings && prefillSettings[s.key] !== undefined)
+    }
+    function applyAutoAspect() {
+        if (!workflow || !owner) return
+        let v = null
+        for (const s of editor.workflows.settings(workflow)) {
+            if (!aspectIsAuto(s)) continue
+            const auto = editor.generator.autoAspect(owner, workflow, s.key)
+            if (auto && values[s.key] !== auto) { v = v || Object.assign({}, values); v[s.key] = auto }
+        }
+        if (v) values = v
+    }
+    Connections { target: editor.generator; function onChoicesChanged() { if (gp.opened) gp.applyAutoAspect() } }
+    function setValue(key, value) {
+        const v = Object.assign({}, values); v[key] = value; values = v
+        const t = Object.assign({}, touched); t[key] = true; touched = t
+    }
+    // What stays with the workflow: every setting, except an aspect ratio left to choose itself.
+    function keptValues() {
+        const out = {}
+        for (const s of editor.workflows.settings(workflow))
+            if (values[s.key] !== undefined && (!isAspect(s) || touched[s.key])) out[s.key] = values[s.key]
+        return out
+    }
+    readonly property bool aspectChosen: {
+        for (const s of settings) if (isAspect(s) && (touched[s.key] || (prefillSettings && prefillSettings[s.key] !== undefined))) return true
+        return false
+    }
     function randomSeed() { return String(Math.floor(Math.random() * 281474976710656)) }
     function shown(v) { return typeof v === "number" ? String(Math.round(v * 10000) / 10000) : typeof v === "boolean" ? (v ? "on" : "off") : String(v) }
     function go() {
-        const options = {workflow: workflow, count: count, settings: values, view: view, instruction: instruction}
+        const options = {workflow: workflow, count: count, settings: values, keep: keptValues(), aspectChosen: aspectChosen, view: view, instruction: instruction}
         if (editing) options.inputs = inputs
         if (hasSeed && fixedSeed) options.seed = seedText
         note = editor.generator.generateWith(owner, ownerId, use, options)
         if (note) return
         // The picked pictures stay with the view; the instruction too when asked.
-        if (view) {
-            const v = editor.plan.item("view", view).fields || {}
-            const fields = {}
-            if (editing && JSON.stringify(v.inputs || []) !== JSON.stringify(inputs)) fields.inputs = inputs
-            if (saveFraming && (v.framing || "") !== instruction) fields.framing = instruction
-            if (saveFraming && (v.from || "prompt") !== (editing ? "pictures" : "prompt")) fields.from = editing ? "pictures" : "prompt"
-            if (Object.keys(fields).length) editor.plan.run({op: "set", kind: "view", id: view, fields: fields})
-        }
+        keep(saveFraming)
         close()
+    }
+    // Writes the picks (and, with the instruction, how the view is made) to the view as one undo step.
+    function keep(withInstruction) {
+        if (workflow) {
+            const why = editor.generator.keepSettings(workflow, keptValues())
+            if (why) { note = why; return false }
+        }
+        if (!view) return true
+        const v = editor.plan.item("view", view).fields || {}
+        const fields = {}
+        if (editing && JSON.stringify(v.inputs || []) !== JSON.stringify(inputs)) fields.inputs = inputs
+        if (withInstruction && (v.framing || "") !== instruction) fields.framing = instruction
+        if (withInstruction && (v.from || "prompt") !== (editing ? "pictures" : "prompt")) fields.from = editing ? "pictures" : "prompt"
+        if (Object.keys(fields).length) editor.plan.run({op: "set", kind: "view", id: view, fields: fields})
+        return true
+    }
+    function save() { if (keep(true)) close() }
+    function askAgent() {
+        const id = view, label = editing ? "Instruction" : "Framing"
+        if (!keep(true)) return
+        close()
+        askRequested(id, label)
     }
 
     component Small: Button {
@@ -292,7 +347,20 @@ Popup {
                 ColumnLayout {
                     visible: gp.view !== 0
                     Layout.fillWidth: true; spacing: 4
-                    Text { text: gp.editing ? "Instruction" : "Framing"; color: "#edf1ef"; font.pixelSize: 13; font.weight: Font.DemiBold }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: gp.editing ? "Instruction" : "Framing"; color: "#edf1ef"; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        Text {
+                            objectName: "genAsk"
+                            text: gp.instruction.trim() ? "Ask your agent to improve it…" : "Ask your agent to write it…"
+                            color: genAskMouse.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
+                            MouseArea { id: genAskMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: gp.askAgent() }
+                            ToolTip.visible: genAskMouse.containsMouse; ToolTip.delay: 400
+                            ToolTip.text: gp.editing ? "Saves the picked pictures and this instruction to the view, so your agent can look at them, then asks it"
+                                                     : "Saves this framing to the view, then asks your agent about it"
+                        }
+                    }
                     ScrollView {
                         id: insScroll
                         Layout.fillWidth: true; Layout.preferredHeight: 64
@@ -432,8 +500,17 @@ Popup {
                                 }
                             }
                             Text {
+                                objectName: "genSettingAuto"
+                                readonly property bool auto: (gp.touched, gp.values, gp.aspectIsAuto(row.modelData))
+                                visible: auto
+                                text: "automatic"; color: "#6f8085"; font.pixelSize: 11
+                                MouseArea { id: autoMouse; anchors.fill: parent; hoverEnabled: true }
+                                ToolTip.visible: autoMouse.containsMouse; ToolTip.delay: 300
+                                ToolTip.text: "Chosen for this kind of picture: 3:4 for people and looks, the video's aspect for places. Pick another to choose it yourself."
+                            }
+                            Text {
                                 objectName: "genSettingReset"
-                                visible: row.changed
+                                visible: row.changed && !gp.aspectIsAuto(row.modelData)
                                 text: "Reset"; color: resetMouse.containsMouse ? "#9fe3d0" : "#87dec7"; font.pixelSize: 11
                                 MouseArea { id: resetMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                             onClicked: gp.setValue(row.modelData.key, row.modelData.original) }
@@ -465,7 +542,16 @@ Popup {
                             onClicked: { gp.close(); gp.workflowsRequested() } }
             }
             Item { Layout.fillWidth: true }
-            Small { text: "Cancel"; onClicked: gp.close() }
+            Small { objectName: "genCancel"; text: "Cancel"; onClicked: gp.close() }
+            Small {
+                id: saveButton
+                objectName: "genSave"
+                visible: gp.view !== 0
+                text: "Save"
+                onClicked: gp.save()
+                ToolTip.visible: hovered; ToolTip.delay: 400
+                ToolTip.text: (gp.editing ? "Keep the picked pictures and the instruction on this view" : "Keep the framing on this view") + ", and the settings with the workflow, without generating"
+            }
             Small {
                 objectName: "genGo"
                 active: true

@@ -18,7 +18,7 @@ ApplicationWindow {
 
     // The Project Manager covers the editor at launch when no project is open, and on ⌘O.
     property bool managerOpen: false
-    Component.onCompleted: { restoreWindow(); if (!editor.ready) showManager(); editor.comfy.testConnection() }
+    Component.onCompleted: { editor.releaseFocusOnClick(win); restoreWindow(); if (!editor.ready) showManager(); editor.comfy.testConnection() }
 
     // ---------------------------------------------------------------- window size and place
     Settings {
@@ -64,7 +64,7 @@ ApplicationWindow {
     // The single selection shared by the timeline and the inspector.
     property var selection: null
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function selectRow(row) {
@@ -280,8 +280,11 @@ ApplicationWindow {
     // A reference picture, large; and Generate with a seed, a count and the workflow's settings.
     ReferenceViewer { id: refViewer; onGenerateAgain: (owner, ownerId, prefill) => win.openGenerate(owner, ownerId, prefill) }
     function viewReference(owner, ownerId, index) { refViewer.show(owner, ownerId, index, aboutName(owner, ownerId)) }
-    GeneratePopup { id: generatePopup; onWorkflowsRequested: win.openWorkflows() }
+    GeneratePopup { id: generatePopup; onWorkflowsRequested: win.openWorkflows(); onAskRequested: (view, label) => win.askAgent("view", view, "framing", label) }
     function openGenerate(owner, ownerId, prefill) { if (editor.ready) generatePopup.start(owner, ownerId, prefill, aboutName(owner, ownerId)) }
+    // A shot's takes with options.
+    TakePopup { id: takePopup; onWorkflowsRequested: win.openWorkflows(); onAskRequested: shot => win.askAgent("shot", shot, "prompts", "Video prompt") }
+    function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
 
     // Connecting an agent: Claude Code, Codex or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {
@@ -485,13 +488,15 @@ ApplicationWindow {
                 Rectangle {
                     Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 160; Layout.maximumHeight: win.height * 0.42
                     color: "#0c1216"; radius: 5; clip: true
-                    VideoMonitor { objectName: "monitor"; anchors.fill: parent; anchors.margins: 4; visible: editor.sourceLength > 0 }
+                    // A picture to show: imported video, or a take chosen for any shot.
+                    readonly property bool hasPicture: editor.sourceLength > 0 || editor.plan.shots.some(s => s.chosenTake !== undefined)
+                    VideoMonitor { objectName: "monitor"; anchors.fill: parent; anchors.margins: 4; visible: parent.hasPicture }
                     // Lyric preview: the line under the playhead, words lighting up as they are sung.
                     Item {
                         id: preview
                         anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 24
-                        anchors.verticalCenter: editor.sourceLength > 0 ? undefined : parent.verticalCenter
-                        anchors.bottom: editor.sourceLength > 0 ? parent.bottom : undefined
+                        anchors.verticalCenter: parent.hasPicture ? undefined : parent.verticalCenter
+                        anchors.bottom: parent.hasPicture ? parent.bottom : undefined
                         anchors.bottomMargin: 24
                         height: previewText.implicitHeight
                         readonly property real ms: 1000 * editor.frame / editor.fps
@@ -506,7 +511,7 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.Wrap
                             textFormat: Text.RichText
-                            font.pixelSize: editor.sourceLength > 0 ? 22 : 30
+                            font.pixelSize: preview.parent.hasPicture ? 22 : 30
                             style: Text.Outline; styleColor: "#0c1216"
                             text: {
                                 const l = preview.line

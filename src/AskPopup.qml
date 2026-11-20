@@ -32,6 +32,17 @@ Popup {
         emptyValue = value === undefined || value === null || (Array.isArray(value) ? value.length === 0 : String(value).trim() === "")
         open()
     }
+    // A view made from picked pictures: how many, and what its workflow calls them.
+    function editedView(id) {
+        editor.plan.revision
+        const v = editor.plan.item("view", id)
+        if (!v.fields || v.fields.from !== "pictures") return null
+        const o = editor.generator.viewOptions(id, "ref-edit", "")
+        const n = (o.inputs || []).length
+        if (!n) return null
+        const label = i => o.workflow ? editor.generator.pictureLabel(o.workflow, i) : "picture " + i
+        return {count: n, names: n === 2 ? label(1) + " and " + label(2) : label(1) + ", " + label(2) + "…"}
+    }
     function use(suggestion) {
         text.text = suggestion
         text.forceActiveFocus()
@@ -66,6 +77,28 @@ Popup {
             "Make the light match this location's time of day and lighting, and the concept's grade.",
             "Remove people, vehicles and anything moving, so they don't turn up in every shot here.",
             "Suggest the views this place needs, such as a reverse angle or a detail."]
+        if (kind === "shot" && field === "prompts") {
+            const shot = (editor.plan.revision, editor.plan.shot(itemId))
+            const route = shot.fields ? shot.fields.route : ""
+            const has = shot.fields && shot.fields.prompts && (shot.fields.prompts[route] || "").trim() !== ""
+            const sync = route === "h3-lipsync"
+            return has ? [
+                "Check this prompt against the shot's pictures and lyrics, and make the timing match the take.",
+                sync ? "Make the singing land on the sung words, second by second, with the mouth clearly visible." : "Make the action continuous through the handles, so the cut can be trimmed.",
+                "Name every picture the way the workflow does, and say what each one keeps steady.",
+                "Make the camera move and framing match the shot's fields."] : [
+                (sync ? "Write this shot's lip-sync video prompt" : "Write this shot's video prompt") + " in H3's reference-to-video format, from its fields, pictures and lyrics."]
+        }
+        if (kind === "view" && field === "framing" && editedView(itemId)) {
+            const ev = editedView(itemId)
+            const look = "Look at the " + (ev.count === 1 ? "picked picture" : ev.count + " picked pictures")
+            return empty ? [
+                look + " and write the instruction: what to make from " + (ev.count === 1 ? "it" : "them, naming each as " + ev.names) + ", what to keep exactly and what to change."] : [
+                look + " and improve this instruction" + (ev.count === 1 ? "" : ", naming each as " + ev.names + ",") + " so it says exactly what to keep and what to change.",
+                "Make it a clean reference: the whole subject in frame, plain backdrop, soft even light.",
+                "Make it a turnaround sheet: the same subject four times side by side, front, three-quarter, side and back, plain white background.",
+                "Write it the way this view's workflow expects (how it names its pictures)."]
+        }
         if (kind === "view" && field === "framing") return empty ? [
             "Write this view's framing in one line: angle, distance, backdrop and light."] : [
             "Make it a clean reference: the whole subject in frame, plain backdrop, soft even light.",

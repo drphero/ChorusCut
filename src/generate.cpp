@@ -149,6 +149,31 @@ QVariantMap Generator::viewOptions(int view, const QString& wantedUse, const QSt
             {"name", f["name"].toString()}};
 }
 
+QString Generator::autoAspect(const QString& owner, const QString& workflow, const QString& key) const {
+    QString want = "3:4";
+    if (owner == "location" || owner == "shot") {
+        want = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
+        if (want.isEmpty()) want = "16:9";
+    }
+    for (const auto& sv : editor->workflows()->settings(workflow)) {
+        const auto s = sv.toMap();
+        if (s["key"] != key || s["input"] != "aspect_ratio") continue;
+        for (const auto& c : choiceMap.value(s["classType"].toString() + "/aspect_ratio").toList()) {
+            const QString choice = c.toString();
+            if (choice == want || choice.startsWith(want + " ") || choice.startsWith(want + "(")) return choice;
+        }
+    }
+    return {};
+}
+
+QString Generator::keepSettings(const QString& workflow, const QVariantMap& values) {
+    auto flows = editor->workflows();
+    QString error;
+    const QJsonObject checked = flows->checkValues(workflow, values, error);
+    if (!error.isEmpty()) return error;
+    return checked.isEmpty() ? QString() : flows->setValues(workflow, checked);
+}
+
 QString Generator::pictureLabel(const QString& workflow, int n) const {
     QString pattern = editor->workflows()->pictureName(workflow);
     if (pattern.isEmpty()) {
@@ -157,7 +182,7 @@ QString Generator::pictureLabel(const QString& workflow, int n) const {
         const QString server = editor->comfy()->url();
         for (const QString& cls : editor->workflows()->classes(workflow)) text += info.value(server + "|" + cls).text + "\n";
         static const QList<QPair<QRegularExpression, QString>> known = {
-            {QRegularExpression("<Picture\\s*1>"), "<Picture {n}>"}, {QRegularExpression("@Image1\\b"), "@Image{n}"},
+            {QRegularExpression("<Picture\\s*([1inN]|\\{?n\\}?)>"), "<Picture {n}>"}, {QRegularExpression("@Image1\\b"), "@Image{n}"},
             {QRegularExpression("\\bPicture 1\\b"), "Picture {n}"}, {QRegularExpression("\\b[Ii]mage 1\\b"), "image {n}"}};
         for (const auto& [re, p] : known) if (re.match(text).hasMatch()) { pattern = p; break; }
     }
@@ -227,7 +252,19 @@ QString Generator::generateWith(const QString& ownerIn, int ownerIdIn, const QSt
     const QJsonObject chosen = flows->checkValues(workflow, o.value("settings").toMap(), error);
     if (!error.isEmpty()) return error;
     if (!ensureTable()) return "Could not record the job in the project.";
-    if (!chosen.isEmpty()) { error = flows->setValues(workflow, chosen); if (!error.isEmpty()) return error; }
+    // What stays with the workflow: the settings the user changed ("keep"), else all of them.
+    if (o.contains("keep")) { error = keepSettings(workflow, o.value("keep").toMap()); if (!error.isEmpty()) return error; }
+    else if (!chosen.isEmpty()) { error = flows->setValues(workflow, chosen); if (!error.isEmpty()) return error; }
+    // The aspect ratio is the user's when they chose it now (the dialog says so) or kept one with
+    // the workflow; otherwise it is picked for the kind of picture when queueing.
+    bool aspectChosen = false;
+    for (const auto& v : flows->settings(workflow)) {
+        const auto st = v.toMap();
+        if (st["input"] != "aspect_ratio") continue;
+        aspectChosen |= st["value"] != st["original"];
+        if (o.contains("aspectChosen")) aspectChosen |= o.value("aspectChosen").toBool();
+        else aspectChosen |= chosen.contains(st["key"].toString());
+    }
     // What the pictures were made with, as the reference will show it.
     QJsonArray shown;
     QJsonObject used;
@@ -258,7 +295,7 @@ QString Generator::generateWith(const QString& ownerIn, int ownerIdIn, const QSt
         job.seed = seed >= 0 ? std::min(kMaxSeed, first + i) : i == 0 ? first : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
         job.settings = used;
         job.shown = shown;
-        for (auto it = chosen.begin(); it != chosen.end(); ++it) job.aspectChosen |= it.key().endsWith("/aspect_ratio");
+        job.aspectChosen = aspectChosen;
         list.append(job);
         say(list.last(), "uploading", "Preparing…");
         made << job.id;
@@ -273,6 +310,247 @@ QString Generator::generateWith(const QString& ownerIn, int ownerIdIn, const QSt
         }
     });
     return {};
+}
+
+// ---------------------------------------------------------------- takes
+
+namespace {
+// A shot's route decides the kind of take: H3 lip-sync sings to the song, reference-to-video
+// doesn't. Other routes (stills, first and last frame) come later.
+QString takeUse(const QString& route) { return route == "h3-lipsync" ? "take-sync" : route == "ref2v" ? "take-ref" : QString(); }
+constexpr double kDefaultHandles = 0.5;
+}
+
+int Generator::takeFrames(const QString& workflow, double seconds, double fps, double& handles, QString& why) const {
+    int lo = 1, step = 1, hi = 0;
+    const QString server = editor->comfy()->url();
+    for (const QString& cls : editor->workflows()->classes(workflow)) {
+        const auto ni = info.value(server + "|" + cls);
+        if (ni.lengthStep > 0) { lo = qMax(1, ni.lengthMin); step = ni.lengthStep; hi = ni.lengthMax; break; }
+    }
+    // One generation holds about 15 s (H3's 362 frames at 24 fps), whatever the node allows.
+    const int most = int(std::floor(editor->plan()->maxFrames("ref2v") / editor->fps() * fps + 1e-6));
+    const int limit = hi > 0 ? qMin(hi, most) : most;
+    auto snap = [&](double s) {
+        const int want = qMax(lo, int(std::ceil(s * fps - 1e-6)));
+        return lo + int(std::ceil(double(want - lo) / step - 1e-9)) * step;
+    };
+    if (snap(seconds) > limit) {
+        why = QString("This shot is longer than one take can be (%1 s): split it.").arg(QString::number(limit / fps, 'f', 1));
+        return 0;
+    }
+    // Handles shrink to fit the limit.
+    while (handles > 0 && snap(seconds + 2 * handles) > limit) handles = qMax(0.0, handles - 1.0 / fps);
+    return snap(seconds + 2 * handles);
+}
+
+QVariantMap Generator::takeOptions(int shotId, const QString& wanted, double handles) const {
+    auto plan = editor->plan();
+    auto flows = editor->workflows();
+    const auto shot = plan->shot(shotId);
+    if (shot.isEmpty()) return {{"ready", false}, {"why", "That shot is gone."}};
+    const auto f = shot["fields"].toMap();
+    const QString route = f["route"].toString();
+    const QString use = takeUse(route);
+    QVariantMap out{{"route", route}, {"use", use}, {"lipSync", use == "take-sync"}, {"workflows", QVariantList{}}};
+    QString why;
+    if (use.isEmpty())
+        why = route.isEmpty() ? "Choose the shot's route: H3 lip-sync or reference-to-video."
+                              : "Takes are made with H3 lip-sync or reference-to-video for now. Change the shot's route to one of them.";
+    QString workflow;
+    if (!use.isEmpty()) {
+        out["workflows"] = flows->ready(use);
+        workflow = !wanted.isEmpty() && flows->serves(wanted, use) ? wanted : flows->forUse(use);
+        if (workflow.isEmpty() && why.isEmpty())
+            why = use == "take-sync" ? "Set up a workflow for takes singing to the song (Workflows…)." : "Set up a workflow for takes from reference pictures (Workflows…).";
+    }
+    out["workflow"] = workflow;
+    out["workflowName"] = workflow.isEmpty() ? QString() : flows->nameOf(workflow);
+    out["prompt"] = f["prompts"].toMap().value(route).toString();
+    QVariantList pictures;
+    const auto picks = plan->shotPictures(shotId)["picked"].toList();
+    for (int i = 0; i < picks.size(); ++i) {
+        const auto ref = plan->item("reference", picks[i].toMap()["id"].toInt());
+        if (ref.isEmpty()) continue;
+        pictures.append(QVariantMap{{"id", ref["id"]}, {"url", ref["url"]}, {"label", workflow.isEmpty() ? QString("<Picture %1>").arg(i + 1) : pictureLabel(workflow, i + 1)},
+                                    {"viewName", ref["viewName"]}});
+    }
+    out["pictures"] = pictures;
+    const int most = workflow.isEmpty() ? 0 : flows->pictureCount(workflow);
+    out["maxPictures"] = most;
+    if (why.isEmpty() && pictures.size() > most) why = QString("%1 takes at most %2 pictures; this shot has %3.").arg(flows->nameOf(workflow)).arg(most).arg(pictures.size());
+    if (why.isEmpty() && out["prompt"].toString().trimmed().isEmpty()) why = "Write the shot's video prompt first, or ask your agent to.";
+    const double fps = workflow.isEmpty() ? 24 : flows->fps(workflow);
+    double h = handles >= 0 ? handles : kDefaultHandles;
+    const double seconds = (shot["end"].toInt() - shot["start"].toInt()) / editor->fps();
+    QString tooLong;
+    const int frames = takeFrames(workflow, seconds, fps, h, tooLong);
+    if (why.isEmpty() && !tooLong.isEmpty()) why = tooLong;
+    out["handles"] = h;
+    out["frames"] = frames;
+    out["fps"] = fps;
+    out["seconds"] = frames / fps;
+    out["shotSeconds"] = seconds;
+    out["why"] = why;
+    out["ready"] = why.isEmpty();
+    return out;
+}
+
+QString Generator::generateTake(int shotId, const QVariantMap& o) {
+    auto flows = editor->workflows();
+    const auto opts = takeOptions(shotId, o.value("workflow").toString(), o.contains("handles") ? o.value("handles").toDouble() : -1);
+    const QString prompt = o.contains("prompt") ? o.value("prompt").toString().trimmed() : opts["prompt"].toString().trimmed();
+    QString why = opts["why"].toString();
+    if (why == "Write the shot's video prompt first, or ask your agent to." && !prompt.isEmpty()) why.clear();
+    if (!why.isEmpty()) return why;
+    if (prompt.isEmpty()) return "Write the shot's video prompt first, or ask your agent to.";
+    const QString workflow = opts["workflow"].toString();
+    constexpr qint64 kMaxSeed = (qint64(1) << 53) - 1;
+    qint64 seed = -1;
+    const QString given = o.value("seed").toString().trimmed();
+    if (!given.isEmpty()) {
+        bool ok = false;
+        seed = given.toLongLong(&ok);
+        if (!ok || seed < 0 || seed > kMaxSeed) return "The seed must be a whole number from 0 to " + QString::number(kMaxSeed) + ".";
+    }
+    const int count = o.contains("count") ? o.value("count").toInt() : 1;
+    if (count < 1 || count > 8) return "Generate 1 to 8 takes at a time.";
+    QString error;
+    const QJsonObject chosen = flows->checkValues(workflow, o.value("settings").toMap(), error);
+    if (!error.isEmpty()) return error;
+    if (!ensureTable()) return "Could not record the job in the project.";
+    if (o.contains("keep")) { error = keepSettings(workflow, o.value("keep").toMap()); if (!error.isEmpty()) return error; }
+    QJsonArray shown;
+    QJsonObject used;
+    bool aspectChosen = o.value("aspectChosen").toBool();
+    for (const auto& v : flows->settings(workflow)) {
+        const auto st = v.toMap();
+        const QJsonValue value = chosen.contains(st["key"].toString()) ? chosen[st["key"].toString()] : QJsonValue::fromVariant(st["value"]);
+        used[st["key"].toString()] = value;
+        shown.append(QJsonObject{{"key", st["key"].toString()}, {"label", st["label"].toString()}, {"value", value}});
+        if (st["input"] == "aspect_ratio") aspectChosen |= st["value"] != st["original"];
+    }
+    QStringList pictures;
+    QList<int> inputs;
+    for (const auto& p : opts["pictures"].toList()) {
+        inputs << p.toMap()["id"].toInt();
+        pictures << editor->current()->dir.filePath(editor->plan()->item("reference", inputs.last())["file"].toString());
+    }
+    const auto shot = editor->plan()->shot(shotId);
+    const qint64 first = seed >= 0 ? seed : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+    QList<int> made;
+    for (int i = 0; i < count; ++i) {
+        Job job;
+        job.id = ++serial;
+        job.owner = "shot";
+        job.ownerId = shotId;
+        job.use = opts["use"].toString();
+        job.workflow = workflow;
+        job.workflowName = flows->nameOf(workflow);
+        job.prompt = prompt;
+        job.inputs = inputs;
+        job.hasSeed = flows->hasSlot(workflow, "seed");
+        job.seed = seed >= 0 ? std::min(kMaxSeed, first + i) : i == 0 ? first : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+        job.settings = used;
+        job.shown = shown;
+        job.aspectChosen = aspectChosen;
+        job.locked = job.use == "take-sync";
+        job.handles = o.contains("handles") ? o.value("handles").toDouble() : kDefaultHandles;
+        job.takeFps = opts["fps"].toDouble();
+        job.anchor = shot["start"].toInt();
+        list.append(job);
+        say(list.last(), "uploading", "Preparing…");
+        made << job.id;
+    }
+    // The length waits for ComfyUI's node details (its frame grid); then the excerpt, uploads, queue.
+    withInfo(workflow, [this, made, pictures] { for (int id : made) startTake(id, pictures); });
+    return {};
+}
+
+void Generator::startTake(int id, const QStringList& pictures) {
+    Job* job = find(id);
+    if (!job) return;
+    const auto shot = editor->plan()->shot(job->ownerId);
+    if (shot.isEmpty()) { failJob(id, "The shot was removed."); return; }
+    const double seconds = (shot["end"].toInt() - shot["start"].toInt()) / editor->fps();
+    QString why;
+    job->frames = takeFrames(job->workflow, seconds, job->takeFps, job->handles, why);
+    if (!job->frames) { failJob(id, why); return; }
+    // The take starts its handle before the shot; any rounding onto the grid goes at its end.
+    job->anchor = shot["start"].toInt() - int(std::lround(job->handles * editor->fps()));
+    QStringList files = pictures;
+    if (job->use == "take-sync") {
+        const QString folder = editor->current()->dir.filePath("Jobs");
+        QDir().mkpath(folder);
+        job->excerpt = QDir(folder).filePath(QString("excerpt-shot%1-%2.wav").arg(job->ownerId).arg(job->anchor));
+        const QString problem = editor->writeExcerpt(job->anchor / editor->fps(), job->frames / job->takeFps, job->excerpt);
+        if (!problem.isEmpty()) { failJob(id, problem); return; }
+        files << job->excerpt;
+    }
+    say(*job, "uploading", files.isEmpty() ? "Preparing…" : job->use == "take-sync" ? "Uploading pictures and the song…" : "Uploading pictures…");
+    upload(id, files, {});
+}
+
+void Generator::collectTake(int id, const QJsonObject& outputs) {
+    Job* job = find(id);
+    if (!job) return;
+    // The saved video: Save Video lists it with the pictures, Video Combine as "gifs".
+    QJsonObject file;
+    const QJsonArray wanted = editor->workflows()->outputs(job->workflow);
+    static const QStringList videoTypes{"mp4", "webm", "mov", "mkv", "m4v", "gif", "webp"};
+    for (auto it = outputs.begin(); it != outputs.end() && file.isEmpty(); ++it) {
+        if (!wanted.isEmpty() && !wanted.contains(it.key())) continue;
+        for (const char* key : {"images", "gifs", "videos"})
+            for (const auto& v : it.value().toObject()[key].toArray())
+                if (file.isEmpty() && videoTypes.contains(QFileInfo(v.toObject()["filename"].toString()).suffix().toLower())) file = v.toObject();
+    }
+    if (file.isEmpty()) { failJob(id, "ComfyUI finished without a video. Check the workflow's Save Video node."); return; }
+    say(*job, "collecting", "Downloading the take…");
+    QUrlQuery query;
+    query.addQueryItem("filename", file["filename"].toString());
+    query.addQueryItem("subfolder", file["subfolder"].toString());
+    query.addQueryItem("type", file["type"].toString());
+    auto reply = net.get(editor->comfy()->request("/view?" + query.toString(QUrl::FullyEncoded)));
+    const QString folder = editor->current()->dir.filePath("Jobs");
+    QDir().mkpath(folder);
+    const QString path = QDir(folder).filePath(job->promptId + "." + QFileInfo(file["filename"].toString()).suffix().toLower());
+    const int mine = epoch;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id, path, mine] {
+        reply->deleteLater();
+        if (mine != epoch) return;
+        Job* job = find(id);
+        if (!job) return;
+        QFile out(path);
+        if (reply->error() != QNetworkReply::NoError) { failJob(id, "Could not download the take: " + ComfyJobs::errorOf(reply)); return; }
+        if (!out.open(QIODevice::WriteOnly) || out.write(reply->readAll()) < 0) { failJob(id, "Could not save the take in the project."); return; }
+        out.close();
+        auto plan = editor->plan();
+        if (plan->shot(job->ownerId).isEmpty()) { failJob(id, "The shot was removed before its take arrived; it is in the project's Jobs folder."); return; }
+        // What arrived, measured: a workflow may round the length its own way.
+        const QString thumb = path + ".jpg";
+        const auto probe = Editor::probeVideo(path, thumb);
+        if (probe.isEmpty()) { failJob(id, "The take ComfyUI made can't be read."); return; }
+        QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use},
+                               {"prompt", job->prompt}, {"promptId", job->promptId}, {"handles", job->handles},
+                               {"songFrom", job->anchor / editor->fps()}, {"songSeconds", job->frames / job->takeFps}};
+        if (job->hasSeed) generation["seed"] = double(job->seed);
+        if (!job->shown.isEmpty()) generation["settings"] = job->shown.toVariantList();
+        QVariantList inputs;
+        for (int i : job->inputs) inputs << i;
+        generation["inputs"] = inputs;
+        const double rate = probe["fps"].toDouble() > 0 ? probe["fps"].toDouble() : job->takeFps;
+        const auto r = plan->run({{"op", "take.add"}, {"shot", job->ownerId}, {"path", path}, {"thumb", thumb},
+                                  {"frames", probe["frames"].toInt() > 0 ? probe["frames"].toInt() : job->frames}, {"fps", rate},
+                                  {"anchor", job->anchor}, {"locked", job->locked}, {"width", probe["width"]}, {"height", probe["height"]},
+                                  {"generation", generation}});
+        if (!r.value("ok").toBool()) { failJob(id, r.value("error").toString()); return; }
+        QFile::remove(path);
+        QFile::remove(thumb);
+        if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
+        record(*job, "done");
+        for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
+        emit changed();
+    });
 }
 
 QString Generator::composeSheet(int view, const QVariantList& panels) {
@@ -391,6 +669,13 @@ void Generator::fetchChoices(const QString& workflow) {
                     for (auto it = inputs.begin(); it != inputs.end(); ++it) {
                         const auto def = it.value().toArray();
                         ni.text += " " + def.at(1).toObject()["tooltip"].toString();
+                        // A video's length and the grid it snaps to.
+                        if ((it.key() == "length" || it.key() == "num_frames" || it.key() == "video_length" || it.key() == "frames") && def.at(0).toString() == "INT") {
+                            const auto o = def.at(1).toObject();
+                            ni.lengthMin = o["min"].toInt(1);
+                            ni.lengthStep = qMax(1, o["step"].toInt(1));
+                            ni.lengthMax = o["max"].toInt(0);
+                        }
                         // A growing list's template describes each entry.
                         ni.text += " " + QString::fromUtf8(QJsonDocument(def.at(1).toObject()["template"].toObject()).toJson(QJsonDocument::Compact));
                         // A combo input is [[choice, ...], {...}]; newer servers write ["COMBO", {options: [...]}].
@@ -459,34 +744,31 @@ void Generator::submit(int id, const QStringList& names) {
     // A workflow shaped by an aspect-ratio choice rather than width and height: the choice that
     // matches, 3:4 for people and looks, the video's aspect for places, unless the user chose.
     if (!job->aspectChosen) {
-        QString want = "3:4";
-        if (job->owner == "location") {
-            want = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
-            if (want.isEmpty()) want = "16:9";
-        }
         for (const auto& sv : flows->settings(job->workflow)) {
-            const auto s = sv.toMap();
-            if (s["input"] != "aspect_ratio") continue;
-            for (const auto& c : choiceMap.value(s["classType"].toString() + "/aspect_ratio").toList()) {
-                const QString choice = c.toString();
-                if (choice == want || choice.startsWith(want + " ") || choice.startsWith(want + "(")) {
-                    job->settings[s["key"].toString()] = choice;
-                    for (int i = 0; i < job->shown.size(); ++i)
-                        if (job->shown[i].toObject()["key"].toString() == s["key"].toString()) { auto o = job->shown[i].toObject(); o["value"] = choice; job->shown[i] = o; }
-                    break;
-                }
-            }
+            const QString key = sv.toMap()["key"].toString();
+            const QString choice = autoAspect(job->owner, job->workflow, key);
+            if (choice.isEmpty()) continue;
+            job->settings[key] = choice;
+            for (int i = 0; i < job->shown.size(); ++i)
+                if (job->shown[i].toObject()["key"].toString() == key) { auto o = job->shown[i].toObject(); o["value"] = choice; job->shown[i] = o; }
         }
     }
     v.settings = job->settings;
     v.optional = optionalFor(job->workflow);
     v.prefix = "ChorusCut/reference";
+    if (job->owner == "shot") {
+        // The song excerpt goes up last, after the pictures.
+        if (job->use == "take-sync" && !v.pictures.isEmpty()) v.audio = v.pictures.takeLast();
+        v.frames = job->frames;
+        v.fps = job->takeFps;
+        v.prefix = "ChorusCut/take";
+    }
     // Locations take the video's frame; people and looks a portrait. The workflow's own size
     // sets the scale its model prefers.
     const QSize base = flows->size(job->workflow);
     if (base.width() > 0 && base.height() > 0) {
         double ratio = 3.0 / 4.0;
-        if (job->owner == "location") {
+        if (job->owner == "location" || job->owner == "shot") {
             const QString aspect = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
             const auto parts = aspect.split(':');
             ratio = parts.size() == 2 && parts[1].toDouble() > 0 ? parts[0].toDouble() / parts[1].toDouble() : 16.0 / 9.0;
@@ -525,8 +807,10 @@ void Generator::submit(int id, const QStringList& names) {
         const QJsonObject detail{{"owner", job->owner}, {"ownerId", job->ownerId}, {"use", job->use}, {"workflow", job->workflow},
                                  {"workflowName", job->workflowName}, {"prompt", job->prompt}, {"seed", double(job->seed)}, {"hasSeed", job->hasSeed},
                                  {"settings", job->shown}, {"graph", job->graph}, {"view", job->view}, {"instruction", job->instruction},
-                                 {"inputs", [&] { QJsonArray a; for (int i : job->inputs) a.append(i); return a; }()}};
-        for (const QVariant& value : {QVariant(job->promptId), QVariant("reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
+                                 {"inputs", [&] { QJsonArray a; for (int i : job->inputs) a.append(i); return a; }()},
+                                 {"frames", job->frames}, {"takeFps", job->takeFps}, {"anchor", job->anchor}, {"locked", job->locked},
+                                 {"handles", job->handles}};
+        for (const QVariant& value : {QVariant(job->promptId), QVariant(job->owner == "shot" ? "take" : "reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
                                       QVariant(QDateTime::currentSecsSinceEpoch()), QVariant("queued"),
                                       QVariant(QString::fromUtf8(QJsonDocument(detail).toJson(QJsonDocument::Compact))), QVariant(clientId)})
             q.addBindValue(value);
@@ -607,6 +891,7 @@ void Generator::check() {
 void Generator::collect(int id, const QJsonObject& outputs) {
     Job* job = find(id);
     if (!job || job->state == "collecting") return;
+    if (job->owner == "shot") { collectTake(id, outputs); return; }
     // Saved pictures, from the workflow's output nodes; previews only when nothing was saved.
     QJsonArray images, previews;
     const QJsonArray wanted = editor->workflows()->outputs(job->workflow);
@@ -744,6 +1029,12 @@ void Generator::retry(int id) {
     for (const auto& v : job->shown) settings[v.toObject()["key"].toString()] = v.toObject()["value"].toVariant();
     QVariantList inputs;
     for (int i : job->inputs) inputs << i;
+    if (job->owner == "shot") {
+        const QString why = generateTake(ownerId, {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings},
+                                                   {"prompt", job->prompt}, {"handles", job->handles}, {"aspectChosen", true}});
+        if (why.isEmpty()) dismiss(id); else say(*find(id), "failed", why);
+        return;
+    }
     QVariantMap again{{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}, {"view", job->view},
                       {"instruction", job->instruction}};
     if (job->use == "ref-edit") again["inputs"] = inputs;
@@ -757,7 +1048,7 @@ void Generator::resume() {
     auto project = editor->current();
     if (!project || !project->db.tables().contains("jobs") || !ensureTable()) return;
     QSqlQuery q(project->db);
-    if (!q.exec("SELECT prompt_id, server, detail, state FROM jobs WHERE kind='reference' AND state IN ('queued','running') ORDER BY submitted"))
+    if (!q.exec("SELECT prompt_id, server, detail, state FROM jobs WHERE kind IN ('reference','take') AND state IN ('queued','running') ORDER BY submitted"))
         return;
     while (q.next()) {
         const auto d = QJsonDocument::fromJson(q.value(2).toString().toUtf8()).object();
@@ -778,6 +1069,11 @@ void Generator::resume() {
         job.shown = d["settings"].toArray();
         for (const auto& v : job.shown) job.settings[v.toObject()["key"].toString()] = v.toObject()["value"];
         job.graph = d["graph"].toObject();
+        job.frames = d["frames"].toInt();
+        job.takeFps = d["takeFps"].toDouble(24);
+        job.anchor = d["anchor"].toInt();
+        job.locked = d["locked"].toBool();
+        job.handles = d["handles"].toDouble(0.5);
         if (q.value(1).toString() != editor->comfy()->url()) {
             job.state = "failed";
             job.text = "Started on " + q.value(1).toString() + ", which is not the current ComfyUI.";

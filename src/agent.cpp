@@ -295,21 +295,32 @@ QJsonObject AgentBridge::planView() const {
         o["lyricRows"] = rows;
         if (s["stale"].toBool()) o["stale"] = true;
         if (s["problems"].toInt()) o["openChecks"] = s["problems"].toInt();
+        // Its takes (videos made for it); the user chooses which one the cut plays.
+        QJsonArray takes;
+        for (const auto& tv : plan->takesFor(s["id"].toInt())) {
+            const auto t = tv.toMap();
+            takes.append(QJsonObject{{"id", t["id"].toInt()}, {"number", t["number"].toInt()}, {"chosen", t["chosen"].toBool()},
+                                     {"lipSync", t["lipSync"].toBool()}, {"seconds", t["seconds"].toDouble()},
+                                     {"prompt", t["generation"].toMap()["prompt"].toString()}});
+        }
+        if (!takes.isEmpty()) o["takes"] = takes;
         shots.append(o);
     }
     // The user's image workflows, so prompts and instructions suit the model that will read them.
-    QJsonArray workflows;
+    QJsonArray workflows, videoWorkflows;
     auto flows = editor->workflows();
     for (const auto& v : flows->list()) {
         const auto w = v.toMap();
         if (!w["ready"].toBool()) continue;
+        const bool video = w["use"].toString().startsWith("take-");
         QJsonObject o{{"name", w["name"].toString()}, {"use", w["useLabel"].toString()}, {"isDefault", w["isDefault"].toBool()},
                       {"maxPictures", flows->pictureCount(w["id"].toString())},
                       {"picturesAreCalled", editor->generator()->pictureLabel(w["id"].toString(), 1) + ", " + editor->generator()->pictureLabel(w["id"].toString(), 2) + ", …"}};
         if (!flows->notes(w["id"].toString()).isEmpty()) o["userNotes"] = flows->notes(w["id"].toString());
-        workflows.append(o);
+        (video ? videoWorkflows : workflows).append(o);
     }
-    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"arc", arc}, {"shots", shots}, {"imageWorkflows", workflows}};
+    return {{"concept", concept}, {"characters", characters}, {"locations", locations}, {"arc", arc}, {"shots", shots}, {"imageWorkflows", workflows},
+            {"videoWorkflows", videoWorkflows}};
 }
 
 QJsonObject AgentBridge::checks() const {

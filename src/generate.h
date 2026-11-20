@@ -50,6 +50,19 @@ public:
     // Why a workflow cannot make this picture now, or "".
     Q_INVOKABLE QString whyNot(const QString& owner, int ownerId, const QString& use, const QString& workflow) const;
     QVariantMap choices() const { return choiceMap; }
+    // The aspect-ratio choice made automatically for this kind of picture (3:4 for people and
+    // looks, the video's aspect for places) for the setting with this key, or "" when the setting
+    // is not an aspect ratio or ComfyUI's choices aren't known yet.
+    Q_INVOKABLE QString autoAspect(const QString& owner, const QString& workflow, const QString& key) const;
+    // What a take for this shot would be: {route, use ("take-ref" or "take-sync"), workflow,
+    // workflowName, workflows, prompt (the shot's for its route), pictures: [{id, url, label}],
+    // handles (seconds each side), frames, seconds, fps (the take's), lipSync, why, ready}.
+    Q_INVOKABLE QVariantMap takeOptions(int shot, const QString& workflow = {}, double handles = -1) const;
+    // Queues takes for a shot. options: {workflow, prompt (else the shot's), handles (seconds each
+    // side, default 0.5), seed, count, settings, keep, aspectChosen}. "" when queued, else why not.
+    Q_INVOKABLE QString generateTake(int shot, const QVariantMap& options = {});
+    // Keeps settings chosen in the Generate dialog with the workflow without generating. "" or why not.
+    Q_INVOKABLE QString keepSettings(const QString& workflow, const QVariantMap& values);
     Q_INVOKABLE void fetchChoices(const QString& workflow);
     // Lays the chosen pictures of the given views side by side, as one picture for a sheet view
     // (made on this computer, no ComfyUI), chosen at once; one undo step. "" or why not.
@@ -77,6 +90,12 @@ private:
         bool aspectChosen = false;  // the user set the workflow's aspect-ratio choice
         QList<int> inputs;  // reference ids, in order
         QString instruction;
+        // A take: its length in the take's frames and rate, where its first frame sits in the
+        // project, whether it is locked to the song, and the song excerpt sent with it.
+        int frames = 0, anchor = 0;
+        double takeFps = 24, handles = 0.5;
+        bool locked = false;
+        QString excerpt;
         int misses = 0, waiting = 0;
     };
     Editor* editor;
@@ -85,7 +104,13 @@ private:
     QVariantMap choiceMap;
     QSet<QString> asked;
     // Per server and node type: optional inputs and descriptions, from /object_info.
-    struct NodeInfo { QSet<QString> optional; QString text; };
+    // lengthStep: a video length input's grid (H3: 5 + 17n frames), from its min, step and max.
+    struct NodeInfo { QSet<QString> optional; QString text; int lengthMin = 0, lengthStep = 0, lengthMax = 0; };
+    // The frames a take of this many seconds (with handles) gets: rounded up onto the workflow's
+    // grid. 0 with why when it can't fit.
+    int takeFrames(const QString& workflow, double seconds, double fps, double& handles, QString& why) const;
+    void startTake(int id, const QStringList& pictures);
+    void collectTake(int id, const QJsonObject& outputs);
     QHash<QString, NodeInfo> info;
     QHash<QString, int> waiting;  // node types being fetched, by server|type
     QList<std::function<void()>> afterInfo;

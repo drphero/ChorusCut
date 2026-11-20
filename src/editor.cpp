@@ -7,6 +7,10 @@
 #include <cmath>
 #include <QFutureWatcher>
 #include <QtConcurrentRun>
+#include <QQuickWindow>
+#include <QMouseEvent>
+#include <QJsonDocument>
+#include <QJsonArray>
 
 static QImage decode(Mlt::Frame& frame, QSize size) {
     int width = size.width(), height = size.height();
@@ -57,6 +61,15 @@ Editor::Editor() {
     connect(&thumbTimer, &QTimer::timeout, this, &Editor::saveThumbnail);
     connect(&lyricState, &Lyrics::changed, this, [this] { if (peaksReady()) thumbTimer.start(); });
     connect(this, &Editor::peaksChanged, this, [this] { if (peaksReady()) saveThumbnail(); });
+    // Choosing, adding or moving takes changes what the cut plays.
+    connect(planState, &Plan::changed, this, [this] {
+        if (!project || !timeline) return;
+        const QString key = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes())).toJson(QJsonDocument::Compact));
+        if (key == takesKey) return;
+        const int at = cursor;
+        build();
+        seek(at);
+    });
 }
 
 Editor::~Editor() { saveThumbnail(); stop(); }
@@ -162,6 +175,33 @@ void Editor::createProject(const QUrl& parent, const QString& name, const QUrl& 
     }));
 }
 
+namespace {
+// Watches presses before the window delivers them: one outside the focused text field takes the
+// keyboard away from it (its focus scope, such as an open dialog, keeps it), so the field
+// commits and its selection clears. A press on another field then focuses that one as usual.
+class FocusRelease : public QObject {
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() != QEvent::MouseButtonPress) return false;
+        auto* window = qobject_cast<QQuickWindow*>(watched);
+        QQuickItem* focused = window ? window->activeFocusItem() : nullptr;
+        if (!focused || !(focused->inherits("QQuickTextInput") || focused->inherits("QQuickTextEdit"))) return false;
+        const auto* press = static_cast<QMouseEvent*>(event);
+        if (!focused->contains(focused->mapFromScene(press->scenePosition()))) focused->setFocus(false);
+        return false;
+    }
+};
+}
+
+void Editor::releaseFocusOnClick(QObject* window) {
+    auto* w = qobject_cast<QQuickWindow*>(window);
+    if (!w || w->findChild<QObject*>("focusRelease", Qt::FindDirectChildrenOnly)) return;
+    auto* filter = new FocusRelease(w);
+    filter->setObjectName("focusRelease");
+    w->installEventFilter(filter);
+}
+
 bool Editor::openProject(const QUrl& folder) {
     if (!folder.isLocalFile()) { info("Choose a local project folder"); return false; }
     QString error;
@@ -231,6 +271,29 @@ void Editor::build() {
     audio.set("hide",1);  // MLT hide-video flag.
     timeline->set_track(audio,0);
     timeline->set_track(picture,1);
+    // Each shot's chosen take on V1 and V2, silent: the song is the soundtrack. With no
+    // transitions MLT shows the topmost track that has a picture, so V2 covers V1 and both
+    // cover the base picture; gaps show what is below.
+    const auto takes = planState->timelineTakes();
+    takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(takes)).toJson(QJsonDocument::Compact));
+    for (int track : {1, 2}) {
+        Mlt::Playlist clips(*profile);
+        int at = 0;
+        for (const auto& v : takes) {
+            const auto t = v.toMap();
+            if (t["track"].toInt() != track) continue;
+            const int start = t["start"].toInt(), end = t["end"].toInt(), in = t["in"].toInt();
+            if (start > at) clips.blank(start - at - 1);
+            Mlt::Producer take(*profile, "loader", t["file"].toString().toUtf8());
+            if (!take.is_valid()) continue;
+            take.set("audio_index", -1);
+            clips.append(take, in, in + (end - start) - 1);
+            at = end;
+        }
+        if (at < length()) clips.blank(length() - at - 1);
+        clips.set("hide", 2);
+        timeline->set_track(clips, 1 + track);
+    }
     timeline->set_in_and_out(0,length()-1);
     timeline->set_speed(0);
 }
@@ -412,6 +475,74 @@ void Editor::computePeaks() {
             for (auto& v : out) v /= loudest;
         return out;
     }));
+}
+
+QString Editor::writeExcerpt(double startSeconds, double seconds, const QString& path) const {
+    if (!project) return "No project is open.";
+    constexpr int rate = 48000, channels = 2;
+    const qint64 total = qint64(std::llround(seconds * rate));
+    if (total <= 0) return "The excerpt is empty.";
+    QVector<qint16> pcm(total * channels, 0);
+    Mlt::Profile p("atsc_720p_24");
+    p.set_frame_rate(project->fpsNum, project->fpsDen);
+    p.set_explicit(1);
+    Mlt::Producer song(p, "loader", project->file(project->master).toUtf8());
+    if (!song.is_valid()) return "Cannot read the song.";
+    song.set("video_index", -1);
+    song.set("audio_index", project->master.stream);
+    const double fps = double(project->fpsNum) / project->fpsDen;
+    // The first song frame the excerpt reaches, and how far into it the excerpt begins.
+    const int first = qMax(0, int(std::floor(startSeconds * fps)));
+    qint64 written = startSeconds < 0 ? qint64(std::llround(-startSeconds * rate)) : 0;
+    qint64 skip = startSeconds < 0 ? 0 : qint64(std::llround((startSeconds - first / fps) * rate));
+    song.seek(first);
+    for (int pos = first; written < total && pos < song.get_length(); ++pos) {
+        std::unique_ptr<Mlt::Frame> frame(song.get_frame());
+        if (!frame) break;
+        auto format = mlt_audio_s16;
+        int frequency = rate, ch = channels;
+        int samples = mlt_audio_calculate_frame_samples(fps, rate, pos);
+        auto data = static_cast<const qint16*>(frame->get_audio(format, frequency, ch, samples));
+        if (!data || format != mlt_audio_s16 || ch != channels) return "Cannot decode the song.";
+        for (int i = 0; i < samples && written < total; ++i) {
+            if (skip > 0) { --skip; continue; }
+            pcm[written * channels] = data[i * channels];
+            pcm[written * channels + 1] = data[i * channels + 1];
+            ++written;
+        }
+    }
+    QFile out(path);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return "Cannot write the song excerpt.";
+    auto le32 = [](quint32 v) { return QByteArray(reinterpret_cast<const char*>(&v), 4); };
+    auto le16 = [](quint16 v) { return QByteArray(reinterpret_cast<const char*>(&v), 2); };
+    const quint32 bytes = quint32(pcm.size() * 2);
+    QByteArray header = "RIFF" + le32(36 + bytes) + "WAVEfmt " + le32(16) + le16(1) + le16(channels) + le32(rate)
+                        + le32(rate * channels * 2) + le16(channels * 2) + le16(16) + "data" + le32(bytes);
+    out.write(header);
+    out.write(reinterpret_cast<const char*>(pcm.constData()), bytes);
+    return {};
+}
+
+QVariantMap Editor::probeVideo(const QString& path, const QString& thumb) {
+    Mlt::Profile p;
+    Mlt::Producer video(p, "loader", path.toUtf8());
+    if (!video.is_valid()) return {};
+    p.from_producer(video);
+    Mlt::Producer sized(p, "loader", path.toUtf8());
+    if (!sized.is_valid()) return {};
+    const int frames = sized.get_length();
+    const double fps = p.fps();
+    QVariantMap out{{"width", p.width()}, {"height", p.height()}, {"frames", frames}, {"fps", fps}};
+    if (!thumb.isEmpty() && frames > 0) {
+        sized.seek(frames / 2);
+        std::unique_ptr<Mlt::Frame> frame(sized.get_frame());
+        const int w = 320, h = qMax(2, int(std::lround(320.0 * p.height() / qMax(1, p.width()))));
+        if (frame) {
+            const QImage still = decode(*frame, QSize(w, h));
+            if (!still.isNull()) still.save(thumb, "JPEG", 85);
+        }
+    }
+    return out;
 }
 
 bool Editor::checkPictures() {

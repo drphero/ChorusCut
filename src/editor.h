@@ -77,6 +77,15 @@ public:
     Q_INVOKABLE void playRange(int startMs, int endMs) { playLyric(startMs, endMs); }
     ~Editor();
     Q_INVOKABLE bool openProject(const QUrl& folder);
+    // Clicking anywhere outside the text field being edited leaves it (which commits it), so a
+    // field never holds the keyboard until another field is clicked.
+    Q_INVOKABLE void releaseFocusOnClick(QObject* window);
+    // The song from startSeconds for seconds, as a 48 kHz stereo 16-bit WAV at path; silence
+    // before the song starts or after it ends. "" or why not. For a lip-sync take's audio.
+    QString writeExcerpt(double startSeconds, double seconds, const QString& path) const;
+    // A video file's {width, height, frames, fps} and a still from its middle saved at thumb
+    // (JPEG); empty when it can't be read.
+    static QVariantMap probeVideo(const QString& path, const QString& thumb);
     // Saves the thumbnail and releases the project, e.g. before the manager renames or trashes it.
     Q_INVOKABLE void closeProject();
     QString projectPath() const { return project ? project->dir.absolutePath() : QString(); }
@@ -171,6 +180,7 @@ private:
     void updateMonitorGain();
     QString message;
     void build();
+    QString takesKey;   // what the take tracks were built from, to rebuild only when it changes
     void stop();
     bool commit(Trim value);
     void info(const QString& text);

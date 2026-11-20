@@ -488,6 +488,26 @@ Rectangle {
                 opacity: dragging ? 0.85 : 1
                 border.color: chosen ? "#ecedc9" : modelData.problems ? "#e07f6f" : colors[1]
                 border.width: chosen ? 2 : 1
+                // The chosen take, as a strip of its still behind the label; and takes on their way.
+                readonly property int makingTakes: editor.generator.jobs.filter(j => j.owner === "shot" && j.ownerId === modelData.id && j.state !== "failed").length
+                Row {
+                    visible: (shotCard.modelData.chosenThumb || "") !== ""
+                    anchors.fill: parent; anchors.margins: 1
+                    clip: true
+                    opacity: 0.55
+                    Repeater {
+                        model: shotCard.modelData.chosenThumb ? Math.ceil(shotCard.width / Math.max(20, shotCard.height * 16 / 9)) : 0
+                        Image { width: Math.max(20, shotCard.height * 16 / 9); height: shotCard.height - 2; source: shotCard.modelData.chosenThumb
+                                fillMode: Image.PreserveAspectCrop; asynchronous: true; sourceSize: Qt.size(160, 90) }
+                    }
+                }
+                Text {
+                    objectName: "shotTakes" + shotCard.modelData.id
+                    visible: (shotCard.modelData.takes > 0 || shotCard.makingTakes > 0) && shotCard.width > 60 && shotCard.height >= 32
+                    anchors.right: parent.right; anchors.rightMargin: 5; anchors.bottom: parent.bottom; anchors.bottomMargin: 3
+                    text: shotCard.makingTakes > 0 ? "generating " + shotCard.makingTakes : shotCard.modelData.takes + (shotCard.modelData.takes === 1 ? " take" : " takes")
+                    color: shotCard.makingTakes > 0 ? "#e7b75f" : "#ecedc9"; font.pixelSize: 9
+                }
                 Column {
                     x: 6; y: 3; width: parent.width - 12 - (badge.visible ? badge.width + 4 : 0)
                     spacing: 1

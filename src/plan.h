@@ -94,6 +94,11 @@ public:
     Q_INVOKABLE QVariantMap shotPictures(int shot) const;
     // shotPictures' picked list.
     Q_INVOKABLE QVariantList shotReferences(int shot) const;
+    // A shot's takes in the order made: exported rows plus {number, url, thumbUrl, chosen,
+    // lipSync, seconds, from, to (project frames the take covers)}.
+    Q_INVOKABLE QVariantList takesFor(int shot) const;
+    // What the cut plays: each shot's chosen take, [{track, start, end, file, in, take, shot}].
+    QVariantList timelineTakes() const;
     QVariantList checks() const;
     QVariantList gates() const;
     QVariantList coverage() const;
@@ -166,6 +171,9 @@ private:
     void invalidate();
     void say(const QString& text);
     QVariantList listOf(const QString& kind) const;
+    QList<int> takeIds(int shot) const;
+    QPair<int, int> takeSpan(int take) const;
+    Result takeAdd(const QVariantMap& c, const QString& by);
     QVariantMap exported(const QString& kind, int id) const;
     QString checkField(const QString& kind, const QString& field, const QJsonValue& value) const;
     QString overlap(int track, int start, int end, int except) const;

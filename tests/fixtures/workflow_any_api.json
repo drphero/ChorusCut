@@ -10,11 +10,10 @@
  "20": {"class_type": "LoadImage", "inputs": {"image": "first.png"}, "_meta": {"title": "Picture 1"}},
  "21": {"class_type": "LoadImage", "inputs": {"image": "second.png"}, "_meta": {"title": "Picture 2"}},
  "22": {"class_type": "LoadImage", "inputs": {"image": "third.png"}, "_meta": {"title": "Picture 3"}},
- "30": {"class_type": "ImageConditioning", "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": ["14", 0], "width": 0, "height": 0,
-        "images.image_1": ["20", 0], "images.image_2": ["21", 0], "images.image_3": ["22", 0]}, "_meta": {"title": "Conditioning"}},
+ "35": {"class_type": "ResolutionSelector", "inputs": {"aspect_ratio": "1:1 (Square)", "megapixels": 1, "multiple": 32}, "_meta": {"title": "Resolution"}},
+ "30": {"class_type": "ImageConditioning", "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": ["14", 0], "width": ["35", 0], "height": ["35", 1], "images.image_1": ["20", 0], "images.image_2": ["21", 0], "images.image_3": ["22", 0]}, "_meta": {"title": "Conditioning"}},
  "31": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["30", 0]}, "_meta": {"title": "Zero out"}},
- "40": {"class_type": "KSampler", "inputs": {"seed": 5, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
-        "model": ["1", 0], "positive": ["30", 0], "negative": ["31", 0], "latent_image": ["30", 1]}, "_meta": {"title": "KSampler"}},
+ "40": {"class_type": "KSampler", "inputs": {"seed": 5, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1, "model": ["1", 0], "positive": ["30", 0], "negative": ["31", 0], "latent_image": ["30", 1]}, "_meta": {"title": "KSampler"}},
  "50": {"class_type": "VAEDecode", "inputs": {"samples": ["40", 0], "vae": ["3", 0]}, "_meta": {"title": "Decode"}},
  "60": {"class_type": "SaveImage", "inputs": {"filename_prefix": "any", "images": ["50", 0]}, "_meta": {"title": "Save Image"}}
 }

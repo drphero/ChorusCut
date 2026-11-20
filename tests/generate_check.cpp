@@ -9,6 +9,7 @@
 #include "library.h"
 #include "waveform.h"
 #include <QDir>
+#include <QJSValue>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
@@ -136,8 +137,94 @@ static int live(int argc, char** argv) {
     return 0;
 }
 
+// --live-take URL PROJECT_COPY WORKFLOW SHOT OUT_DIR: a real take for a planned shot. Its prompt is
+// written from what an agent is given (pictures, cut points, lyric timings) in H3's
+// reference-to-video sections; the take is copied to OUT_DIR. Uses its own workflow library.
+static int liveTake(int argc, char** argv) {
+    if (argc != 7) { qCritical() << "usage: ChorusCutGenerateCheck --live-take URL PROJECT_COPY WORKFLOW SHOT OUT_DIR"; return 1; }
+    QTemporaryDir scratch;
+    qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
+    qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
+    qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
+    QGuiApplication app(argc, argv);
+    app.setOrganizationName("Chorus Cut Tests");
+    app.setApplicationName("Generate Live");
+    Mlt::Factory::init();
+    Editor editor;
+    if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[3]).absoluteFilePath()))) return fail(2, editor.status());
+    editor.comfy()->configure(argv[2], {}, true);
+    auto flows = editor.workflows();
+    auto gen = editor.generator();
+    auto plan = editor.plan();
+    const auto added = flows->importFile(QUrl::fromLocalFile(QFileInfo(argv[4]).absoluteFilePath()));
+    const QString workflow = added["id"].toString();
+    qInfo().noquote() << "imported" << workflow << flows->get(workflow)["use"].toString() << "ready" << flows->get(workflow)["ready"].toBool()
+                      << flows->get(workflow)["problems"].toStringList().join(" ");
+    const int shot = QString(argv[5]).toInt();
+    gen->fetchChoices(workflow);
+    if (!waitFor([&] { return (gen->takeOptions(shot)["frames"].toInt() - 5) % 17 == 0 && gen->pictureLabel(workflow, 1) == "<Picture 1>"; }, 20000))
+        return fail(210, "ComfyUI's node details did not arrive: " + json(gen->takeOptions(shot)));
+    const auto ctx = editor.requests()->takeContext(shot);
+    const auto f = plan->shot(shot)["fields"].toMap();
+    // The prompt, in H3's reference-to-video sections.
+    QStringList subjects, story;
+    for (const auto& p : ctx["pictures"].toArray())
+        subjects << p.toObject()["calledInPrompt"].toString() + ": " + p.toObject()["of"].toString() + " (" + p.toObject()["view"].toString() + ")";
+    const double cutIn = ctx["cutIn"].toDouble(), cutOut = ctx["cutOut"].toDouble(), total = ctx["seconds"].toDouble();
+    auto t = [](double v) { return QString::number(v, 'f', 1); };
+    story << QString("0.0-%1 s: handheld close-up of the singer from %2, red light flaring across her face; she draws a breath, eyes on the lens.")
+                 .arg(t(cutIn)).arg(subjects.value(0).section(':', 0, 0));
+    for (const auto& l : ctx["lyrics"].toArray()) {
+        const auto o = l.toObject();
+        story << QString("%1-%2 s: she sings \"%3\" straight to camera, her lips forming every word in time with the song, %4.")
+                     .arg(t(qMax(0.0, o["start"].toDouble()))).arg(t(qMin(total, o["end"].toDouble()))).arg(o["text"].toString())
+                     .arg(f["emotion"].toString().isEmpty() ? "with feeling" : f["emotion"].toString());
+    }
+    story << QString("%1-%2 s: she holds the moment as the camera keeps drifting by hand, the CRT glow pulsing behind her.").arg(t(cutOut)).arg(t(total));
+    const QString prompt =
+        "subject_definitions: " + subjects.join("; ") + ".\n" +
+        "summary: A handheld close-up from a music video: the singer performs the line to camera on a dark soundstage in front of a wall of old CRT televisions, red light flaring across her face.\n"
+        "retention_analysis: Keep the singer's face, hair and stage-leather outfit exactly as in the pictures; keep the stage and its wall of CRT televisions as in the location picture.\n"
+        "detailed_description: " + story.join(" ") + "\n"
+        "overall_soundscape: The song, as given; her singing is its lead vocal.\n"
+        "non_diegetic_music: The song itself.";
+    auto prompts = f["prompts"].toMap();
+    prompts["h3-lipsync"] = prompt;
+    plan->run({{"op", "set"}, {"kind", "shot"}, {"id", shot}, {"fields", QVariantMap{{"prompts", prompts}}}});
+    qInfo().noquote() << "prompt:\n" + prompt;
+    qInfo().noquote() << "take options" << json(gen->takeOptions(shot));
+    QElapsedTimer clock;
+    clock.start();
+    const int before = plan->takesFor(shot).size();
+    if (const QString why = gen->generateTake(shot); !why.isEmpty()) return fail(211, why);
+    QString last;
+    while (clock.elapsed() < 45 * 60000) {
+        QTest::qWait(1000);
+        if (plan->takesFor(shot).size() > before && gen->jobs().isEmpty()) break;
+        for (const auto& j : gen->jobs()) {
+            const QString text = j.toMap()["state"].toString() + ": " + j.toMap()["text"].toString();
+            if (text != last) { qInfo().noquote() << int(clock.elapsed() / 1000) << "s" << text; last = text; }
+            if (j.toMap()["state"] == "failed") return fail(212, j.toMap()["text"].toString());
+        }
+    }
+    if (plan->takesFor(shot).size() <= before) return fail(213, "the take did not arrive in time");
+    const auto take = plan->takesFor(shot).last().toMap();
+    const QDir out(QFileInfo(argv[6]).absoluteFilePath());
+    QDir().mkpath(out.path());
+    const QString source = QUrl(take["url"].toString()).toLocalFile();
+    const QString target = out.filePath(QString("shot%1-take%2.%3").arg(shot).arg(take["number"].toInt()).arg(QFileInfo(source).suffix()));
+    QFile::remove(target);
+    QFile::copy(source, target);
+    qInfo().noquote() << "take arrived after" << clock.elapsed() / 1000.0 << "s:" << take["frames"].toInt() << "frames at" << take["fps"].toDouble()
+                      << take["width"].toInt() << "x" << take["height"].toInt() << "covers frames" << take["from"].toInt() << "to" << take["to"].toInt()
+                      << "lip-sync" << take["lipSync"].toBool() << "->" << target;
+    qInfo() << "PASS live take";
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && QString(argv[1]) == "--live") return live(argc, argv);
+    if (argc > 1 && QString(argv[1]) == "--live-take") return liveTake(argc, argv);
     if (argc != 4) { qCritical() << "usage: ChorusCutGenerateCheck PROJECT_COPY STUB_SCRIPT FIXTURES_DIR"; return 1; }
     qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
@@ -470,6 +557,59 @@ int main(int argc, char** argv) {
     if (plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{faceChosen, sampleRef})
         return fail(43, "the picked pictures did not stay with the view");
     if (plan->referencesFor("character", mara).size() != 4) return fail(43, "expected four pictures of Mara by now");
+    // Picking without generating: a click outside keeps the dialog, Save keeps the picks on the view.
+    {
+        const int jobsBefore = stubLog()["prompts"].toArray().size();
+        click(quarterTile);
+        if (!clickMenuItem(quarterTile, "genOptions") || !waitFor([&] { return dialog->property("opened").toBool(); }, 1500))
+            return fail(44, "With options… did not open the dialog again");
+        click(find(window, QString("genPick_%1").arg(sampleRef)));
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(6, 6));
+        QTest::qWait(200);
+        if (!dialog->property("opened").toBool()) return fail(44, "a click outside the dialog closed it and dropped the picks");
+        click(find(window, "genSave"));
+        QTest::qWait(200);
+        if (dialog->property("opened").toBool() || plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{faceChosen})
+            return fail(44, "Save did not keep the picks on the view: " + json(plan->item("view", quarterView)["fields"]));
+        if (stubLog()["prompts"].toArray().size() != jobsBefore || !gen->jobs().isEmpty()) return fail(44, "Save generated something");
+        editor.undo();
+        if (plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{faceChosen, sampleRef})
+            return fail(44, "undo did not bring the earlier picks back");
+        // Ask from the dialog: the picks are saved first, so the agent can see them, and the
+        // suggestions are about looking at them.
+        click(quarterTile);
+        clickMenuItem(quarterTile, "genOptions");
+        waitFor([&] { return dialog->property("opened").toBool(); }, 1500);
+        click(find(window, QString("genPick_%1").arg(sampleRef)));
+        click(find(window, QString("genPick_%1").arg(sampleRef)));
+        if (dialog->property("inputs").toList() != QVariantList{faceChosen, sampleRef}) return fail(45, "re-picking changed the order");
+        click(find(window, QString("genPick_%1").arg(faceChosen)));
+        click(find(window, QString("genPick_%1").arg(faceChosen)));
+        click(find(window, "genAsk"));
+        auto ask = window->findChild<QObject*>("askPopup");
+        if (!ask || !waitFor([&] { return ask->property("opened").toBool(); }, 1500) || dialog->property("opened").toBool())
+            return fail(45, "Ask in the Generate dialog did not open the request");
+        if (ask->property("kind") != "view" || ask->property("itemId").toInt() != quarterView || ask->property("field") != "framing")
+            return fail(45, "the request is not about the view's instruction: " + ask->property("label").toString());
+        if (plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{sampleRef, faceChosen})
+            return fail(45, "Ask did not save the picks first");
+        const QString first = ask->property("suggestions").toList().value(0).toString();
+        if (!first.startsWith("Look at the 2 picked pictures") || !first.contains(gen->pictureLabel(gen->viewOptions(quarterView)["workflow"].toString(), 2)))
+            return fail(45, "the first suggestion is not about the picked pictures: " + first);
+        capture("generate-ask-instruction");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(150);
+        // What the agent reads about the view: the pictures in order, with what the workflow calls them.
+        const auto context = editor.requests()->viewContext(quarterView);
+        const auto pics = context["pictures"].toArray();
+        if (pics.size() != 2 || pics[0].toObject()["id"].toInt() != sampleRef || pics[1].toObject()["id"].toInt() != faceChosen ||
+            pics[1].toObject()["calledInPrompt"] != gen->pictureLabel(gen->viewOptions(quarterView)["workflow"].toString(), 2) ||
+            !context["pictureNote"].toString().contains("picked these") || context["appearance"] != portrait)
+            return fail(45, "the agent's view of the request is wrong: " + QString::fromUtf8(QJsonDocument(context).toJson(QJsonDocument::Compact)));
+        editor.undo();
+        if (plan->item("view", quarterView)["fields"].toMap()["inputs"].toList() != QVariantList{faceChosen, sampleRef})
+            return fail(45, "undo did not bring the earlier picks back after Ask");
+    }
     // Back to the Face view: its strip, and Generate tile, are new ones.
     click(findItem(refs, "viewTile_character_0"));
     genTile = findItem(find(window, "viewRefs_character_0"), "genRef_character");
@@ -638,7 +778,7 @@ int main(int argc, char** argv) {
         if (!added["ok"].toBool()) return fail(100, added["error"].toString());
         const QString anyId = added["id"].toString();
         // The prompt is the user's text node, not the enhancer's instructions.
-        if (slotsOf(anyId) != "10/value=prompt 20/image=picture0 21/image=picture1 22/image=picture2 40/cfg=setting 40/denoise=setting "
+        if (slotsOf(anyId) != "10/value=prompt 20/image=picture0 21/image=picture1 22/image=picture2 35/aspect_ratio=setting 35/megapixels=setting 40/cfg=setting 40/denoise=setting "
                               "40/sampler_name=setting 40/scheduler=setting 40/seed=seed 40/steps=setting 60/filename_prefix=prefix")
             return fail(100, "the H3-shaped workflow's adapter: " + slotsOf(anyId));
         if (!flows->setUse(anyId, "ref-any") || !flows->serves(anyId, "ref-text") || !flows->serves(anyId, "ref-edit"))
@@ -670,6 +810,61 @@ int main(int argc, char** argv) {
         if (!graph.contains("20") || !graph.contains("21") || graph.contains("22") || !cond2.contains("images.image_2") || cond2.contains("images.image_3") ||
             !input(graph, "10", "value").toString().startsWith("Turn <Picture 1> to the left.\n\n"))
             return fail(103, "the two-picture graph: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+        // An aspect-ratio choice (a resolution node like H3's): automatic for the kind of picture
+        // until the user chooses one in the dialog, which Save keeps with the workflow.
+        {
+            const QString key = "35/aspect_ratio";
+            gen->fetchChoices(anyId);
+            if (!waitFor([&] { return gen->choices().contains("ResolutionSelector/aspect_ratio"); }, 3000))
+                return fail(105, "the aspect choices did not arrive: " + json(gen->choices()));
+            auto sentAspect = [&] { return input(lastGraph(), "35", "aspect_ratio").toString(); };
+            auto settled = [&](int prompts) {
+                return waitFor([&] { return stubLog()["prompts"].toArray().size() == prompts + 1 && gen->jobs().isEmpty(); });
+            };
+            auto quick = [&] {
+                const int n = stubLog()["prompts"].toArray().size();
+                return gen->generateWith("character", mara, "ref-text", {{"workflow", anyId}}).isEmpty() && settled(n);
+            };
+            auto openDialog = [&] {
+                const QVariant prefill = QVariantMap{{"workflow", anyId}};
+                QMetaObject::invokeMethod(window, "openGenerate", Q_ARG(QVariant, "character"), Q_ARG(QVariant, mara), Q_ARG(QVariant, prefill));
+                return waitFor([&] { return dialog->property("opened").toBool(); }, 1500) && dialog->property("workflow") == anyId;
+            };
+            auto shownAspect = [&] { return dialog->property("values").toMap()[key].toString(); };
+            if (!quick() || sentAspect() != "3:4 (Portrait Standard)") return fail(105, "a person was not made at 3:4 automatically: " + sentAspect());
+            if (!openDialog() || shownAspect() != "3:4 (Portrait Standard)") return fail(105, "the dialog does not show the automatic 3:4: " + shownAspect());
+            auto row = find(window, "genSetting_35_aspect_ratio");
+            auto combo = row ? findItem(row, "genSettingChoice") : nullptr;
+            if (!combo || !combo->isVisible()) return fail(105, "no aspect ratio choice in the dialog");
+            // Only items on screen are found, so a missing one is hidden.
+            auto inRow = [&](const char* name) { auto r = find(window, "genSetting_35_aspect_ratio"); return r ? findItem(r, name) : nullptr; };
+            if (!inRow("genSettingAuto") || inRow("genSettingReset"))
+                return fail(105, "the automatic aspect is not marked as automatic");
+            scrollIntoView(combo);
+            click(combo);
+            QTest::qWait(200);
+            QTest::keyClick(window, Qt::Key_Down);
+            QTest::keyClick(window, Qt::Key_Return);
+            QTest::qWait(150);
+            if (shownAspect() != "4:3 (Landscape Standard)") return fail(106, "choosing 4:3 in the dialog: " + shownAspect());
+            if (inRow("genSettingAuto") || !inRow("genSettingReset")) return fail(106, "a chosen aspect is still marked automatic");
+            capture("generate-aspect");
+            click(find(window, "genSave"));
+            QTest::qWait(150);
+            QString kept;
+            for (const auto& v : flows->settings(anyId)) if (v.toMap()["key"] == key) kept = v.toMap()["value"].toString();
+            if (dialog->property("opened").toBool() || kept != "4:3 (Landscape Standard)") return fail(106, "Save did not keep the aspect ratio with the workflow: " + kept);
+            if (!quick() || sentAspect() != "4:3 (Landscape Standard)") return fail(106, "the kept 4:3 was replaced by the automatic one: " + sentAspect());
+            if (!openDialog() || shownAspect() != "4:3 (Landscape Standard)") return fail(107, "the dialog lost the kept 4:3: " + shownAspect());
+            // Reset is the workflow's own value, chosen for this picture; afterwards it is automatic again.
+            scrollIntoView(inRow("genSettingReset"));
+            click(inRow("genSettingReset"));
+            if (shownAspect() != "1:1 (Square)") return fail(107, "Reset did not go back to the workflow's value: " + shownAspect());
+            const int n = stubLog()["prompts"].toArray().size();
+            click(find(window, "genGo"));
+            if (!settled(n) || sentAspect() != "1:1 (Square)") return fail(107, "the 1:1 chosen in the dialog was not used: " + sentAspect());
+            if (!quick() || sentAspect() != "3:4 (Portrait Standard)") return fail(107, "after Reset the aspect is not automatic again: " + sentAspect());
+        }
         // A picture that sets the size cannot be left out: pruning stops before an output goes.
         QJsonObject sized{{"1", QJsonObject{{"class_type", "LoadImage"}, {"inputs", QJsonObject{{"image", "a.png"}}}}},
                           {"2", QJsonObject{{"class_type", "GetImageSize"}, {"inputs", QJsonObject{{"image", QJsonArray{"1", 0}}}}}},
@@ -707,6 +902,210 @@ int main(int argc, char** argv) {
             return fail(111, "the composed sheet: " + json(chosen) + " undo: " + editor.undoText());
         editor.undo();
         if (!plan->viewsFor("character", mara)[2].toMap()["pictures"].toList().isEmpty()) return fail(111, "undo did not take the sheet off");
+    }
+
+    // ---- M. Takes: a lip-sync shot sung to the song, and a reference-to-video shot
+    {
+        auto syncAdded = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_sync_api.json")));
+        auto refAdded = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_ref_api.json")));
+        if (!syncAdded["ok"].toBool() || !refAdded["ok"].toBool()) return fail(120, "importing the take workflows: " + json(syncAdded) + json(refAdded));
+        const QString syncId = syncAdded["id"].toString(), refId = refAdded["id"].toString();
+        const auto syncFlow = flows->get(syncId), refFlow = flows->get(refId);
+        if (syncFlow["use"] != "take-sync" || refFlow["use"] != "take-ref" || !syncFlow["ready"].toBool() || !refFlow["ready"].toBool())
+            return fail(120, "the take workflows' uses: " + json(syncFlow["problems"]) + json(refFlow["problems"]));
+        if (!slotsOf(syncId).contains("132/value=seconds") || !slotsOf(syncId).contains("200/audio=audio") || !slotsOf(syncId).contains("138/value=prompt")
+            || !slotsOf(syncId).contains("137/image=picture0") || !slotsOf(syncId).contains("92/filename_prefix=prefix"))
+            return fail(120, "the lip-sync workflow's adapter: " + slotsOf(syncId));
+        if (flows->pictureCount(refId) != 9) return fail(120, "the growing reference list should offer nine pictures: " + QString::number(flows->pictureCount(refId)));
+        // A lip-sync shot over the first sung line, with Mara in frame and a prompt.
+        const auto firstLine = editor.lyrics()->lines()[0].toMap();
+        const int start = int(std::lround(firstLine["start"].toInt() / 1000.0 * editor.fps())), end = int(std::lround(firstLine["end"].toInt() / 1000.0 * editor.fps()));
+        auto made = plan->run({{"op", "shot.add"}, {"track", 1}, {"start", start}, {"end", end}});
+        const int shotId = made["id"].toInt();
+        const QString syncPrompt = "subject_definitions: <Picture 1> is the woman. detailed_description: 0.0-0.5 s she breathes in; then she sings the line.";
+        plan->run({{"op", "set"}, {"kind", "shot"}, {"id", shotId}, {"fields", QVariantMap{{"type", "lipsync"}, {"route", "h3-lipsync"},
+                   {"who", QVariantList{QVariantMap{{"character", mara}}}}, {"prompts", QVariantMap{{"h3-lipsync", syncPrompt}}}}}});
+        gen->fetchChoices(syncId);
+        if (!waitFor([&] { return gen->takeOptions(shotId)["ready"].toBool() && (gen->takeOptions(shotId)["frames"].toInt() - 5) % 17 == 0; }, 3000))
+            return fail(121, "the lip-sync take is not ready: " + json(gen->takeOptions(shotId)));
+        auto topts = gen->takeOptions(shotId);
+        const int frames = topts["frames"].toInt();
+        const double shotSeconds = (end - start) / editor.fps();
+        if (topts["use"] != "take-sync" || topts["workflow"] != syncId || frames < std::ceil((shotSeconds + 1.0) * 24 - 1e-6) || frames - 17 >= (shotSeconds + 1.0) * 24
+            || topts["pictures"].toList().isEmpty() || topts["pictures"].toList()[0].toMap()["label"] != "<Picture 1>")
+            return fail(121, "the lip-sync take's options: " + json(topts));
+        // Generate it from the inspector, by real clicks.
+        click(find(window, "workspaceEdit"));
+        window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", shotId}, {"start", firstLine["start"]}, {"end", firstLine["end"]}});
+        QTest::qWait(150);
+        auto genTake = find(window, "shotGenerateTake");
+        if (!genTake) return fail(122, "no Generate take in the shot inspector");
+        scrollIntoView(genTake);
+        const int uploadsBefore = stubLog()["uploads"].toArray().size();
+        mode("finish");
+        click(genTake);
+        if (!waitFor([&] { return plan->takesFor(shotId).size() == 1 && gen->jobs().isEmpty(); }, 20000))
+            return fail(122, "the lip-sync take did not arrive: " + json(gen->jobs()));
+        QJsonObject graph = lastGraph();
+        const auto uploads = stubLog()["uploads"].toArray();
+        const auto wav = uploads.last().toObject();
+        const int pictureCountSent = topts["pictures"].toList().size();
+        if (uploads.size() != uploadsBefore + pictureCountSent + 1 || !wav["name"].toString().endsWith(".wav")
+            || wav["wavBytes"].toInt() != 44 + int(std::llround(frames / 24.0 * 48000)) * 4)
+            return fail(123, "the song excerpt was not uploaded at the take's length: " + QString::fromUtf8(QJsonDocument(wav).toJson(QJsonDocument::Compact)));
+        if (input(graph, "200", "audio") != wav["name"] || std::abs(input(graph, "132", "value").toDouble() - frames / 24.0) > 1e-9
+            || input(graph, "138", "value") != syncPrompt || input(graph, "92", "filename_prefix") != "ChorusCut/take"
+            || input(graph, "137", "image") != uploads[uploadsBefore].toObject()["name"])
+            return fail(123, "the lip-sync graph: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+        auto take = plan->takesFor(shotId)[0].toMap();
+        const int handle = int(std::lround(0.5 * editor.fps()));
+        if (!take["chosen"].toBool() || !take["lipSync"].toBool() || take["from"].toInt() != start - handle || take["frames"].toInt() != frames
+            || take["thumbUrl"].toString().isEmpty() || take["missing"].toBool())
+            return fail(124, "the first take: " + json(take));
+        // It plays in the cut: the shot's frames show the take, not black.
+        QImage shown;
+        QObject::connect(&editor, &Editor::imageReady, &editor, [&](const QImage& img) { shown = img; });
+        auto colourAt = [&](int frame) { shown = {}; editor.seek(frame); QTest::qWait(50); return shown.isNull() ? QColor() : shown.pixelColor(shown.width() / 2, shown.height() / 2); };
+        const QColor inShot = colourAt((start + end) / 2);
+        if (!inShot.isValid() || (inShot.red() + inShot.green() + inShot.blue()) < 30) return fail(125, "the chosen take does not play in the cut");
+        capture("take-inspector");
+        if (!find(window, "shotTake1")) return fail(125, "the inspector does not show the take");
+        auto zoom = find(window, "inspectorZoomTo");
+        if (zoom) { scrollIntoView(zoom); click(zoom); QTest::qWait(150); }
+        auto takesLabel = find(window, QString("shotTakes%1").arg(shotId));
+        if (!takesLabel || takesLabel->property("text") != "1 take") return fail(125, "the timeline's shot does not show its take");
+        auto monitor = find(window, "monitor");
+        if (!monitor) return fail(125, "the monitor is hidden though a take plays");
+        // As the app does: the monitor shows the editor's frames.
+        QObject::connect(&editor, &Editor::imageReady, qobject_cast<Monitor*>(monitor), &Monitor::showImage);
+        editor.seek((start + end) / 2);
+        QTest::qWait(100);
+        capture("take-timeline");
+        // A second take through the dialog; choosing it changes what plays.
+        click(find(window, "shotTakeOptions"));
+        auto takeDialog = window->findChild<QObject*>("takePopup");
+        if (!takeDialog || !waitFor([&] { return takeDialog->property("opened").toBool(); }, 1500)) return fail(126, "With options… did not open the take dialog");
+        if (takeDialog->property("prompt") != syncPrompt || !find(window, "takeLength")->property("text").toString().contains("of the song, locked"))
+            return fail(126, "the take dialog does not show the shot: " + find(window, "takeLength")->property("text").toString());
+        capture("take-dialog");
+        click(find(window, "takeGo"));
+        if (!waitFor([&] { return plan->takesFor(shotId).size() == 2 && gen->jobs().isEmpty(); }, 20000))
+            return fail(126, "the second take did not arrive: " + json(gen->jobs()));
+        if (plan->takesFor(shotId)[1].toMap()["chosen"].toBool()) return fail(126, "a later take was chosen without asking");
+        scrollIntoView(find(window, "shotTake2"));
+        click(find(window, "shotTake2"));
+        if (!plan->takesFor(shotId)[1].toMap()["chosen"].toBool() || plan->takesFor(shotId)[0].toMap()["chosen"].toBool())
+            return fail(127, "clicking take 2 did not choose it");
+        const QColor second = colourAt((start + end) / 2);
+        if (second == inShot) return fail(127, "the cut still plays the first take");
+        editor.undo();
+        if (!plan->takesFor(shotId)[0].toMap()["chosen"].toBool() || colourAt((start + end) / 2) != inShot) return fail(127, "undo did not bring the first take back");
+        // Moving a lip-sync shot keeps its take on the song: moved far, it is too short.
+        plan->run({{"op", "shot.retime"}, {"id", shotId}, {"start", start + (end - start)}, {"end", end + (end - start)}});
+        bool shortCheck = false;
+        for (const auto& c : plan->checks()) shortCheck |= c.toMap()["code"] == "takeShort" && c.toMap()["shots"].toList().contains(shotId);
+        if (plan->takesFor(shotId)[0].toMap()["from"].toInt() != start - handle || !shortCheck) return fail(128, "a moved lip-sync take left the song, or no short-take check");
+        editor.undo();
+        // An agent can't choose a take.
+        auto agentChoice = plan->run({{"op", "set"}, {"kind", "take"}, {"id", plan->takesFor(shotId)[1].toMap()["id"]}, {"fields", QVariantMap{{"approved", true}}}, {"by", "agent"}});
+        if (agentChoice["ok"].toBool()) return fail(128, "an agent chose a take");
+        // What the agent reads to write the prompt.
+        const auto ctx = editor.requests()->takeContext(shotId);
+        if (ctx["pictures"].toArray().isEmpty() || ctx["pictures"].toArray()[0].toObject()["calledInPrompt"] != "<Picture 1>" || ctx["lyrics"].toArray().isEmpty()
+            || std::abs(ctx["cutIn"].toDouble() - 0.5) > 0.02 || !ctx["lipSync"].toBool())
+            return fail(129, "the agent's take context: " + QString::fromUtf8(QJsonDocument(ctx).toJson(QJsonDocument::Compact)));
+        // Picking the shot's pictures by hand, in order: an alternative of Mara's, then a place
+        // from the rest of the plan.
+        {
+            int alt = 0, place = 0;
+            for (const auto& r : plan->referencesFor("character", mara)) if (!r.toMap()["approved"].toBool() && !r.toMap()["missing"].toBool()) alt = r.toMap()["id"].toInt();
+            for (const auto& r : plan->references()) if (r.toMap()["owner"] == "location" && !r.toMap()["missing"].toBool()) place = r.toMap()["id"].toInt();
+            if (!alt || !place) return fail(135, "expected an alternative of Mara's and a location picture");
+            auto pickLink = find(window, "shotPicPick");
+            if (!pickLink) return fail(135, "no Pick… for the shot's pictures");
+            scrollIntoView(pickLink);
+            click(pickLink);
+            if (!waitFor([&] { return takeDialog->property("opened").toBool(); }, 1500)) return fail(135, "Pick… did not open the picker");
+            for (const auto& v : takeDialog->property("picks").toList()) {
+                auto tile = find(window, "takePick_" + v.toString());
+                if (!tile) return fail(135, "the picker does not show the picked picture " + v.toString() + ": " + json(takeDialog->property("groups").value<QJSValue>().toVariant()) + " picks " + json(takeDialog->property("picks").value<QJSValue>().toVariant()));
+                scrollIntoView(tile); click(tile);
+            }
+            if (!takeDialog->property("picks").toList().isEmpty()) return fail(135, "clicking the picked pictures did not take them out");
+            auto altTile = find(window, QString("takePick_%1").arg(alt));
+            if (!altTile) return fail(135, QString("the picker does not offer Mara%1s alternative %2: ").arg(QChar(0x2019)).arg(alt) + json(takeDialog->property("groups").value<QJSValue>().toVariant()) + " picks " + json(takeDialog->property("picks").value<QJSValue>().toVariant()));
+            scrollIntoView(altTile);
+            click(altTile);
+            auto more = find(window, "takeMorePictures");
+            if (!more) return fail(135, "no More pictures from the plan");
+            scrollIntoView(more);
+            click(more);
+            auto placeTile = find(window, QString("takePick_%1").arg(place));
+            if (!placeTile) return fail(135, "More pictures from the plan did not show the location's");
+            scrollIntoView(placeTile);
+            click(placeTile);
+            if (takeDialog->property("picks").toList() != QVariantList{alt, place}) return fail(135, "the picks: " + json(takeDialog->property("picks")));
+            capture("take-pick");
+            auto save = find(window, "takeSave");
+            click(save);
+            QStringList order;
+            for (const auto& r : plan->shotPictures(shotId)["picked"].toList()) order << r.toMap()["id"].toString();
+            const auto labels = gen->takeOptions(shotId)["pictures"].toList();
+            if (plan->shot(shotId)["fields"].toMap()["pictures"].toList() != QVariantList{alt, place} || order != QStringList{QString::number(alt), QString::number(place)}
+                || labels.size() != 2 || labels[1].toMap()["id"].toInt() != place || labels[1].toMap()["label"] != "<Picture 2>")
+                return fail(136, "the shot does not send the picked pictures in order: " + order.join(","));
+            plan->run({{"op", "set"}, {"kind", "shot"}, {"id", shotId}, {"fields", QVariantMap{{"pictures", QVariantList{}}}}});
+        }
+        // Reference-to-video with three pictures: the workflow's two Load Image nodes grow a third.
+        // A third view of Mara with a chosen picture, so the shot has three to send.
+        {
+            const auto addedView = plan->run({{"op", "add"}, {"kind", "view"}, {"owner", "character"}, {"ownerId", mara},
+                                              {"fields", QVariantMap{{"name", "Profile"}, {"role", "other"}, {"from", "prompt"}}}});
+            int spare = 0;
+            for (const auto& r : plan->referencesFor("character", mara)) if (!r.toMap()["approved"].toBool() && !r.toMap()["missing"].toBool()) spare = r.toMap()["id"].toInt();
+            plan->run({{"op", "ref.move"}, {"id", spare}, {"view", addedView["id"]}});
+            plan->run({{"op", "set"}, {"kind", "reference"}, {"id", spare}, {"fields", QVariantMap{{"approved", true}}}});
+            // A view of the user's own kind named Profile counts as a face, so the shot sends it.
+            bool sent = false;
+            for (const auto& r : plan->shotPictures(shotId)["picked"].toList()) sent |= r.toMap()["id"].toInt() == spare;
+            if (!sent) return fail(130, "a view named Profile was not sent: " + json(plan->shotPictures(shotId)["picked"]));
+        }
+        QVariantList three;
+        for (const auto& r : plan->shotPictures(shotId)["candidates"].toList()) if (three.size() < 3) three << r.toMap()["id"];
+        if (three.size() < 3) return fail(130, "expected three of Mara's views to choose from: " + json(plan->shotPictures(shotId)));
+        plan->run({{"op", "set"}, {"kind", "shot"}, {"id", shotId}, {"fields", QVariantMap{{"route", "ref2v"}, {"pictures", three},
+                   {"prompts", QVariantMap{{"h3-lipsync", syncPrompt}, {"ref2v", "<Picture 1>, <Picture 2> and <Picture 3> show the woman."}}}}}});
+        gen->fetchChoices(refId);
+        if (!waitFor([&] { return gen->takeOptions(shotId)["ready"].toBool(); }, 3000)) return fail(130, "the reference take is not ready: " + json(gen->takeOptions(shotId)));
+        const int beforeRef = stubLog()["uploads"].toArray().size();
+        if (const QString why = gen->generateTake(shotId); !why.isEmpty()) return fail(130, why);
+        if (!waitFor([&] { return plan->takesFor(shotId).size() == 3 && gen->jobs().isEmpty(); }, 20000)) return fail(130, "the reference take did not arrive: " + json(gen->jobs()));
+        graph = lastGraph();
+        const auto refUploads = stubLog()["uploads"].toArray();
+        const auto cond = graph.value("136").toObject().value("inputs").toObject();
+        QString grown;
+        for (auto it = graph.begin(); it != graph.end(); ++it) if (it.key().toInt() > 146 && it.value().toObject()["class_type"] == "LoadImage") grown = it.key();
+        if (refUploads.size() != beforeRef + 3 || graph.contains("200") || grown.isEmpty() || cond.value("ref_images.ref_image_2") != QJsonArray{grown, 0}
+            || input(graph, grown.toUtf8().constData(), "image") != refUploads.last().toObject()["name"])
+            return fail(131, "the three-picture reference graph: " + QString::fromUtf8(QJsonDocument(graph).toJson(QJsonDocument::Compact)));
+        const auto refTake = plan->takesFor(shotId)[2].toMap();
+        if (refTake["lipSync"].toBool()) return fail(131, "a reference take was locked to the song");
+        // A reference take moves with its shot.
+        plan->run({{"op", "shot.retime"}, {"id", shotId}, {"start", start + 10}, {"end", end + 10}});
+        if (plan->takesFor(shotId)[2].toMap()["from"].toInt() != refTake["from"].toInt() + 10 || plan->takesFor(shotId)[0].toMap()["from"].toInt() != start - handle)
+            return fail(132, "moving the shot: the reference take should follow and the lip-sync take stay");
+        editor.undo();
+        // Removing the shot takes its takes; undo brings them back.
+        plan->run({{"op", "remove"}, {"kind", "shot"}, {"id", shotId}});
+        if (!plan->takesFor(shotId).isEmpty()) return fail(133, "removing the shot left its takes");
+        editor.undo();
+        if (plan->takesFor(shotId).size() != 3) return fail(133, "undo did not bring the takes back");
+        // The excerpt itself: a WAV of the requested length, silence before the song starts.
+        const QString excerpt = QDir(QDir::tempPath()).filePath("chorus-excerpt-check.wav");
+        if (!editor.writeExcerpt(-0.25, 1.0, excerpt).isEmpty() || QFileInfo(excerpt).size() != 44 + 48000 * 4) return fail(134, "the song excerpt's size");
+        QFile::remove(excerpt);
+        flows->remove(syncId);
+        flows->remove(refId);
     }
 
     // ---- J. Removing a workflow takes its kind of picture away
