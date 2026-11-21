@@ -25,7 +25,9 @@ set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManage
                src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml
                src/ReferenceViewer.qml src/GeneratePopup.qml src/ReferenceViews.qml src/TakePopup.qml
                src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml)
-qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py)
+# App icon, generated from resources/logo/icon.svg and icon-small.svg (16 and 32 px).
+set_source_files_properties(resources/icon/ChorusCut.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py resources/icon/ChorusCut.icns)
 qt_add_resources(ChorusCut ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCut PRIVATE chorus_editor Qt6::QuickControls2)
 
@@ -34,7 +36,8 @@ qt_add_executable(choruscut-mcp src/mcp_shim.cpp src/agent_tools.cpp)
 target_link_libraries(choruscut-mcp PRIVATE Qt6::Core Qt6::Network)
 set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
 add_dependencies(ChorusCut choruscut-mcp)
-set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.prototype)
+set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.prototype
+                      MACOSX_BUNDLE_ICON_FILE ChorusCut.icns)
 # macOS refuses notification permission to a bundle carrying only the linker's signature, which
 # names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
 # build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.
