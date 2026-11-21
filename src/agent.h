@@ -26,6 +26,7 @@ class AgentBridge : public QObject {
     Q_PROPERTY(bool liveClient READ liveClient NOTIFY stateChanged)
 public:
     explicit AgentBridge(Editor* editor, QObject* parent = nullptr);
+    ~AgentBridge() override;
     // Starts serving agents. Only the interactive app (and the MCP check) calls this.
     bool start();
     // Stops serving and drops every agent connection, as quitting the app does.

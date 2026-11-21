@@ -22,6 +22,10 @@
 #include <QTest>
 #include <QDebug>
 #include <functional>
+#include <QLocalSocket>
+#include <algorithm>
+#include <memory>
+#include "agent.h"
 
 static int fail(int code, const QString& why) { qCritical().noquote() << "FAIL" << code << why; return code; }
 static bool waitFor(const std::function<bool()>& ready, int timeout = 10000) {
@@ -437,10 +441,32 @@ int main(int argc, char** argv) {
     agent.process.closeWriteChannel();
     agent.process.waitForFinished(3000);
     if (!waitFor([&] { return editor.agent()->clients().isEmpty(); }, 3000)) return fail(16, "the app still lists a disconnected agent");
+
+    // 10. Quitting with agents still connected (as when Claude Code stays open): the bridge is
+    // destroyed with live connections. It used to crash on every quit (closing each connection
+    // ran its disconnect handler against the bridge's already destroyed peer list).
+    editor.agent()->stop();
+    for (int round = 0; round < 3; ++round) {
+        auto bridge = std::make_unique<AgentBridge>(&editor);
+        if (!bridge->start()) return fail(28, "a fresh bridge could not listen: " + bridge->note());
+        std::vector<std::unique_ptr<QLocalSocket>> agents;
+        for (int i = 0; i < 3; ++i) {
+            agents.push_back(std::make_unique<QLocalSocket>());
+            agents.back()->connectToServer(QString::fromLatin1(socketName));
+            agents.back()->write(QJsonDocument(QJsonObject{{"hello", "claude-code"}}).toJson(QJsonDocument::Compact) + '\n');
+        }
+        if (!waitFor([&] { return bridge->clients().size() == 3; }, 3000)) return fail(28, "the agents did not connect to the fresh bridge");
+        int changes = 0;
+        QObject::connect(bridge.get(), &AgentBridge::stateChanged, [&] { ++changes; });
+        bridge.reset();  // quitting
+        if (changes) return fail(28, "the bridge reported agents leaving while it was being destroyed");
+        if (!waitFor([&] { return std::all_of(agents.begin(), agents.end(), [](auto& a) { return a->state() == QLocalSocket::UnconnectedState; }); }, 3000))
+            return fail(28, "the agents were not disconnected when the app quit");
+    }
     qInfo() << "PASS: MCP without the app, handshake, tools, prompt, reading the project, protected and locked fields,"
             << "agent-only provenance, no locking, failing pass leaves nothing, $refs, banner Undo, redo and ⌘Z,"
             << "get_plan, view_reference, Agent sheet, requests (ask from a field, live channel event to Claude Code only,"
             << "get_requests with the current value, seen, reply, the chip and Requests page, the user's reply, done, ask_user with"
-            << "answers to click, reopen), disconnect.";
+            << "answers to click, reopen), disconnect, quitting with agents connected.";
     return 0;
 }

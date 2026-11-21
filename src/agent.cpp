@@ -32,6 +32,19 @@ AgentBridge::AgentBridge(Editor* editor, QObject* parent) : QObject(parent), edi
     });
 }
 
+// The agents' sockets are deleted only after this body, once the members are gone, and closing
+// one emits disconnected, whose handler edits peers. That crashed every quit with an agent
+// connected. Drop them here, silently, while everything is still alive.
+AgentBridge::~AgentBridge() {
+    server.close();
+    const auto sockets = peers.keys();
+    peers.clear();
+    for (QLocalSocket* socket : sockets) {
+        socket->disconnect(this);
+        delete socket;
+    }
+}
+
 bool AgentBridge::liveClient() const {
     for (const QString& name : peers) if (name.contains("claude", Qt::CaseInsensitive)) return true;
     return false;
