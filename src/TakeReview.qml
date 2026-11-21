@@ -16,7 +16,7 @@ Rectangle {
     readonly property var chosen: takes.find(t => t.chosen) || null
     readonly property var shot: auditioning ? (editor.plan.revision, editor.plan.shot(a.shot)) : null
     readonly property var others: editor.newTakes.filter(n => n.take !== a.take)
-    visible: editor.ready && ((auditioning && take !== null) || (win !== null && win.reviewing && others.length > 0))
+    visible: editor.ready && editor.generator.watching === 0 && ((auditioning && take !== null) || (win !== null && win.reviewing && others.length > 0))
     Layout.preferredHeight: visible ? row.implicitHeight + 12 : 0
     radius: 5
     color: "#2b2a1c"; border.color: "#8a7440"

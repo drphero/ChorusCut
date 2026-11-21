@@ -36,9 +36,71 @@ ComfyJobs::ComfyJobs(Editor* editor) : QObject(editor), editor(editor) {
     settings.remove("comfyui/token");
     if (!old.isEmpty()) { token = old; storeToken(old); }
     else loadToken();
+    wantPreviews = settings.value("comfyui/previews", true).toBool();
     poll.setInterval(kPollMs);
     connect(&poll, &QTimer::timeout, this, &ComfyJobs::check);
     net.setTransferTimeout(30000);
+}
+
+void ComfyJobs::setPreviewsWanted(bool on) {
+    if (on == wantPreviews) return;
+    wantPreviews = on;
+    QSettings().setValue("comfyui/previews", on);
+    emit previewChanged();
+    if (on && previewStatus != "ready" && previewStatus != "checking") checkPreviews();
+}
+
+void ComfyJobs::setPreview(const QString& status, const QString& vae, int fps) {
+    if (status == previewStatus && vae == tinyVae && fps == tinyVaeFps) return;
+    previewStatus = status;
+    tinyVae = vae;
+    tinyVaeFps = fps;
+    emit previewChanged();
+}
+
+QString ComfyJobs::previewText() const {
+    const QString on = wantPreviews ? QString() : "Off. ";
+    if (previewStatus == "ready")
+        return wantPreviews ? QString("Takes show as they generate (%1, %2 fps).").arg(tinyVae).arg(tinyVaeFps)
+                            : "Off. This ComfyUI can show takes as they generate.";
+    if (previewStatus == "checking") return on + "Checking whether this ComfyUI can show takes as they generate…";
+    if (previewStatus == "missingNode") return on + "To see takes as they generate, install KJ Nodes on this ComfyUI (it has the Model Preview Override node).";
+    if (previewStatus == "oldNode") return on + "This ComfyUI's KJ Nodes is too old for H3 previews: its Model Preview Override has no tiny VAE setting. Update KJ Nodes.";
+    if (previewStatus == "missingVae") return on + "To see takes as they generate, put the H3 tiny VAE (taeh3.safetensors) in this ComfyUI's models/vae_approx folder, then Connect again.";
+    if (previewStatus == "unreachable") return on + "Connect to ComfyUI to check whether it can show takes as they generate.";
+    return on + "Connect to ComfyUI to check whether it can show takes as they generate.";
+}
+
+void ComfyJobs::checkPreviews() {
+    // KJ Nodes' Model Preview Override sends each sampling step's frames over the WebSocket. Its
+    // tiny_vae choice lists the tiny VAEs in models/vae_approx; an H3 one gives real colours.
+    const int mine = ++previewProbe;
+    setPreview("checking");
+    auto reply = net.get(request("/object_info/ModelPreviewOverrideKJ"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, mine] {
+        reply->deleteLater();
+        if (mine != previewProbe) return;
+        if (reply->error() != QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 0) {
+            setPreview("unreachable");
+            return;
+        }
+        const auto node = QJsonDocument::fromJson(reply->readAll()).object()["ModelPreviewOverrideKJ"].toObject();
+        if (node.isEmpty()) { setPreview("missingNode"); return; }
+        const auto spec = node["input"].toObject();
+        QJsonArray def = spec["optional"].toObject()["tiny_vae"].toArray();
+        if (def.isEmpty()) def = spec["required"].toObject()["tiny_vae"].toArray();
+        if (def.isEmpty()) { setPreview("oldNode"); return; }
+        // A combo is [[choice, ...], {...}]; newer servers write ["COMBO", {options: [...]}].
+        QJsonArray options = def.at(0).toArray();
+        if (options.isEmpty()) options = def.at(1).toObject()["options"].toArray();
+        QString chosen;
+        for (const auto& o : options) if (o.toString() == "taeh3.safetensors") chosen = o.toString();
+        if (chosen.isEmpty())
+            for (const auto& o : options)
+                if (o.toString().contains(QRegularExpression("(^|[^a-z])tae_?h3|h3.*tae", QRegularExpression::CaseInsensitiveOption))) { chosen = o.toString(); break; }
+        if (chosen.isEmpty()) { setPreview("missingVae"); return; }
+        setPreview("ready", chosen, chosen == "taeh3.safetensors" ? 24 : 12);
+    });
 }
 
 QNetworkRequest ComfyJobs::request(const QString& path) const {
@@ -77,9 +139,10 @@ void ComfyJobs::loadToken() {
     auto job = new QKeychain::ReadPasswordJob(keychainService(), this);
     job->setAutoDelete(true);
     job->setKey("ComfyUI token " + server);
-    const QString forServer = server;
-    connect(job, &QKeychain::Job::finished, this, [this, job, forServer](QKeychain::Job*) {
-        if (forServer != server) return;  // the address changed while reading
+    const int mine = ++tokenRead;
+    connect(job, &QKeychain::Job::finished, this, [this, job, mine](QKeychain::Job*) {
+        // The address changed or a token was set or forgotten while reading: that one counts.
+        if (mine != tokenRead) return;
         tokenLoading = false;
         if (job->error() == QKeychain::NoError) {
             token = job->textData();
@@ -127,11 +190,15 @@ void ComfyJobs::configure(const QString& url, const QString& newToken, bool clea
     const bool moved = clean != server;
     server = clean;
     QSettings().setValue("comfyui/url", server);
+    const bool settled = clearToken || !newToken.trimmed().isEmpty();
     if (clearToken) { token.clear(); storeToken({}); }
     else if (!newToken.trimmed().isEmpty()) { token = newToken.trimmed(); storeToken(token); }
     else if (moved) loadToken();  // each server has its own token
+    // A read still under way would otherwise hold every connection test back.
+    if (settled && tokenLoading) { ++tokenRead; tokenLoading = false; testWaiting = false; }
     emit settingsChanged();
     setConnection("unknown", {});
+    if (moved) { ++previewProbe; setPreview("unknown"); }
 }
 
 void ComfyJobs::testConnection() {
@@ -139,12 +206,15 @@ void ComfyJobs::testConnection() {
     const QUrl url(server);
     if (!url.isValid() || url.host().isEmpty()) { setConnection("unreachable", "Enter the ComfyUI address, for example http://127.0.0.1:8188"); return; }
     setConnection("checking", "Connecting…");
+    ++previewProbe;
+    setPreview("checking");
     const int mine = ++probe;
     auto stats = net.get(request("/system_stats"));
     connect(stats, &QNetworkReply::finished, this, [this, stats, mine] {
         stats->deleteLater();
         if (mine != probe) return;
-        if (stats->error() != QNetworkReply::NoError) { setConnection("unreachable", "Can't reach ComfyUI: " + errorOf(stats)); return; }
+        if (stats->error() != QNetworkReply::NoError) { setConnection("unreachable", "Can't reach ComfyUI: " + errorOf(stats)); ++previewProbe; setPreview("unreachable"); return; }
+        checkPreviews();
         const auto info = QJsonDocument::fromJson(stats->readAll()).object();
         const QString version = info["system"].toObject()["comfyui_version"].toString();
         const auto devices = info["devices"].toArray();

@@ -20,6 +20,47 @@ Rectangle {
     // The monitor's own "editor" property would shadow the context's inside it.
     readonly property var source: editor
     VideoMonitor { objectName: mv.monitorName; editor: mv.source; anchors.fill: parent; anchors.margins: 4; visible: mv.hasPicture }
+    // A take's live preview, while the viewer watches one generating: over the cut, until the
+    // take arrives (then the viewer plays it) or the user goes back to the cut.
+    Rectangle {
+        id: live
+        objectName: mv.monitorName ? mv.monitorName + "Live" : ""
+        readonly property int watching: editor.generator.watching
+        readonly property var job: watching ? editor.generator.jobs.find(j => j.id === watching) || null : null
+        visible: job !== null
+        anchors.fill: parent
+        color: mv.color
+        z: 1
+        LivePreview {
+            objectName: mv.monitorName ? mv.monitorName + "LivePreview" : ""
+            anchors.fill: parent; anchors.margins: 4
+            source: live.job && live.job.state !== "failed" ? live.job.preview || "" : ""
+            fps: live.job ? live.job.previewFps || 24 : 24
+        }
+        Text {
+            visible: live.job !== null && (!live.job.preview || live.job.state === "failed")
+            anchors.centerIn: parent; width: parent.width - 48
+            horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+            text: !live.job ? "" : live.job.state === "failed" ? live.job.text
+                  : live.job.live ? live.job.text + "\nThe take will show here as it generates."
+                  : live.job.text + "\nThis take was queued without a live preview."
+            color: live.job && live.job.state === "failed" ? "#f0a08f" : "#adb8ba"
+            font.pixelSize: 13 * Math.min(1.4, mv.lyricScale)
+        }
+        Rectangle {
+            x: 12; y: 12
+            visible: live.job !== null
+            width: liveTag.implicitWidth + 16; height: liveTag.implicitHeight + 8; radius: 4
+            color: "#d0102320"; border.color: "#87dec7"
+            Text {
+                id: liveTag
+                anchors.centerIn: parent
+                text: !live.job ? "" : "Generating" + (live.job.steps ? " · step " + live.job.step + " of " + live.job.steps : "")
+                color: "#87dec7"
+                font.pixelSize: 12 * Math.min(1.4, mv.lyricScale); font.weight: Font.DemiBold
+            }
+        }
+    }
     // While a take is auditioned: on its shot, which take this is, so the pop-out says it too.
     Rectangle {
         id: auditionTag

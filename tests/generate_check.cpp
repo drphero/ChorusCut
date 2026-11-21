@@ -14,6 +14,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
+#include <QImageReader>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,7 +27,9 @@
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QSqlQuery>
 #include <QStyleHints>
 #include <QTemporaryDir>
@@ -146,6 +149,8 @@ static int live(int argc, char** argv) {
 // reference-to-video sections; the take is copied to OUT_DIR. Uses its own workflow library.
 static int liveTake(int argc, char** argv) {
     if (argc != 7) { qCritical() << "usage: ChorusCutGenerateCheck --live-take URL PROJECT_COPY WORKFLOW SHOT OUT_DIR"; return 1; }
+    const QDir out(QFileInfo(argv[6]).absoluteFilePath());
+    QDir().mkpath(out.filePath("previews"));
     QTemporaryDir scratch;
     qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
@@ -157,6 +162,10 @@ static int liveTake(int argc, char** argv) {
     Editor editor;
     if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[3]).absoluteFilePath()))) return fail(2, editor.status());
     editor.comfy()->configure(argv[2], {}, true);
+    // Live previews, as the app has them on by default: the server says whether it can.
+    editor.comfy()->testConnection();
+    waitFor([&] { const QString s = editor.comfy()->previewState(); return s != "unknown" && s != "checking"; }, 15000);
+    qInfo().noquote() << "live preview:" << editor.comfy()->previewState() << editor.comfy()->previewText();
     auto flows = editor.workflows();
     auto gen = editor.generator();
     auto plan = editor.plan();
@@ -201,20 +210,34 @@ static int liveTake(int argc, char** argv) {
     clock.start();
     const int before = plan->takesFor(shot).size();
     if (const QString why = gen->generateTake(shot); !why.isEmpty()) return fail(211, why);
-    QString last;
+    QString last, lastPreview;
+    qint64 previewBytes = 0;
+    int previews = 0;
     while (clock.elapsed() < 45 * 60000) {
-        QTest::qWait(1000);
+        QTest::qWait(200);
         if (plan->takesFor(shot).size() > before && gen->jobs().isEmpty()) break;
         for (const auto& j : gen->jobs()) {
+            // Each step's clip: its format, size and shape, kept in OUT_DIR/previews.
+            const QString preview = j.toMap()["preview"].toString();
+            if (!preview.isEmpty() && preview != lastPreview) {
+                lastPreview = preview;
+                const QString file = QUrl(preview).toLocalFile();
+                const qint64 bytes = QFileInfo(file).size();
+                previewBytes += bytes; ++previews;
+                QImageReader reader(file);
+                qInfo().noquote() << int(clock.elapsed() / 1000) << "s preview step" << j.toMap()["step"].toInt() << "of" << j.toMap()["steps"].toInt()
+                                  << QFileInfo(file).suffix() << bytes / 1024 << "KB" << j.toMap()["previewWidth"].toInt() << "x" << j.toMap()["previewHeight"].toInt()
+                                  << "frames" << reader.imageCount() << "at" << j.toMap()["previewFps"].toInt() << "fps";
+                QFile::copy(file, out.filePath("previews/" + QFileInfo(file).fileName()));
+            }
             const QString text = j.toMap()["state"].toString() + ": " + j.toMap()["text"].toString();
             if (text != last) { qInfo().noquote() << int(clock.elapsed() / 1000) << "s" << text; last = text; }
             if (j.toMap()["state"] == "failed") return fail(212, j.toMap()["text"].toString());
         }
     }
     if (plan->takesFor(shot).size() <= before) return fail(213, "the take did not arrive in time");
+    qInfo().noquote() << "previews:" << previews << "steps," << previewBytes / 1024 << "KB in all";
     const auto take = plan->takesFor(shot).last().toMap();
-    const QDir out(QFileInfo(argv[6]).absoluteFilePath());
-    QDir().mkpath(out.path());
     const QString source = QUrl(take["url"].toString()).toLocalFile();
     const QString target = out.filePath(QString("shot%1-take%2.%3").arg(shot).arg(take["number"].toInt()).arg(QFileInfo(source).suffix()));
     QFile::remove(target);
@@ -2097,6 +2120,147 @@ int main(int argc, char** argv) {
             }
 
         }
+
+        // ---- O. Live previews: KJ Nodes' Model Preview Override directly before the guider, with
+        // the H3 tiny VAE, sends each sampling step's clip; the inspector's tile plays it, the
+        // viewer plays it large on a click, and Stop cancels the take.
+        {
+            auto comfy = editor.comfy();
+            auto checkWith = [&](const QString& node) {
+                call("/_stub/mode", {{"mode", "finish"}, {"previewNode", node}}, true);
+                comfy->testConnection();
+                return waitFor([&] { const QString st = comfy->previewState(); return st != "unknown" && st != "checking"; }, 5000) ? comfy->previewState() : QString("timeout");
+            };
+            if (checkWith("missing") != "missingNode" || !comfy->previewText().contains("install KJ Nodes")) return fail(190, "no KJ Nodes: " + comfy->previewState() + " " + comfy->previewText() + " | connection " + comfy->connection() + " " + comfy->connectionText() + " " + comfy->url());
+            if (checkWith("old") != "oldNode" || !comfy->previewText().contains("Update KJ Nodes")) return fail(190, "an old KJ Nodes: " + comfy->previewText());
+            if (checkWith("novae") != "missingVae" || !comfy->previewText().contains("taeh3.safetensors") || !comfy->previewText().contains("vae_approx"))
+                return fail(190, "no H3 tiny VAE: " + comfy->previewText());
+            if (checkWith("older") != "ready" || comfy->previewVae() != "taeh3_v1.safetensors" || comfy->previewFps() != 12) return fail(190, "an older H3 tiny VAE is not played at 12 fps");
+            if (checkWith("ok") != "ready" || comfy->previewVae() != "taeh3.safetensors" || comfy->previewFps() != 24 || !comfy->previewsOn())
+                return fail(190, "taeh3.safetensors: " + comfy->previewText());
+            // The ComfyUI sheet says so; its switch turns previews off and on, and is kept.
+            click(find(window, "comfyButton"));
+            auto comfyPopup = window->findChild<QObject*>("comfySheet");
+            if (!comfyPopup || !waitFor([&] { return comfyPopup->property("opened").toBool(); }, 1500)) return fail(191, "the ComfyUI sheet did not open");
+            QTest::qWait(150);
+            auto previewLine = find(window, "comfyPreviewText");
+            if (!previewLine || previewLine->property("text") != "Takes show as they generate (taeh3.safetensors, 24 fps).") return fail(191, "the sheet's preview line: " + (previewLine ? previewLine->property("text").toString() : "none"));
+            capture("live-comfy-sheet");
+            click(find(window, "comfyPreviews"));
+            if (comfy->previewsWanted() || comfy->previewsOn() || !previewLine->property("text").toString().startsWith("Off.") || QSettings().value("comfyui/previews", true).toBool())
+                return fail(191, "the switch did not turn previews off: " + previewLine->property("text").toString());
+            click(find(window, "comfyPreviews"));
+            if (!comfy->previewsOn() || !QSettings().value("comfyui/previews", false).toBool()) return fail(191, "the switch did not turn previews back on");
+            QTest::keyClick(window, Qt::Key_Escape);
+            waitFor([&] { return !comfyPopup->property("visible").toBool(); }, 1500);
+
+            // A take held running: the node goes before the guider with the take's length.
+            window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", shotId}, {"start", firstLine["start"]}, {"end", firstLine["end"]}});
+            QTest::qWait(150);
+            const int takeFramesNow = gen->takeOptions(shotId)["frames"].toInt();
+            const int takesBefore = plan->takesFor(shotId).size();
+            call("/_stub/mode", {{"mode", "hold"}, {"previewMime", "webp"}}, true);
+            auto genTake = find(window, "shotGenerateTake");
+            scrollIntoView(genTake);
+            click(genTake);
+            if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["state"] == "running"; }, 10000)) return fail(192, "the take is not running: " + json(gen->jobs()));
+            QJsonObject liveGraph = lastGraph();
+            QString liveNode, guiderNode;
+            for (auto it = liveGraph.begin(); it != liveGraph.end(); ++it) {
+                if (it.value().toObject()["class_type"] == "ModelPreviewOverrideKJ") liveNode = it.key();
+                if (it.value().toObject()["class_type"] == "BasicGuider") guiderNode = it.key();
+            }
+            const auto liveIn = liveGraph[liveNode].toObject()["inputs"].toObject();
+            if (liveNode.isEmpty() || guiderNode.isEmpty() || QJsonValue(liveGraph[guiderNode].toObject()["inputs"].toObject()["model"]) != QJsonValue(QJsonArray{liveNode, 0})
+                || !liveIn["model"].isArray() || liveIn["model"].toArray()[0].toString() == liveNode
+                || liveIn["preview_frames"].toInt() != takeFramesNow || liveIn["preview_fps"].toInt() != 24 || liveIn["tiny_vae"].toString() != "taeh3.safetensors"
+                || !liveIn["suppress_default_preview"].toBool() || liveIn["max_resolution"].toInt() != 1024 || liveIn.contains("audio_vae") || liveIn.contains("vae"))
+                return fail(192, "the live preview node: " + QString::fromUtf8(QJsonDocument(liveGraph).toJson(QJsonDocument::Compact)).left(800));
+            // The steps arrive: the tile plays the latest one, and says how far it has got.
+            if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["step"].toInt() >= 2; }, 10000)) return fail(193, "no preview arrived: " + json(gen->jobs()));
+            const int liveJob = gen->jobs()[0].toMap()["id"].toInt();
+            // Each step rebuilds the shot's job tiles, so they are looked up afresh every time.
+            auto tilePart = [&](const char* name) -> QQuickItem* { auto t = find(window, "shotTakeJob"); return t ? findItem(t, name) : nullptr; };
+            auto tilePlays = [&] { auto p = tilePart("shotTakeJobPreview"); return p && p->property("ready").toBool() && p->isVisible(); };
+            scrollIntoView(find(window, "shotTakeJob"));
+            if (!waitFor(tilePlays, 5000)) return fail(193, "the tile does not play the preview");
+            auto tile = find(window, "shotTakeJob");
+            auto tileStep = findItem(tile, "shotTakeJobStep");
+            if (!tileStep || !tileStep->property("text").toString().contains(QRegularExpression("generating · \\d+/10"))) return fail(193, "the tile's step: " + (tileStep ? tileStep->property("text").toString() : "none"));
+            capture("live-tile");
+            // A click: the viewer plays it large, the bar says how far it has got.
+            click(tile);
+            auto liveBar = find(window, "liveBar");
+            auto viewerLive = find(window, "monitorLive");
+            auto viewerPreview = find(window, "monitorLivePreview");
+            if (gen->watching() != liveJob || !liveBar || !liveBar->isVisible() || !viewerLive || !viewerLive->isVisible())
+                return fail(194, "clicking the tile did not watch the take in the viewer");
+            if (!viewerPreview || !waitFor([&] { return viewerPreview->property("ready").toBool(); }, 5000)) return fail(194, "the viewer does not play the preview");
+            if (!find(window, "liveText")->property("text").toString().contains(QRegularExpression("generating, step \\d+ of 10"))) return fail(194, "the bar: " + find(window, "liveText")->property("text").toString());
+            if (find(window, "takeReview") && find(window, "takeReview")->isVisible()) return fail(194, "the take bar shows over the live one");
+            capture("live-viewer");
+            // Stop in the bar cancels it on ComfyUI.
+            const int interruptedBefore = stubLog()["interrupted"].toInt();
+            click(find(window, "liveStop"));
+            if (!waitFor([&] { return gen->jobs().isEmpty() && stubLog()["interrupted"].toInt() > interruptedBefore; }, 5000) || gen->watching() != 0 || liveBar->isVisible() || viewerLive->isVisible())
+                return fail(195, "Stop did not cancel the take: " + json(gen->jobs()));
+            if (!waitFor([&] { return !QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/live").entryList(QDir::Files).size(); }, 2000))
+                return fail(195, "the stopped take's preview clips were left behind");
+
+            // Another, as an NVENC server sends it (MP4): watched until it arrives, then the viewer plays the take.
+            call("/_stub/mode", {{"mode", "hold"}, {"previewMime", "mp4"}}, true);
+            click(genTake);
+            if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["preview"].toString().endsWith(".mp4"); }, 10000)) return fail(196, "no MP4 preview arrived: " + json(gen->jobs()));
+            // macOS's media backend plays nothing offscreen, so here the clip only has to reach the
+            // tile and the viewer as video; playing real NVENC clips is checked in a window (TESTING.md).
+            const bool screen = QGuiApplication::platformName() != "offscreen";
+            auto previewSource = [&](QQuickItem* p) { return p ? p->property("source").toString() : QString(); };
+            if (!waitFor([&] { return previewSource(tilePart("shotTakeJobPreview")).endsWith(".mp4") && (!screen || tilePlays()); }, 8000))
+                return fail(196, "the tile does not play an MP4 preview");
+            click(find(window, "shotTakeJob"));
+            if (!waitFor([&] { return previewSource(viewerPreview).endsWith(".mp4") && (!screen || viewerPreview->property("ready").toBool()); }, 8000))
+                return fail(196, "the viewer does not play an MP4 preview");
+            capture("live-viewer-mp4");
+            // Back to the cut: it keeps generating.
+            click(find(window, "liveBack"));
+            if (gen->watching() != 0 || gen->jobs().size() != 1) return fail(197, "Back to the cut did not just stop watching");
+            click(find(window, "shotTakeJob"));
+            if (gen->watching() == 0) return fail(197, "the tile did not watch the take again");
+            call("/_stub/release", {}, true);
+            if (!waitFor([&] { return plan->takesFor(shotId).size() == takesBefore + 1 && gen->jobs().isEmpty(); }, 20000)) return fail(197, "the watched take did not arrive");
+            const int arrived = plan->takesFor(shotId).last().toMap()["id"].toInt();
+            if (!waitFor([&] { return editor.audition()["take"].toInt() == arrived; }, 2000) || gen->watching() != 0 || viewerLive->isVisible()
+                || !find(window, "takeReview")->isVisible())
+                return fail(197, "the viewer did not play the take that arrived: " + json(editor.audition()));
+            capture("live-arrived");
+            editor.endAudition();
+            editor.notifier()->dismissLatest();
+
+            // ■ on the tile, on hover, stops a take too.
+            call("/_stub/mode", {{"mode", "hold"}, {"previewMime", "webp"}}, true);
+            click(genTake);
+            if (!waitFor([&] { return gen->jobs().size() == 1 && gen->jobs()[0].toMap()["state"] == "running"; }, 10000)) return fail(198, "the third take is not running");
+            // Hovered before its first step arrives, so the tile stays put under the pointer.
+            QTest::mouseMove(window, center(find(window, "shotTakeJob")));
+            if (!waitFor([&] { auto b = tilePart("shotTakeJobStop"); return b && b->isVisible(); }, 1500)) return fail(198, "no ■ on the tile while hovering");
+            QTest::mouseMove(window, center(tilePart("shotTakeJobStop")));
+            QTest::qWait(50);
+            click(tilePart("shotTakeJobStop"));
+            if (!waitFor([&] { return gen->jobs().isEmpty(); }, 5000)) return fail(198, "■ did not stop the take");
+
+            // Turned off, or a server without the node: the take is queued as before, with no node.
+            auto noLiveNode = [&] { for (const auto& n : lastGraph()) if (n.toObject()["class_type"] == "ModelPreviewOverrideKJ") return false; return true; };
+            comfy->setPreviewsWanted(false);
+            call("/_stub/mode", {{"mode", "finish"}}, true);
+            if (const QString why = gen->generateTake(shotId); !why.isEmpty()) return fail(199, why);
+            if (!waitFor([&] { return gen->jobs().isEmpty() && plan->takesFor(shotId).size() == takesBefore + 2; }, 20000) || !noLiveNode()) return fail(199, "a take with previews off still has the node");
+            comfy->setPreviewsWanted(true);
+            checkWith("missing");
+            if (const QString why = gen->generateTake(shotId); !why.isEmpty()) return fail(199, why);
+            if (!waitFor([&] { return gen->jobs().isEmpty() && plan->takesFor(shotId).size() == takesBefore + 3; }, 20000) || !noLiveNode()) return fail(199, "a take on a server without KJ Nodes has the node");
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            editor.notifier()->dismissLatest();
+        }
         flows->remove(syncId);
         flows->remove(refId);
     }
@@ -2127,6 +2291,7 @@ int main(int argc, char** argv) {
             << "pictures in order with a third refused, kept with the view), a workflow for both uses (its prompt node, <Picture n> learned"
             << "from the node, no pictures and two pictures with the rest removed, a required picture kept), a composed turnaround sheet,"
             << "from approved pictures (uploads in order), failure with Try again and Dismiss, cancel from the queue, resume after"
-            << "reopening, ⌘Z, a location in 16:9, agents cannot mark pictures generated.";
+            << "reopening, ⌘Z, a location in 16:9, agents cannot mark pictures generated, live previews (server check, switch, node before"
+            << "the guider, WebP and MP4 steps on the tile and in the viewer, Stop, ■, Back to the cut, the arrived take played).";
     return 0;
 }

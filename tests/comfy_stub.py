@@ -13,7 +13,12 @@ Control endpoints:
   POST /_stub/mode  {"mode": "finish" | "hold" | "wait" | "error", "shift": ms}   (wait: pending in the queue)
   POST /_stub/release   finish held jobs
   GET  /_stub/log       what the client sent
-  /ws?clientId=...      WebSocket: sends "progress" for held jobs queued by that client
+  /ws?clientId=...      WebSocket: sends "progress" for held jobs queued by that client, and for a held
+                        job with a ModelPreviewOverrideKJ node, KJ Nodes' "kj_preview_override" step
+                        clips (its preview_frames long, at its preview_fps) as "previewMime" says:
+                        "webp" (animated WebP) or "mp4" (fragmented H.264, as NVENC servers send)
+  "previewNode" in /_stub/mode: "missing" (no KJ Nodes, the default), "old" (no tiny_vae), "novae"
+  (no H3 tiny VAE), "older" (only an older H3 tiny VAE) or "ok" (taeh3.safetensors)
 """
 import base64
 import struct
@@ -28,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, FIXTURE = int(sys.argv[1]), sys.argv[2]
 lock = threading.Lock()
-state = {"mode": "finish", "shift": 0, "jobs": {}, "uploads": [], "prompts": [], "deleted": [], "interrupted": 0}
+state = {"mode": "finish", "previewNode": "missing", "previewMime": "webp", "shift": 0, "jobs": {}, "uploads": [], "prompts": [], "deleted": [], "interrupted": 0}
 
 
 def png(name):
@@ -84,6 +89,38 @@ def video(name, frames, size="96x54"):
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c=0x{r:02x}{g:02x}{b:02x}:s={size}:r=24",
                         "-frames:v", str(frames), "-pix_fmt", "yuv420p", "-c:v", "libx264", out], check=True)
         return open(out, "rb").read()
+
+
+CLIPS = {}
+
+
+def preview_clip(mime, frames, fps, variant):
+    """A small clip like KJ Nodes' step previews: animated WebP, or fragmented MP4 (NVENC servers)."""
+    import subprocess
+    import tempfile
+    key = (mime, frames, fps, variant)
+    if key not in CLIPS:
+        colours = ["0x203040", "0x506070", "0x90a0b0"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = tmp + ("/c.webp" if mime == "webp" else "/c.mp4")
+            codec = ["-c:v", "libwebp_anim", "-loop", "0"] if mime == "webp" else \
+                    ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "frag_keyframe+empty_moov+default_base_moof"]
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={colours[variant % 3]}:s=160x90:r={fps}",
+                            "-frames:v", str(frames)] + codec + [out], check=True)
+            CLIPS[key] = open(out, "rb").read()
+    return CLIPS[key]
+
+
+def ws_send(wfile, payload):
+    data = json.dumps(payload).encode()
+    if len(data) < 126:
+        head = bytes([0x81, len(data)])
+    elif len(data) < 65536:
+        head = bytes([0x81, 126]) + len(data).to_bytes(2, "big")
+    else:
+        head = bytes([0x81, 127]) + len(data).to_bytes(8, "big")
+    wfile.write(head + data)
+    wfile.flush()
 
 
 def picture_outputs(prompt, number):
@@ -159,17 +196,33 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             state.setdefault("sockets", []).append(client)
         step = 0
+        steps = {}
         try:
             while True:
                 time.sleep(0.2)
                 with lock:
-                    held = [i for i, j in state["jobs"].items() if j["state"] == "running" and j["client"] == client]
-                for job_id in held:
+                    held = [(i, j["prompt"]) for i, j in state["jobs"].items() if j["state"] == "running" and j["client"] == client]
+                    mime = state["previewMime"]
+                for job_id, prompt in held:
                     step = min(step + 1, 9)
-                    data = json.dumps({"type": "progress", "data": {"value": step, "max": 10, "prompt_id": job_id, "node": "2"}}).encode()
-                    self.wfile.write(bytes([0x81, len(data)]) if len(data) < 126 else bytes([0x81, 126]) + len(data).to_bytes(2, "big"))
-                    self.wfile.write(data)
-                    self.wfile.flush()
+                    ws_send(self.wfile, {"type": "progress", "data": {"value": step, "max": 10, "prompt_id": job_id, "node": "2"}})
+                    live = next(((n, s["inputs"]) for n, s in prompt.items() if s.get("class_type") == "ModelPreviewOverrideKJ"), None)
+                    if live is None:
+                        continue
+                    node, inputs = live
+                    at = steps.get(job_id, -1) + 1
+                    if at > 9:
+                        continue
+                    steps[job_id] = at
+                    if at == 0:
+                        ws_send(self.wfile, {"type": "execution_start", "data": {"prompt_id": job_id}})
+                        ws_send(self.wfile, {"type": "kj_preview_override", "data": {"node_id": node, "step": 0, "total": 10, "sigmas": [1.0 - k / 10 for k in range(11)]}})
+                        continue
+                    clip = preview_clip(mime, inputs["preview_frames"], inputs["preview_fps"], at)
+                    ws_send(self.wfile, {"type": "kj_preview_override", "data": {
+                        "node_id": node, "image": base64.b64encode(clip).decode(), "mime": "image/webp" if mime == "webp" else "video/mp4",
+                        "w": 160, "h": 90, "step": at, "total": 10, "sigma": 1.0 - at / 10, "sigmas": None, "delta": 0.1,
+                        "step_ms": 200.0, "avg_step_ms": 200.0, "fps": inputs["preview_fps"]}})
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
@@ -181,6 +234,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"system": {"comfyui_version": "stub"}, "devices": [{"name": "cuda:0 Stub GPU"}]})
             if self.path == "/object_info/ChorusCutAlignLyrics":
                 return self.send({"ChorusCutAlignLyrics": {"input": {}}})
+            if self.path == "/object_info/ModelPreviewOverrideKJ":
+                kind = state["previewNode"]
+                if kind == "missing":
+                    return self.send({})
+                optional = {"vae": ["VAE", {}], "audio_vae": ["VAE", {}]}
+                if kind != "old":
+                    vaes = {"novae": ["none", "taesd.safetensors"], "older": ["none", "taeh3_v1.safetensors"]}.get(kind, ["none", "taeh3.safetensors"])
+                    optional["tiny_vae"] = ["COMBO", {"default": "none", "options": vaes}]
+                return self.send({"ModelPreviewOverrideKJ": {"input": {"required": {
+                    "model": ["MODEL", {}], "max_resolution": ["INT", {"default": 1024}], "jpeg_quality": ["INT", {"default": 80}],
+                    "suppress_default_preview": ["BOOLEAN", {"default": True}], "preview_frames": ["INT", {"default": 1, "max": 1024}],
+                    "preview_fps": ["INT", {"default": 12}]}, "optional": optional}}})
             # Node types of the test workflows: which inputs are optional, and how one names its pictures.
             infos = {
                 "TextEncodeQwenImageEditPlus": {"input": {"required": {"clip": ["CLIP", {}], "prompt": ["STRING", {}]},
@@ -275,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
                 mode = state["mode"]
                 picture = not any(n.get("class_type") == "ChorusCutAlignLyrics" for n in prompt.values())
                 state["jobs"][job_id] = {"state": {"hold": "running", "error": "error", "wait": "waiting"}.get(mode, "done"),
-                                         "result": "" if picture else result(state["shift"]), "client": request.get("client_id", ""),
+                                         "result": "" if picture else result(state["shift"]), "client": request.get("client_id", ""), "prompt": prompt,
                                          "outputs": picture_outputs(prompt, len(state["prompts"])) if picture else None}
                 return self.send({"prompt_id": job_id, "number": len(state["prompts"]), "node_errors": {}})
             if self.path == "/queue":

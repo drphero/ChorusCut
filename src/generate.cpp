@@ -16,12 +16,17 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QUrlQuery>
+#include <QStandardPaths>
 #include <QUuid>
+#include <QWebSocket>
 #include <cmath>
 #include <memory>
 
 namespace {
 constexpr int kPollMs = 1500;
+// The longest side of a live preview clip. Takes are about 1216 to 1504 wide; the viewer shows
+// the preview large, while every step's clip crosses the network.
+constexpr int kPreviewSide = 1024;
 QString ownerNoun(const QString& owner) { return owner == "look" ? "look" : owner == "location" ? "location" : owner == "prop" ? "prop" : "character"; }
 int round16(double v) { return std::max(16, int(std::lround(v / 16.0)) * 16); }
 }
@@ -34,6 +39,138 @@ Generator::Generator(Editor* editor) : QObject(editor), editor(editor) {
     // A workflow fixed or added in the library changes what can be generated.
     connect(editor->workflows(), &Workflows::changed, this, &Generator::changed);
     connect(editor->plan(), &Plan::changed, this, &Generator::changed);
+    // Live preview clips are only for jobs still listed; those of an earlier run are stale.
+    liveDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/live";
+    QDir(liveDir).removeRecursively();
+    connect(this, &Generator::changed, this, &Generator::sweepLive);
+}
+
+void Generator::watch(int id) {
+    if (id && !find(id)) id = 0;
+    if (id == watched) return;
+    watched = id;
+    emit watchingChanged();
+}
+
+void Generator::sweepLive() {
+    for (auto it = liveFiles.begin(); it != liveFiles.end();) {
+        if (find(it.key())) { ++it; continue; }
+        for (const QString& f : it.value()) QFile::remove(f);
+        it = liveFiles.erase(it);
+    }
+    if (watched && !find(watched)) { watched = 0; emit watchingChanged(); }
+}
+
+void Generator::addLiveNode(Job& job, QJsonObject& graph) {
+    // KJ Nodes' Model Preview Override goes directly before the guider: it wraps the model so
+    // each sampling step's frames, decoded by the H3 tiny VAE, go to the client that queued the
+    // job. preview_frames is the take's length, or it shows one picture that never changes.
+    auto comfy = editor->comfy();
+    if (!comfy->previewsOn() || job.owner != "shot" || job.frames <= 0) return;
+    QStringList guiders;
+    for (const QString& k : graph.keys()) if (graph[k].toObject()["class_type"] == "BasicGuider") guiders << k;
+    if (guiders.size() != 1) return;
+    auto guider = graph[guiders[0]].toObject();
+    auto inputs = guider["inputs"].toObject();
+    if (!inputs["model"].isArray()) return;
+    int next = 0;
+    for (const QString& k : graph.keys()) next = qMax(next, k.toInt());
+    job.liveNode = QString::number(next + 1);
+    graph[job.liveNode] = QJsonObject{{"class_type", "ModelPreviewOverrideKJ"},
+                                      {"inputs", QJsonObject{{"model", inputs["model"]}, {"max_resolution", kPreviewSide}, {"jpeg_quality", 80},
+                                                             {"suppress_default_preview", true}, {"preview_frames", qBound(1, job.frames, 1024)},
+                                                             {"preview_fps", comfy->previewFps()}, {"tiny_vae", comfy->previewVae()}}},
+                                      {"_meta", QJsonObject{{"title", "Chorus Cut: live preview"}}}};
+    inputs["model"] = QJsonArray{job.liveNode, 0};
+    guider["inputs"] = inputs;
+    graph[guiders[0]] = guider;
+    job.liveFps = comfy->previewFps();
+    job.client = clientId;
+}
+
+void Generator::listen() {
+    // A socket for each client ID with a live job queued or running, none otherwise.
+    QSet<QString> want;
+    for (const auto& j : list)
+        if (!j.liveNode.isEmpty() && (j.state == "queued" || j.state == "running")) want.insert(j.client.isEmpty() ? clientId : j.client);
+    for (auto it = sockets.begin(); it != sockets.end();) {
+        if (want.contains(it.key())) { ++it; continue; }
+        it.value()->disconnect(this);
+        it.value()->abort();
+        it.value()->deleteLater();
+        runningPrompt.remove(it.key());
+        it = sockets.erase(it);
+    }
+    for (const QString& c : want) if (!sockets.contains(c)) openSocket(c);
+}
+
+void Generator::openSocket(const QString& client) {
+    QNetworkRequest r = editor->comfy()->request("/ws");
+    QUrl url = r.url();
+    url.setScheme(url.scheme() == "https" ? "wss" : "ws");
+    url.setQuery("clientId=" + client);
+    r.setUrl(url);
+    auto socket = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
+    // A clip of a whole take can be several megabytes per step.
+    socket->setMaxAllowedIncomingMessageSize(256 * 1024 * 1024);
+    socket->setMaxAllowedIncomingFrameSize(256 * 1024 * 1024);
+    sockets[client] = socket;
+    connect(socket, &QWebSocket::textMessageReceived, this, [this, client](const QString& text) {
+        const auto message = QJsonDocument::fromJson(text.toUtf8()).object();
+        const QString type = message["type"].toString();
+        const auto data = message["data"].toObject();
+        if (type == "execution_start" || type == "executing" || type == "progress" || type == "executed") {
+            const QString pid = data["prompt_id"].toString();
+            if (!pid.isEmpty()) runningPrompt[client] = pid;
+            return;
+        }
+        if (type != "kj_preview_override") return;
+        const QString node = data["node_id"].isString() ? data["node_id"].toString() : QString::number(data["node_id"].toInt());
+        const QString pid = runningPrompt.value(client);
+        Job* job = nullptr;
+        for (auto& j : list)
+            if ((j.client.isEmpty() ? clientId : j.client) == client && j.liveNode == node && j.state != "failed" && (pid.isEmpty() || j.promptId == pid)) { job = &j; break; }
+        if (job) showLive(*job, data);
+    });
+    // Previews are a nicety: a lost socket is opened again on the next poll, and polling still
+    // finishes the job.
+    connect(socket, &QWebSocket::disconnected, this, [this, socket, client] {
+        if (sockets.value(client) != socket) return;
+        sockets.remove(client);
+        socket->deleteLater();
+    });
+    socket->open(r);
+}
+
+void Generator::showLive(Job& job, const QJsonObject& data) {
+    if (data["total"].toInt() > 0) job.liveSteps = data["total"].toInt();
+    const int step = data["step"].toInt();
+    // Step 0 is the starting noise: only the step count is worth showing.
+    if (step <= 0 || !data["image"].isString()) {
+        if (job.state != "running") say(job, "running", "Generating…");
+        emit changed();
+        return;
+    }
+    const QString mime = data["mime"].toString("image/jpeg");
+    const QString ext = mime == "image/webp" ? "webp" : mime == "video/mp4" ? "mp4" : "jpg";
+    QDir().mkpath(liveDir);
+    const QString path = QString("%1/job%2-step%3.%4").arg(liveDir).arg(job.id).arg(step).arg(ext);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) return;
+    f.write(QByteArray::fromBase64(data["image"].toString().toLatin1()));
+    f.close();
+    auto& files = liveFiles[job.id];
+    files << path;
+    // The viewer may still be reading the clip before the latest; older ones can go.
+    while (files.size() > 2) QFile::remove(files.takeFirst());
+    job.livePath = path;
+    job.liveStep = step;
+    if (data["fps"].toInt() > 0) job.liveFps = data["fps"].toInt();
+    job.liveWidth = data["w"].toInt();
+    job.liveHeight = data["h"].toInt();
+    if (job.state != "running") record(job, "running");
+    say(job, "running", job.liveSteps ? QString("Generating… step %1 of %2").arg(step).arg(job.liveSteps) : "Generating…");
+    emit changed();
 }
 
 QVariantList Generator::jobs() const {
@@ -41,7 +178,10 @@ QVariantList Generator::jobs() const {
     for (const auto& j : list)
         out.append(QVariantMap{{"id", j.id}, {"owner", j.owner}, {"ownerId", j.ownerId}, {"use", j.use}, {"view", j.view},
                                {"workflow", j.workflowName}, {"state", j.state}, {"text", j.text},
-                               {"started", double(j.started)}, {"since", double(j.since)}, {"what", j.what}});
+                               {"started", double(j.started)}, {"since", double(j.since)}, {"what", j.what},
+                               {"live", !j.liveNode.isEmpty()}, {"preview", j.livePath.isEmpty() ? QString() : QUrl::fromLocalFile(j.livePath).toString()},
+                               {"step", j.liveStep}, {"steps", j.liveSteps}, {"previewFps", j.liveFps},
+                               {"previewWidth", j.liveWidth}, {"previewHeight", j.liveHeight}});
     return out;
 }
 
@@ -902,9 +1042,11 @@ void Generator::addTake(int id, const QString& path, const QString& faces) {
         QFile::remove(thumb);
         if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
         record(*job, "done");
-        const int ownerId = job->ownerId;
+        const int ownerId = job->ownerId, source = job->source;
         for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
+        const bool wasWatched = watched == id;
         emit changed();
+        if (wasWatched) emit watchedArrived(source, true);
         emit finished("shot", ownerId, "take-upscale", true, {}, 1);
         return;
     }
@@ -944,8 +1086,10 @@ void Generator::addTake(int id, const QString& path, const QString& faces) {
     // The next face pass refines this take.
     QList<int> next;
     for (auto& j : list) if (j.after == id) { j.after = 0; j.source = made; next << j.id; say(j, "uploading", "Preparing…"); }
+    const bool wasWatched = watched == id;
     emit changed();
     emit takeArrived(ownerId, made);
+    if (wasWatched) emit watchedArrived(made, false);
     emit finished(owner, ownerId, use, true, {}, 1);
     for (int n : next) withInfo(workflow, [this, n] { startRefine(n); });
 }
@@ -1198,8 +1342,10 @@ void Generator::submit(int id, const QStringList& names) {
                 break;
             }
     }
+    addLiveNode(*job, graph);
     job->graph = graph;
     say(*job, "queued", "Queueing…");
+    listen();  // before queueing, so no preview is missed
     auto r = editor->comfy()->request("/prompt");
     r.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     auto reply = net.post(r, QJsonDocument(QJsonObject{{"prompt", graph}, {"client_id", clientId}}).toJson(QJsonDocument::Compact));
@@ -1229,7 +1375,7 @@ void Generator::submit(int id, const QStringList& names) {
                                  {"frames", job->frames}, {"takeFps", job->takeFps}, {"anchor", job->anchor}, {"locked", job->locked},
                                  {"handles", job->handles}, {"source", job->source}, {"character", job->character}, {"face", job->face},
                                  {"what", job->what}, {"width", job->width}, {"height", job->height}, {"previewNode", job->previewNode},
-                                 {"fromUpscaled", job->fromUpscaled}};
+                                 {"fromUpscaled", job->fromUpscaled}, {"liveNode", job->liveNode}};
         for (const QVariant& value : {QVariant(job->promptId), QVariant(job->owner == "shot" ? "take" : "reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
                                       QVariant(QDateTime::currentSecsSinceEpoch()), QVariant("queued"),
                                       QVariant(QString::fromUtf8(QJsonDocument(detail).toJson(QJsonDocument::Compact))), QVariant(clientId)})
@@ -1243,6 +1389,7 @@ void Generator::submit(int id, const QStringList& names) {
 void Generator::check() {
     bool active = false;
     for (const auto& j : list) active |= !j.promptId.isEmpty() && (j.state == "queued" || j.state == "running");
+    listen();
     if (!active) { poll.stop(); return; }
     const int mine = epoch;
     auto queue = net.get(editor->comfy()->request("/queue"));
@@ -1271,7 +1418,7 @@ void Generator::check() {
             if (isRunning) {
                 job->waiting = 0;
                 if (job->state != "running") record(*job, "running");
-                say(*job, "running", "Generating…");
+                if (!job->liveStep) say(*job, "running", "Generating…");
                 continue;
             }
             if (place >= 0) {
@@ -1498,7 +1645,7 @@ void Generator::resume() {
     auto project = editor->current();
     if (!project || !project->db.tables().contains("jobs") || !ensureTable()) return;
     QSqlQuery q(project->db);
-    if (!q.exec("SELECT prompt_id, server, detail, state, submitted FROM jobs WHERE kind IN ('reference','take') AND state IN ('queued','running') ORDER BY submitted"))
+    if (!q.exec("SELECT prompt_id, server, detail, state, submitted, client_id FROM jobs WHERE kind IN ('reference','take') AND state IN ('queued','running') ORDER BY submitted"))
         return;
     while (q.next()) {
         const auto d = QJsonDocument::fromJson(q.value(2).toString().toUtf8()).object();
@@ -1534,6 +1681,9 @@ void Generator::resume() {
         job.height = d["height"].toInt();
         job.previewNode = d["previewNode"].toString();
         job.fromUpscaled = d["fromUpscaled"].toBool();
+        // Previews go to the client ID that queued the job, so a reopened project listens as it.
+        job.liveNode = d["liveNode"].toString();
+        job.client = q.value(5).toString();
         if (q.value(1).toString() != editor->comfy()->url()) {
             job.state = "failed";
             job.text = "Started on " + q.value(1).toString() + ", which is not the current ComfyUI.";
@@ -1550,6 +1700,9 @@ void Generator::resume() {
 void Generator::detach() {
     ++epoch;
     poll.stop();
+    for (auto socket : sockets) { socket->disconnect(this); socket->abort(); socket->deleteLater(); }
+    sockets.clear();
+    runningPrompt.clear();
     if (list.isEmpty()) return;
     list.clear();
     emit changed();

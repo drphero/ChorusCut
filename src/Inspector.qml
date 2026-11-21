@@ -664,27 +664,66 @@ Rectangle {
                                 }
                             }
                         }
-                        // Takes on their way, or failed.
+                        // Takes on their way, or failed. With live previews, the latest sampling step
+                        // plays on the tile; click to watch it large in the viewer, ■ to stop it.
                         Repeater {
                             model: shotVideo.jobs
-                            Rectangle {
+                            Item {
                                 id: jobTile
                                 required property var modelData
                                 objectName: "shotTakeJob"
-                                width: 74; height: 44; radius: 3
-                                color: modelData.state === "failed" ? "#3a2420" : "#1f3a35"
-                                border.color: modelData.state === "failed" ? "#a5574a" : "#3f9c84"
-                                Text { anchors.fill: parent; anchors.margins: 4; wrapMode: Text.Wrap; elide: Text.ElideRight; maximumLineCount: 3
-                                       text: jobTile.modelData.state === "failed" ? "Failed" : jobTile.modelData.text; font.pixelSize: 9
-                                       color: jobTile.modelData.state === "failed" ? "#f0a08f" : "#87dec7" }
+                                width: 74; height: 60
+                                readonly property bool failed: modelData.state === "failed"
+                                readonly property bool watching: editor.generator.watching === modelData.id
+                                readonly property bool hasPreview: !!modelData.preview
+                                Rectangle {
+                                    width: 74; height: 44; radius: 3; clip: true
+                                    color: jobTile.failed ? "#3a2420" : jobTile.hasPreview ? "#0c1216" : "#1f3a35"
+                                    border.color: jobTile.watching ? "#e7b75f" : jobTile.failed ? "#a5574a" : "#3f9c84"
+                                    border.width: jobTile.watching ? 2 : 1
+                                    LivePreview {
+                                        objectName: "shotTakeJobPreview"
+                                        anchors.fill: parent; anchors.margins: 2
+                                        visible: jobTile.hasPreview && !jobTile.failed
+                                        source: jobTile.modelData.preview || ""
+                                        fps: jobTile.modelData.previewFps || 24
+                                        fillMode: Image.PreserveAspectCrop
+                                    }
+                                    Text { visible: !jobTile.hasPreview || jobTile.failed
+                                           anchors.fill: parent; anchors.margins: 4; wrapMode: Text.Wrap; elide: Text.ElideRight; maximumLineCount: 3
+                                           text: jobTile.failed ? "Failed" : jobTile.modelData.text; font.pixelSize: 9
+                                           color: jobTile.failed ? "#f0a08f" : "#87dec7" }
+                                }
+                                Text { y: 46; width: 74; elide: Text.ElideRight; font.pixelSize: 9
+                                       objectName: "shotTakeJobStep"
+                                       text: jobTile.failed ? "failed" : (jobTile.watching ? "watching" : "generating")
+                                             + (jobTile.modelData.steps ? " · " + jobTile.modelData.step + "/" + jobTile.modelData.steps : "")
+                                       color: jobTile.failed ? "#f0a08f" : jobTile.watching ? "#e7b75f" : "#87dec7" }
                                 MouseArea { id: jobMouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                            onClicked: jobMenu.popup() }
-                                ToolTip.visible: jobMouse.containsMouse; ToolTip.text: jobTile.modelData.text
+                                            cursorShape: jobTile.failed ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                            onClicked: m => {
+                                                if (m.button === Qt.RightButton || jobTile.failed) { jobMenu.popup(); return }
+                                                editor.generator.watch(jobTile.watching ? 0 : jobTile.modelData.id)
+                                            } }
+                                // Stop, one click away while it generates.
+                                Rectangle {
+                                    objectName: "shotTakeJobStop"
+                                    visible: !jobTile.failed && (jobMouse.containsMouse || stopMouse.containsMouse)
+                                    x: 74 - width - 3; y: 3; width: 16; height: 16; radius: 3
+                                    color: stopMouse.containsMouse ? "#c0503f" : "#d0101820"; border.color: "#e07f6f"
+                                    Rectangle { anchors.centerIn: parent; width: 6; height: 6; color: "#f4d6cf" }
+                                    MouseArea { id: stopMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: editor.generator.cancel(jobTile.modelData.id) }
+                                }
+                                ToolTip.visible: jobMouse.containsMouse && !stopMouse.containsMouse; ToolTip.delay: 400
+                                ToolTip.text: jobTile.modelData.text + (jobTile.failed ? "" : jobTile.hasPreview ? (jobTile.watching ? "\nClick to stop watching" : "\nClick to watch it in the viewer") + "; ■ stops it" : "\n■ stops it")
                                 Menu {
                                     id: jobMenu
-                                    MenuItem { visible: jobTile.modelData.state === "failed"; height: visible ? implicitHeight : 0; text: "Try again"; onTriggered: editor.generator.retry(jobTile.modelData.id) }
-                                    MenuItem { visible: jobTile.modelData.state === "failed"; height: visible ? implicitHeight : 0; text: "Dismiss"; onTriggered: editor.generator.dismiss(jobTile.modelData.id) }
-                                    MenuItem { visible: jobTile.modelData.state !== "failed"; height: visible ? implicitHeight : 0; text: "Cancel"; onTriggered: editor.generator.cancel(jobTile.modelData.id) }
+                                    MenuItem { visible: !jobTile.failed && jobTile.modelData.live; height: visible ? implicitHeight : 0; text: jobTile.watching ? "Stop watching" : "Watch in the viewer"
+                                               onTriggered: editor.generator.watch(jobTile.watching ? 0 : jobTile.modelData.id) }
+                                    MenuItem { visible: jobTile.failed; height: visible ? implicitHeight : 0; text: "Try again"; onTriggered: editor.generator.retry(jobTile.modelData.id) }
+                                    MenuItem { visible: jobTile.failed; height: visible ? implicitHeight : 0; text: "Dismiss"; onTriggered: editor.generator.dismiss(jobTile.modelData.id) }
+                                    MenuItem { visible: !jobTile.failed; height: visible ? implicitHeight : 0; text: "Cancel"; onTriggered: editor.generator.cancel(jobTile.modelData.id) }
                                 }
                             }
                         }

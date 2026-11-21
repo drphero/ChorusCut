@@ -92,6 +92,9 @@ ApplicationWindow {
         const a = editor.audition
         const s = selection
         if (a.shot !== undefined && !(s && s.kind === "shot" && s.id === a.shot)) editor.endAudition()
+        // Watching a take generate ends the same way.
+        const w = editor.generator.watching ? editor.generator.jobs.find(j => j.id === editor.generator.watching) : null
+        if (w && !(s && s.kind === "shot" && s.id === w.ownerId)) editor.generator.watch(0)
         if (!s) reviewing = false
     }
     // Plays take in its shot's place and shows it, the shot selected and the takes in view.
@@ -200,6 +203,20 @@ ApplicationWindow {
     function showJob(owner, ownerId) {
         if (owner === "shot") showShot(ownerId)
         else if (owner) { workspace = "plan"; planWorkspace.reveal(owner, ownerId) }
+    }
+    // Watching a take generate: the cut pauses under it, and when the take arrives the viewer
+    // plays it with the usual take bar (an upscale shows the upscaled version).
+    Connections {
+        target: editor.generator
+        function onWatchingChanged() {
+            if (!editor.generator.watching) return
+            if (editor.playing) editor.togglePlay()
+            if (editor.audition.take !== undefined) editor.endAudition()
+        }
+        function onWatchedArrived(take, upscaled) {
+            if (upscaled) editor.viewUpscaled = true
+            win.reviewTake(take)
+        }
     }
     Connections {
         target: editor.notifier
@@ -334,6 +351,19 @@ ApplicationWindow {
             Label { Layout.fillWidth: true; wrapMode: Text.Wrap; visible: text.length > 0; text: editor.comfy.tokenNote; color: win.quiet; font.pixelSize: 12 }
             Label { objectName: "comfyStatus"; Layout.fillWidth: true; wrapMode: Text.Wrap; visible: text.length > 0; text: editor.comfy.connectionText
                     color: editor.comfy.connection === "ready" ? win.mint : editor.comfy.connection === "checking" ? win.quiet : "#e7b75f" }
+            // Live previews of takes while they generate (KJ Nodes' Model Preview Override with the
+            // H3 tiny VAE). On unless turned off; the line under it says whether this server can.
+            CheckBox {
+                id: comfyPreviews
+                objectName: "comfyPreviews"
+                Layout.topMargin: 4
+                text: "Show takes as they generate"
+                checked: editor.comfy.previewsWanted
+                onToggled: editor.comfy.previewsWanted = checked
+                contentItem: Text { leftPadding: comfyPreviews.indicator.width + 6; text: comfyPreviews.text; color: "#edf1ef"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+            }
+            Label { objectName: "comfyPreviewText"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12; text: editor.comfy.previewText
+                    color: editor.comfy.previewsOn ? win.mint : !editor.comfy.previewsWanted || editor.comfy.previewState === "checking" ? win.quiet : "#e7b75f" }
             RowLayout {
                 Action { visible: editor.comfy.hasToken; text: "Forget token"; onClicked: editor.comfy.configure(comfyUrl.text, "", true) }
                 Action { objectName: "comfyWorkflows"; text: "Workflows…"; onClicked: win.openWorkflows() }
@@ -687,6 +717,7 @@ ApplicationWindow {
                         lyricScale: Math.max(1, Math.min(1.8, height / 420))
                     }
                     TakeReview { Layout.fillWidth: true }
+                    LiveBar { Layout.fillWidth: true }
                     RowLayout {
                         id: transport
                         Layout.fillWidth: true

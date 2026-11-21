@@ -10,6 +10,7 @@
 #include "workflows.h"
 
 class Editor;
+class QWebSocket;
 
 // Generates pictures through the user's ComfyUI workflows (see Workflows). Today: reference
 // pictures for characters, looks, locations and props, from the picture prompt ("ref-text") or from
@@ -19,12 +20,17 @@ class Editor;
 // each one undo step, with the workflow, prompt and seed kept on the reference.
 class Generator : public QObject {
     Q_OBJECT
-    // [{id, owner, ownerId, use, workflow, state ("uploading", "queued", "running", "failed"), text}]
+    // [{id, owner, ownerId, use, workflow, state ("uploading", "queued", "running", "failed"), text,
+    // live (queued with a live preview node), preview (file URL of the latest step's clip, or ""),
+    // step, steps, previewFps, previewWidth, previewHeight}]
     Q_PROPERTY(QVariantList jobs READ jobs NOTIFY changed)
     // What ComfyUI offers for text settings such as the sampler: {"ClassType/input": [choices]},
     // filled by fetchChoices for a workflow's node types (which also learns their optional
     // inputs and descriptions, for leaving pictures out and naming them).
     Q_PROPERTY(QVariantMap choices READ choices NOTIFY choicesChanged)
+    // The take job the viewer plays the live preview of (0: none). Shared by the Edit page's
+    // viewer and the pop-out.
+    Q_PROPERTY(int watching READ watching NOTIFY watchingChanged)
 public:
     explicit Generator(Editor* editor);
     QVariantList jobs() const;
@@ -91,6 +97,10 @@ public:
     // (made on this computer, no ComfyUI), chosen at once; one undo step. "" or why not.
     Q_INVOKABLE QString composeSheet(int view, const QVariantList& panels);
     Q_INVOKABLE void cancel(int id);
+    int watching() const { return watched; }
+    // Plays a job's live preview in the viewer (0 stops). Ends by itself when the job goes; when
+    // its take arrives, watchedArrived says which, so the viewer can play the real thing.
+    Q_INVOKABLE void watch(int id);
     // Forgets a failed job; retry queues the same request again.
     Q_INVOKABLE void dismiss(int id);
     Q_INVOKABLE void retry(int id);
@@ -105,6 +115,10 @@ signals:
     void finished(const QString& owner, int ownerId, const QString& use, bool ok, const QString& text, int count);
     // A take was added to a shot; emitted just before its finished().
     void takeArrived(int shot, int take);
+    void watchingChanged();
+    // The watched job's result arrived: a new take, or (upscaled) the take that now has an
+    // upscaled version.
+    void watchedArrived(int take, bool upscaled);
 private:
     struct Job {
         int id = 0;
@@ -129,6 +143,10 @@ private:
         int source = 0, after = 0, character = 0, face = 0, width = 0, height = 0;
         bool fromUpscaled = false;  // works from the source's upscaled version
         QString what, previewNode;
+        // A live preview: the Model Preview Override node added before the guider, the client ID
+        // that queued the job (the previews go only to it), and the latest step that arrived.
+        QString liveNode, client, livePath;
+        int liveStep = 0, liveSteps = 0, liveFps = 24, liveWidth = 0, liveHeight = 0;
         int misses = 0, waiting = 0;
         qint64 started = 0;  // when it was asked for, in ms since the epoch
         qint64 since = 0;    // when it entered its current state
@@ -164,6 +182,18 @@ private:
     int serial = 0, epoch = 0;
     QString clientId;
     QTimer poll;
+    // One WebSocket per client ID with live jobs (normally just this run's), and the prompt each
+    // last said was running: the previews name only their node.
+    QHash<QString, QWebSocket*> sockets;
+    QHash<QString, QString> runningPrompt;
+    QHash<int, QStringList> liveFiles;  // preview clips on disk, by job
+    QString liveDir;
+    int watched = 0;
+    void listen();
+    void openSocket(const QString& client);
+    void showLive(Job& job, const QJsonObject& data);
+    void sweepLive();
+    void addLiveNode(Job& job, QJsonObject& graph);
     Job* find(int id);
     void say(Job& job, const QString& state, const QString& text);
     void upload(int id, QStringList files, QStringList names);

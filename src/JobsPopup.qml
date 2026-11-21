@@ -105,9 +105,21 @@ Popup {
                         Layout.fillWidth: true
                         implicitHeight: rowColumn.implicitHeight + 14
                         radius: 4; color: "#162027"; border.color: failed ? "#8a4a42" : "#34434a"
+                        // A take generating with a live preview: its latest step, small. Click to watch it.
+                        Rectangle {
+                            id: rowPreview
+                            objectName: "jobPreview"
+                            visible: !!row.modelData.preview && !row.failed
+                            x: parent.width - width - 10; y: 7; width: 64; height: 36; radius: 3; color: "#0c1216"; border.color: "#3f9c84"
+                            LivePreview { anchors.fill: parent; anchors.margins: 1; source: rowPreview.visible ? row.modelData.preview : ""
+                                          fps: row.modelData.previewFps || 24; fillMode: Image.PreserveAspectCrop }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: { jp.close(); jp.showRequested(row.modelData.owner, row.modelData.ownerId); editor.generator.watch(row.modelData.id) } }
+                            ToolTip.visible: false
+                        }
                         ColumnLayout {
                             id: rowColumn
-                            x: 10; y: 7; width: parent.width - 20
+                            x: 10; y: 7; width: parent.width - 20 - (rowPreview.visible ? rowPreview.width + 8 : 0)
                             spacing: 3
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8

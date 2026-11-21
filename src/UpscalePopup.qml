@@ -311,7 +311,18 @@ Popup {
                 MouseArea { id: wfMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                             onClicked: { up.close(); up.workflowsRequested() } }
             }
-            Item { Layout.fillWidth: true }
+            // Whether this take will show as it generates (Show takes as they generate, in ComfyUI).
+            Text {
+                id: liveLine
+                objectName: "upscaleLive"
+                Layout.fillWidth: true; Layout.leftMargin: 10
+                elide: Text.ElideRight; font.pixelSize: 11
+                text: editor.comfy.previewsOn ? "Live preview on: click the take on its way to watch it" : editor.comfy.previewsWanted ? "Live preview unavailable (point here for why)" : "Live preview off (ComfyUI settings)"
+                color: editor.comfy.previewsOn ? "#87dec7" : "#8fa0a4"
+                MouseArea { id: liveMouse; anchors.fill: parent; hoverEnabled: true }
+                ToolTip.visible: liveMouse.containsMouse; ToolTip.delay: 300
+                ToolTip.text: editor.comfy.previewsOn ? "The take plays on its tile in the shot as it generates; click it to watch it large, and stop it if it's wrong." : editor.comfy.previewText
+            }
             Small { objectName: "upscaleCancel"; text: "Cancel"; onClicked: up.close() }
             Small {
                 objectName: "upscaleGo"
