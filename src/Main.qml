@@ -84,6 +84,8 @@ ApplicationWindow {
 
     // The single selection shared by the timeline and the inspector.
     property var selection: null
+    // The large view of a picture the pointer rests on in any picker (PictureTile finds it here).
+    readonly property alias peek: picturePeek
     property var lines: editor.lyrics.lines
     readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
@@ -315,6 +317,8 @@ ApplicationWindow {
     // A shot's takes with options.
     TakePopup { id: takePopup; onWorkflowsRequested: win.openWorkflows(); onAskRequested: shot => win.askAgent("shot", shot, "prompts", "Video prompt") }
     function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
+
+    PicturePeek { id: picturePeek; room: win.Overlay.overlay }
 
     // Connecting an agent: Claude Code, Codex, Antigravity or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {

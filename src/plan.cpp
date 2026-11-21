@@ -1144,6 +1144,10 @@ QVariantMap Plan::exported(const QString& kind, int id) const {
         m["role"] = r["fields"].toObject()["role"].toString();
         m["roleLabel"] = optionLabel("refRole", m["role"].toString());
         m["viewName"] = row("view", r["view"].toInt())["fields"].toObject()["name"].toString();
+        // Whose picture, in full: a look's says whose look it is.
+        const QString owner = r["owner"].toString();
+        const int ownerId = r["ownerId"].toInt();
+        m["whose"] = owner == "look" ? nameOf("character", row("look", ownerId)["character"].toInt()) + " · " + nameOf("look", ownerId) : nameOf(owner, ownerId);
     }
     if (kind == "take" && project) {
         const QString path = project->dir.filePath(r["file"].toString());

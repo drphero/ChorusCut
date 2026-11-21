@@ -482,27 +482,19 @@ Rectangle {
                         spacing: 4
                         Repeater {
                             model: shotPics.pics.candidates
-                            Item {
+                            PictureTile {
                                 id: cand
                                 required property var modelData
-                                readonly property int order: shotPics.pics.picked.findIndex(r => r.id === modelData.id)
                                 objectName: "shotRef" + modelData.id
-                                width: 48; height: 62
-                                Rectangle {
-                                    width: 48; height: 48; radius: 3; clip: true; color: "#0c1216"
-                                    border.color: cand.modelData.picked ? "#3f9c84" : "#34434a"; border.width: cand.modelData.picked ? 2 : 1
-                                    Image { anchors.fill: parent; anchors.margins: 2; source: cand.modelData.url; fillMode: Image.PreserveAspectCrop
-                                            asynchronous: true; sourceSize: Qt.size(96, 96); opacity: cand.modelData.picked ? 1 : 0.35 }
-                                    // Its place in the prompt: <Picture n>.
-                                    Rectangle { visible: cand.order >= 0; x: 2; y: 2; width: 14; height: 14; radius: 7; color: "#87dec7"
-                                                Text { anchors.centerIn: parent; text: cand.order + 1; color: "#122328"; font.pixelSize: 9 } }
-                                }
-                                Text { y: 50; width: 48; elide: Text.ElideRight; text: (cand.modelData.extra ? cand.modelData.ownerName + " · " : "") + cand.modelData.viewName; font.pixelSize: 9
-                                       color: cand.modelData.picked ? "#adb8ba" : "#5d6c71" }
-                                MouseArea { id: refHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: shotPics.toggle(cand.modelData.id) }
-                                ToolTip.visible: refHover.containsMouse
-                                ToolTip.text: cand.modelData.ownerName + " · " + cand.modelData.viewName + (cand.modelData.picked ? " (sent)" : " (left out)")
-                                              + (cand.modelData.note ? "\n" + cand.modelData.note : "")
+                                picture: modelData
+                                // Its place in the prompt: <Picture n>.
+                                order: shotPics.pics.picked.findIndex(r => r.id === modelData.id)
+                                selected: modelData.picked
+                                square: true; size: 48; dimmed: 0.35
+                                label: (modelData.extra ? modelData.ownerName + " · " : "") + modelData.viewName
+                                labelColor: modelData.picked ? "#adb8ba" : "#5d6c71"
+                                detail: (modelData.picked ? "Sent as picture " + (order + 1) : "Left out: click to send it") + (modelData.note ? "\n" + modelData.note : "")
+                                onClicked: shotPics.toggle(modelData.id)
                             }
                         }
                     }

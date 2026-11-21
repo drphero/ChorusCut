@@ -10,6 +10,7 @@
 #include "waveform.h"
 #include <QDir>
 #include <QJSValue>
+#include <cmath>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
@@ -1105,6 +1106,71 @@ int main(int argc, char** argv) {
             click(placeTile);
             if (takeDialog->property("picks").toList() != QVariantList{alt, place}) return fail(135, "the picks: " + json(takeDialog->property("picks")));
             capture("take-pick");
+            // Resting the pointer on a picture shows it large beside it, uncropped, with whose it
+            // is; it goes when the pointer leaves, and never takes the next click.
+            {
+                auto peek = window->findChild<QQuickItem*>("picturePeek");
+                auto peekPicture = [&] {
+                    const QVariant v = peek->property("picture");
+                    return v.metaType() == QMetaType::fromType<QJSValue>() ? v.value<QJSValue>().toVariant().toMap() : v.toMap();
+                };
+                auto peekShown = [&] { return peek->isVisible() && peek->parentItem() != nullptr; };
+                if (!peek || peekShown()) return fail(137, "the large view of a picture is missing, or showing with nothing under the pointer");
+                altTile = find(window, QString("takePick_%1").arg(alt));
+                scrollIntoView(altTile);
+                QTest::mouseMove(window, center(altTile));
+                QTest::qWait(150);
+                if (peekShown()) return fail(137, "the large view came up at once, before the pointer rested");
+                if (!waitFor([&] { return peekShown(); }, 1500) || peekPicture()["id"].toInt() != alt)
+                    return fail(137, "resting on Mara's alternative did not show it large: " + json(peekPicture()));
+                if (!waitFor([&] { return find(window, "picturePeekImage")->property("status").toInt() == 1; }, 3000)) return fail(137, "the large view's picture did not load");
+                const auto title = find(window, "picturePeekTitle")->property("text").toString();
+                if (!title.startsWith("Mara · ")) return fail(137, "the large view does not say whose picture it is: " + title);
+                if (!find(window, "picturePeekDetail")->property("text").toString().contains("<Picture 1>"))
+                    return fail(137, "the large view does not say how the prompt names a picked picture");
+                const QRectF big = peek->mapRectToScene(QRectF(0, 0, peek->width(), peek->height()));
+                const QRectF small = altTile->mapRectToScene(QRectF(0, 0, altTile->width(), altTile->property("size").toDouble()));
+                const auto image = find(window, "picturePeekImage");
+                const double aspect = peekPicture()["width"].toDouble() / peekPicture()["height"].toDouble();
+                if (big.intersects(small) || !QRectF(0, 0, window->width(), window->height()).contains(big) || image->height() < 4 * small.height() * 0.9
+                    || std::abs(image->width() / image->height() - aspect) > 0.02)
+                    return fail(137, QString("the large view is %1×%2 at %3,%4 (tile %5,%6 %7×%8, picture aspect %9)").arg(big.width()).arg(big.height()).arg(big.x()).arg(big.y())
+                                         .arg(small.x()).arg(small.y()).arg(small.width()).arg(small.height()).arg(aspect));
+                capture("picture-peek");
+                // A picture hidden under the large view still takes the click: it has no input.
+                {
+                    QQuickItem* under = nullptr;
+                    for (const auto& r : plan->referencesFor("character", mara)) {
+                        auto t = find(window, QString("takePick_%1").arg(r.toMap()["id"].toInt()));
+                        if (t && t != altTile && big.contains(QRectF(center(t), QSizeF(1, 1)))) { under = t; break; }
+                    }
+                    if (!under) return fail(137, "no picture lies under the large view to click through it");
+                    const auto before = takeDialog->property("picks").toList();
+                    QTest::mouseClick(window, Qt::LeftButton, {}, center(under));
+                    QTest::qWait(150);
+                    if (takeDialog->property("picks").toList().size() != before.size() + 1) return fail(137, "a click on a picture under the large view did not reach it");
+                    QTest::mouseClick(window, Qt::LeftButton, {}, center(under));
+                    QTest::qWait(150);
+                    if (takeDialog->property("picks").toList() != before) return fail(137, "taking it out again: " + json(takeDialog->property("picks")));
+                }
+                QTest::mouseMove(window, QPoint(200, 300));  // the prompt
+                if (!waitFor([&] { return !peekShown(); }, 300)) return fail(137, "the large view stayed after the pointer left");
+                // What goes to the model, in order, at the top: whose and how the prompt names it.
+                auto sendAlt = find(window, QString("takeSending_%1").arg(alt));
+                auto sendPlace = find(window, QString("takeSending_%1").arg(place));
+                if (!sendAlt || !sendPlace || sendAlt->mapToScene({0, 0}).x() >= sendPlace->mapToScene({0, 0}).x()
+                    || !sendAlt->property("label").toString().startsWith("<Picture 1>\nMara · ") || !sendPlace->property("label").toString().startsWith("<Picture 2>\n"))
+                    return fail(138, "the pictures to send are not listed in order with their names");
+                QTest::mouseMove(window, center(sendPlace));
+                if (!waitFor([&] { return peekShown() && peekPicture()["id"].toInt() == place; }, 1500)) return fail(138, "resting on a picture to send did not show it large");
+                // With the large view up, a click still reaches what is under the pointer.
+                click(sendPlace);
+                if (takeDialog->property("picks").toList() != QVariantList{alt} || find(window, QString("takeSending_%1").arg(place)))
+                    return fail(138, "clicking a picture to send did not take it out: " + json(takeDialog->property("picks")));
+                if (!waitFor([&] { return !peekShown(); }, 300)) return fail(138, "the large view stayed after its picture was taken out");
+                click(find(window, QString("takePick_%1").arg(place)));
+                if (takeDialog->property("picks").toList() != QVariantList{alt, place}) return fail(138, "putting the place back: " + json(takeDialog->property("picks")));
+            }
             auto save = find(window, "takeSave");
             click(save);
             QStringList order;

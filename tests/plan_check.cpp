@@ -701,6 +701,23 @@ int main(int argc, char** argv) {
         click(find(window, "shotPicReset"));
         if (plan->shotPictures(id)["overridden"].toBool() || plan->shotReferences(id).size() != pickedBefore)
             return fail(52, "Back to the framing's picks did not restore them");
+        // Resting the pointer on one shows it large, beside the inspector and inside the window,
+        // saying whose it is and whether it is sent; it goes when the pointer leaves.
+        auto peek = window->findChild<QQuickItem*>("picturePeek");
+        auto peekShown = [&] { return peek && peek->isVisible() && peek->parentItem() != nullptr; };
+        auto tile = find(window, QString("shotRef%1").arg(firstPicked));
+        QTest::mouseMove(window, center(tile));
+        if (!waitFor([&] { return peekShown(); }, 1500)) return fail(76, "resting on a picture in the inspector did not show it large");
+        if (!waitFor([&] { return find(window, "picturePeekImage")->property("status").toInt() == 1; }, 3000)) return fail(76, "the large view's picture did not load");
+        const QRectF big = peek->mapRectToScene(QRectF(0, 0, peek->width(), peek->height()));
+        const QRectF small = tile->mapRectToScene(QRectF(0, 0, tile->width(), tile->height()));
+        const QString title = find(window, "picturePeekTitle")->property("text").toString();
+        if (!title.startsWith("Mara · ") || !find(window, "picturePeekDetail")->property("text").toString().startsWith("Sent as picture 1")
+            || big.intersects(small) || big.right() > small.left() || !QRectF(0, 0, window->width(), window->height()).contains(big))
+            return fail(76, QString("the large view (%1, at %2,%3 %4×%5) is not beside the inspector's picture at %6,%7").arg(title).arg(big.x()).arg(big.y()).arg(big.width()).arg(big.height()).arg(small.x()).arg(small.y()));
+        capture("inspector-picture-peek");
+        QTest::mouseMove(window, QPoint(40, 40));
+        if (!waitFor([&] { return !peekShown(); }, 300)) return fail(76, "the large view stayed after the pointer left the inspector's picture");
     }
     // Props in frame: added from the inspector's list, shown as a chip, their picture offered, removed with ×.
     {

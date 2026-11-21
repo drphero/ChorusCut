@@ -285,10 +285,37 @@ Popup {
                         Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#8fa0a4"; font.pixelSize: 11
                         text: "Click pictures in order. The instruction can name them as " + gp.label(1) + (gp.most > 1 ? ", " + gp.label(2) : "") + "…"
                     }
+                    // What it is made from, in order, as the instruction names them.
+                    Rectangle {
+                        objectName: "genSending"
+                        visible: gp.inputs.length > 0
+                        Layout.fillWidth: true
+                        implicitHeight: sendingFlow.implicitHeight + 16
+                        radius: 5; color: "#162027"; border.color: "#2c3a41"
+                        Flow {
+                            id: sendingFlow
+                            x: 8; y: 8; width: parent.width - 16
+                            spacing: 10
+                            Repeater {
+                                model: (editor.plan.revision, gp.inputs.map(id => editor.plan.item("reference", id)).filter(r => r.id !== undefined))
+                                PictureTile {
+                                    required property var modelData
+                                    required property int index
+                                    objectName: "genSending_" + modelData.id
+                                    picture: modelData
+                                    order: index
+                                    size: 72; labelLines: 2; minWidth: 104
+                                    label: gp.label(index + 1) + "\n" + (modelData.whose || "") + " · " + modelData.viewName
+                                    detail: "Made from it as " + gp.label(index + 1) + ". Click to take it out."
+                                    onClicked: gp.togglePick(modelData.id)
+                                }
+                            }
+                        }
+                    }
                     ScrollView {
                         id: pickScroll
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.min(pickColumn.implicitHeight, 230)
+                        Layout.preferredHeight: Math.min(pickColumn.implicitHeight, 300)
                         contentWidth: availableWidth
                         clip: true
                         ColumnLayout {
@@ -306,24 +333,17 @@ Popup {
                                         Layout.fillWidth: true; spacing: 6
                                         Repeater {
                                             model: group.modelData.pictures
-                                            Item {
+                                            PictureTile {
                                                 id: pick
                                                 required property var modelData
-                                                readonly property int order: gp.inputs.indexOf(modelData.id)
                                                 objectName: "genPick_" + modelData.id
-                                                width: 56; height: 74
-                                                Rectangle {
-                                                    width: 56; height: 56; radius: 4; clip: true; color: "#0c1216"
-                                                    border.color: pick.order >= 0 ? "#87dec7" : "#34434a"; border.width: pick.order >= 0 ? 2 : 1
-                                                    Image { anchors.fill: parent; anchors.margins: 2; source: pick.modelData.url; fillMode: Image.PreserveAspectCrop
-                                                            asynchronous: true; sourceSize: Qt.size(112, 112); opacity: pick.order >= 0 ? 1 : 0.6 }
-                                                    Rectangle { visible: pick.order >= 0; x: 3; y: 3; width: 16; height: 16; radius: 8; color: "#87dec7"
-                                                                Text { anchors.centerIn: parent; text: pick.order + 1; color: "#122328"; font.pixelSize: 10 } }
-                                                }
-                                                Text { y: 58; width: 56; elide: Text.ElideRight; font.pixelSize: 9
-                                                       text: pick.modelData.viewName + (pick.modelData.approved ? "" : " ·alt")
-                                                       color: pick.modelData.approved ? "#87dec7" : "#6f8085" }
-                                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: gp.togglePick(pick.modelData.id) }
+                                                picture: modelData
+                                                order: gp.inputs.indexOf(modelData.id)
+                                                size: 84
+                                                label: modelData.viewName + (modelData.approved ? "" : " · alt")
+                                                labelColor: order >= 0 || modelData.approved ? "#87dec7" : "#6f8085"
+                                                detail: order >= 0 ? "Made from it as " + gp.label(order + 1) + ". Click to take it out." : "Click to make it from this too."
+                                                onClicked: gp.togglePick(modelData.id)
                                             }
                                         }
                                     }

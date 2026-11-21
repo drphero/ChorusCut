@@ -344,6 +344,33 @@ Popup {
                         Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#8fa0a4"; font.pixelSize: 11
                         text: "Click pictures in the order the prompt names them: " + tp.label(1) + (tp.most > 1 ? ", " + tp.label(2) : "") + "…"
                     }
+                    // What goes to the video model, in order, as the prompt names them.
+                    Rectangle {
+                        objectName: "takeSending"
+                        visible: tp.picks.length > 0
+                        Layout.fillWidth: true
+                        implicitHeight: sendingFlow.implicitHeight + 16
+                        radius: 5; color: "#162027"; border.color: "#2c3a41"
+                        Flow {
+                            id: sendingFlow
+                            x: 8; y: 8; width: parent.width - 16
+                            spacing: 10
+                            Repeater {
+                                model: (editor.plan.revision, tp.picks.map(id => editor.plan.item("reference", id)).filter(r => r.id !== undefined))
+                                PictureTile {
+                                    required property var modelData
+                                    required property int index
+                                    objectName: "takeSending_" + modelData.id
+                                    picture: modelData
+                                    order: index
+                                    size: 72; labelLines: 2; minWidth: 104
+                                    label: tp.label(index + 1) + "\n" + (modelData.whose || "") + " · " + modelData.viewName
+                                    detail: "Sent as " + tp.label(index + 1) + ". Click to take it out."
+                                    onClicked: tp.togglePick(modelData.id)
+                                }
+                            }
+                        }
+                    }
                     Repeater {
                         model: tp.groups
                         ColumnLayout {
@@ -355,26 +382,17 @@ Popup {
                                 Layout.fillWidth: true; spacing: 6
                                 Repeater {
                                     model: group.modelData.pictures
-                                    Item {
+                                    PictureTile {
                                         id: pic
                                         required property var modelData
-                                        readonly property int order: tp.picks.indexOf(modelData.id)
                                         objectName: "takePick_" + modelData.id
-                                        width: 56; height: 74
-                                        Rectangle {
-                                            width: 56; height: 56; radius: 4; clip: true; color: "#0c1216"
-                                            border.color: pic.order >= 0 ? "#87dec7" : "#34434a"; border.width: pic.order >= 0 ? 2 : 1
-                                            Image { anchors.fill: parent; anchors.margins: 2; source: pic.modelData.url || ""; fillMode: Image.PreserveAspectCrop
-                                                    asynchronous: true; sourceSize: Qt.size(112, 112); opacity: pic.order >= 0 ? 1 : 0.55 }
-                                            Rectangle { visible: pic.order >= 0; x: 3; y: 3; width: 16; height: 16; radius: 8; color: "#87dec7"
-                                                        Text { anchors.centerIn: parent; text: pic.order + 1; color: "#122328"; font.pixelSize: 10 } }
-                                        }
-                                        Text { y: 58; width: 56; elide: Text.ElideRight; font.pixelSize: 9
-                                               text: pic.order >= 0 ? tp.label(pic.order + 1) : pic.modelData.viewName + (pic.modelData.approved ? "" : " ·alt")
-                                               color: pic.order >= 0 ? "#87dec7" : "#6f8085" }
-                                        MouseArea { id: picMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: tp.togglePick(pic.modelData.id) }
-                                        ToolTip.visible: picMouse.containsMouse; ToolTip.delay: 400
-                                        ToolTip.text: pic.modelData.viewName + (pic.modelData.approved ? " (chosen)" : " (alternative)")
+                                        picture: modelData
+                                        order: tp.picks.indexOf(modelData.id)
+                                        size: 84; dimmed: 0.55
+                                        label: order >= 0 ? tp.label(order + 1) : modelData.viewName + (modelData.approved ? "" : " · alt")
+                                        labelColor: order >= 0 ? "#87dec7" : "#8fa0a4"
+                                        detail: order >= 0 ? "Sent as " + tp.label(order + 1) + ". Click to take it out." : "Click to send it too."
+                                        onClicked: tp.togglePick(modelData.id)
                                     }
                                 }
                             }
