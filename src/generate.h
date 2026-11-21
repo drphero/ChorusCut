@@ -63,8 +63,8 @@ public:
     Q_INVOKABLE QString generateTake(int shot, const QVariantMap& options = {});
     // What refining faces on a take would be: {take, shot, lipSync, frames, workflow, workflowName,
     // workflows, maxPictures, why, ready, people: [{character, look, name, face (reference id or 0),
-    // faces (their pictures to find them by), pictures (default ids for H3: theirs among what made
-    // the take, else their chosen pictures, at most 3), available (every picture of theirs and their
+    // faces (their pictures to find them by), pictures (default ids for H3: their face picture, then
+    // theirs among what made the take, topped up with their chosen pictures, at most 3), available (every picture of theirs and their
     // look), prompt (their kept face-refine prompt), why}]}.
     Q_INVOKABLE QVariantMap refineOptions(int take, const QString& workflow = {}) const;
     // Queues one face-refine pass per entry of passes ({character, face, pictures: [reference ids],

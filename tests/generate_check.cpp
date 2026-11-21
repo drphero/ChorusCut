@@ -226,8 +226,92 @@ static int liveTake(int argc, char** argv) {
     return 0;
 }
 
+// --live-face URL PROJECT_COPY WORKFLOW TAKE CHARACTERS OUT_DIR: refines faces on a take through a
+// real ComfyUI with the H3 Face Refine nodes, as the Refine faces dialog would with its defaults
+// (each person's face picture, their pictures, their kept prompt or "<Picture 1> shows Name."),
+// one pass per character id in CHARACTERS (comma separated, in order). Copies each refined take
+// and its picture of the faces found to OUT_DIR. Uses its own workflow library.
+static int liveFace(int argc, char** argv) {
+    if (argc != 8) { qCritical() << "usage: ChorusCutGenerateCheck --live-face URL PROJECT_COPY WORKFLOW TAKE CHARACTERS OUT_DIR"; return 1; }
+    QTemporaryDir scratch;
+    qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
+    qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
+    qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
+    QGuiApplication app(argc, argv);
+    app.setOrganizationName("Chorus Cut Tests");
+    app.setApplicationName("Generate Live");
+    Mlt::Factory::init();
+    Editor editor;
+    if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[3]).absoluteFilePath()))) return fail(2, editor.status());
+    editor.comfy()->configure(argv[2], {}, true);
+    auto flows = editor.workflows();
+    auto gen = editor.generator();
+    auto plan = editor.plan();
+    const auto added = flows->importFile(QUrl::fromLocalFile(QFileInfo(argv[4]).absoluteFilePath()));
+    const QString workflow = added["id"].toString();
+    qInfo().noquote() << "imported" << workflow << flows->get(workflow)["use"].toString() << "ready" << flows->get(workflow)["ready"].toBool()
+                      << flows->get(workflow)["problems"].toStringList().join(" ");
+    if (!flows->get(workflow)["ready"].toBool()) return fail(220, "the workflow is not ready");
+    const int take = QString(argv[5]).toInt();
+    const auto source = plan->item("take", take);
+    if (source.isEmpty()) return fail(220, "no take " + QString(argv[5]));
+    const int shot = source["shot"].toInt();
+    gen->fetchChoices(workflow);
+    if (!waitFor([&] { return gen->pictureLabel(workflow, 1) == "<Picture 1>"; }, 20000)) qWarning() << "ComfyUI's node details did not arrive; going on";
+    const auto opts = gen->refineOptions(take);
+    qInfo().noquote() << "options" << json(opts["people"]).left(600);
+    QVariantList passes;
+    for (const QString& c : QString(argv[6]).split(',')) {
+        QVariantMap person;
+        for (const auto& p : opts["people"].toList()) if (p.toMap()["character"].toInt() == c.toInt()) person = p.toMap();
+        if (person.isEmpty()) return fail(221, "character " + c + " is not in the shot");
+        QStringList labels;
+        const auto pictures = person["pictures"].toList();
+        for (int i = 1; i <= pictures.size(); ++i) labels << QString("<Picture %1>").arg(i);
+        const QString list = labels.size() > 1 ? labels.mid(0, labels.size() - 1).join(", ") + " and " + labels.last() : labels.value(0);
+        const QString prompt = !person["prompt"].toString().isEmpty() ? person["prompt"].toString()
+                             : list + (labels.size() > 1 ? " show " : " shows ") + person["name"].toString() + ".";
+        qInfo().noquote() << "pass" << person["name"].toString() << "face" << person["face"].toInt() << "pictures" << json(pictures) << "prompt" << prompt;
+        passes << QVariantMap{{"character", c.toInt()}, {"face", person["face"]}, {"pictures", pictures}, {"prompt", prompt}};
+    }
+    QElapsedTimer clock;
+    clock.start();
+    const int before = plan->takesFor(shot).size();
+    if (const QString why = gen->refineFaces(take, passes); !why.isEmpty()) return fail(222, why);
+    QHash<int, QString> last;
+    while (clock.elapsed() < 60 * 60000) {
+        QTest::qWait(1000);
+        if (plan->takesFor(shot).size() >= before + passes.size() && gen->jobs().isEmpty()) break;
+        for (const auto& j : gen->jobs()) {
+            const QString text = j.toMap()["what"].toString() + " " + j.toMap()["state"].toString() + ": " + j.toMap()["text"].toString();
+            const int id = j.toMap()["id"].toInt();
+            if (text != last.value(id)) { qInfo().noquote() << int(clock.elapsed() / 1000) << "s" << text; last[id] = text; }
+            if (j.toMap()["state"] == "failed") return fail(223, j.toMap()["text"].toString());
+        }
+    }
+    if (plan->takesFor(shot).size() < before + passes.size()) return fail(224, "the refined takes did not arrive in time");
+    const QDir out(QFileInfo(argv[7]).absoluteFilePath());
+    QDir().mkpath(out.path());
+    for (const auto& v : plan->takesFor(shot).mid(before)) {
+        const auto t = v.toMap();
+        for (const auto& [url, suffix] : {std::pair{t["url"].toString(), QString("")}, std::pair{t["facesUrl"].toString(), QString("-faces")}}) {
+            const QString from = QUrl(url).toLocalFile();
+            if (from.isEmpty()) continue;
+            const QString to = out.filePath(QString("shot%1-take%2%3.%4").arg(shot).arg(t["number"].toInt()).arg(suffix, QFileInfo(from).suffix()));
+            QFile::remove(to);
+            QFile::copy(from, to);
+        }
+        qInfo().noquote() << "take" << t["number"].toInt() << t["refined"].toString() << "from take" << t["refinedFromNumber"].toInt() << t["frames"].toInt() << "frames"
+                          << t["width"].toInt() << "x" << t["height"].toInt() << "from frame" << t["from"].toInt() << "lip-sync" << t["lipSync"].toBool();
+    }
+    qInfo().noquote() << "done after" << clock.elapsed() / 1000.0 << "s";
+    qInfo() << "PASS live face";
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && QString(argv[1]) == "--live") return live(argc, argv);
+    if (argc > 1 && QString(argv[1]) == "--live-face") return liveFace(argc, argv);
     if (argc > 1 && QString(argv[1]) == "--live-take") return liveTake(argc, argv);
     if (argc != 4) { qCritical() << "usage: ChorusCutGenerateCheck PROJECT_COPY STUB_SCRIPT FIXTURES_DIR"; return 1; }
     qputenv("QT_QPA_PLATFORM", "offscreen");

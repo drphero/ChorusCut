@@ -458,11 +458,13 @@ QVariantMap Generator::refineOptions(int takeId, const QString& wanted) const {
         if (!face && !faces.isEmpty()) face = faces.first().toMap()["id"].toInt();
         QSet<int> theirs;
         for (const auto& r : available) theirs.insert(r.toMap()["id"].toInt());
+        // Their face picture first (what a face pass is about), then theirs among what made the take.
         QVariantList pictures;
-        for (int id : made) if (theirs.contains(id) && pictures.size() < qMin(3, most)) pictures << id;
-        if (pictures.isEmpty())
+        if (face) pictures << face;
+        for (int id : made) if (theirs.contains(id) && id != face && pictures.size() < qMin(3, most)) pictures << id;
+        if (pictures.size() < 2)
             for (const auto& r : available)
-                if (r.toMap()["approved"].toBool() && !r.toMap()["missing"].toBool() && pictures.size() < qMin(3, most)) pictures << r.toMap()["id"];
+                if (r.toMap()["approved"].toBool() && !r.toMap()["missing"].toBool() && !pictures.contains(r.toMap()["id"]) && pictures.size() < qMin(3, most)) pictures << r.toMap()["id"];
         people.append(QVariantMap{{"character", character}, {"look", look}, {"name", name}, {"face", face}, {"faces", faces},
                                   {"pictures", pictures}, {"available", available}, {"prompt", person["fields"].toMap()["facePrompt"].toString()},
                                   {"why", face ? QString() : "No picture of " + name + " to find their face by: add one to their Face view."}});

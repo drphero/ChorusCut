@@ -69,7 +69,8 @@ QString fileInput(const QString& cls) {
 }
 bool takesFile(const QJsonObject& graph, const QString& node, const QString& input) {
     const QJsonValue v = inputsOf(graph, node).value(input);
-    return v.isString() || (v.isUndefined() && fileInput(graph[node].toObject()["class_type"].toString()) == input);
+    // Missing, or null as newer ComfyUI exports it.
+    return v.isString() || ((v.isUndefined() || v.isNull()) && fileInput(graph[node].toObject()["class_type"].toString()) == input);
 }
 
 // From a conditioning link, upstream to the first node with literal prompt text.
@@ -440,7 +441,7 @@ QVariantMap Workflows::get(const QString& id) const {
         auto in = n["inputs"].toObject();
         // A loader with no file chosen still lists its file input, so it can be mapped.
         const QString file = fileInput(n["class_type"].toString());
-        if (!file.isEmpty() && !in.contains(file)) in[file] = QString();
+        if (!file.isEmpty() && (!in.contains(file) || in[file].isNull())) in[file] = QString();
         for (auto it = in.begin(); it != in.end(); ++it) {
             if (isLink(it.value()) || it.value().isArray() || it.value().isObject()) continue;
             const QString key = node + "/" + it.key();

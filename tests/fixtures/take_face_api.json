@@ -6,7 +6,7 @@
       "confidence": 0.35,
       "select": "identity_reference",
       "select_index": 0,
-      "confirmed_pick": "20",
+      "confirmed_pick": "",
       "cut_detection": "none",
       "cut_threshold": 3,
       "skip_first_frames": 0,
@@ -24,12 +24,14 @@
     },
     "class_type": "H3FaceSelect",
     "_meta": {
-      "title": "H3 Load Video + Face Select"
+      "title": "H3 Load Video + Face Select",
+      "cnr_id": "comfyui-h3-facerefine",
+      "ver": "d8521d14fe0d721d80cd9417fff5a559cbc21aba"
     }
   },
   "4": {
     "inputs": {
-      "sigma_frac": 0.006666666666666667,
+      "sigma_frac": 0.0067,
       "threshold": 4,
       "base_offset": 0,
       "base_images": [
@@ -43,7 +45,9 @@
     },
     "class_type": "H3FaceFlowLock",
     "_meta": {
-      "title": "H3 Face Flow Lock (anti-wobble)"
+      "title": "H3 Face Flow Lock (anti-wobble)",
+      "cnr_id": "comfyui-h3-facerefine-plus",
+      "ver": "681708c34571951a79d59b7ba2be85bfafef6152"
     }
   },
   "5": {
@@ -82,13 +86,15 @@
     },
     "class_type": "H3FaceTrackCrop",
     "_meta": {
-      "title": "H3 Face Track + Crop"
+      "title": "H3 Face Track + Crop",
+      "cnr_id": "comfyui-h3-facerefine",
+      "ver": "d8521d14fe0d721d80cd9417fff5a559cbc21aba"
     }
   },
   "6": {
     "inputs": {
       "sigma_luma_frac": 0.01,
-      "sigma_chroma_frac": 0.0033333333333333335,
+      "sigma_chroma_frac": 0.0033,
       "source_offset": 0,
       "lip_fix": true,
       "face_detector": "face_yolov8m.pt",
@@ -103,7 +109,9 @@
     },
     "class_type": "H3FaceToneMatch",
     "_meta": {
-      "title": "H3 Face Tone Match (colour back to source)"
+      "title": "H3 Face Tone Match (colour back to source)",
+      "cnr_id": "comfyui-h3-facerefine-plus",
+      "ver": "681708c34571951a79d59b7ba2be85bfafef6152"
     }
   },
   "7": {
@@ -131,7 +139,9 @@
     },
     "class_type": "H3FaceStitchPlus",
     "_meta": {
-      "title": "H3 Face Stitch Plus (antialias + freq-sep + hi-res base)"
+      "title": "H3 Face Stitch Plus (antialias + freq-sep + hi-res base)",
+      "cnr_id": "comfyui-h3-facerefine-plus",
+      "ver": "681708c34571951a79d59b7ba2be85bfafef6152"
     }
   },
   "14": {
@@ -151,7 +161,9 @@
     },
     "class_type": "H3InjectVideoLatent",
     "_meta": {
-      "title": "H3 Inject Video Latent (img2img)"
+      "title": "H3 Inject Video Latent (img2img)",
+      "cnr_id": "comfyui-h3-facerefine",
+      "ver": "d8521d14fe0d721d80cd9417fff5a559cbc21aba"
     }
   },
   "15": {
@@ -178,7 +190,9 @@
     },
     "class_type": "H3PerFrameDenoise",
     "_meta": {
-      "title": "H3 Per-Frame Denoise"
+      "title": "H3 Per-Frame Denoise",
+      "cnr_id": "comfyui-h3-facerefine",
+      "ver": "d8521d14fe0d721d80cd9417fff5a559cbc21aba"
     }
   },
   "17": {
@@ -188,7 +202,9 @@
     },
     "class_type": "H3FaceRefineStrength",
     "_meta": {
-      "title": "H3 FaceRefine Plus Strength (preset)"
+      "title": "H3 FaceRefine Plus Strength (preset)",
+      "cnr_id": "comfyui-h3-facerefine-plus",
+      "ver": "681708c34571951a79d59b7ba2be85bfafef6152"
     }
   },
   "20": {
@@ -230,27 +246,33 @@
     },
     "class_type": "MiniMaxH3ReferenceToVideo",
     "_meta": {
-      "title": "MiniMax H3 Reference to Video"
+      "title": "MiniMax H3 Reference to Video",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "21": {
     "inputs": {
-      "clip_name": "minimax_h3_text_encoder.safetensors",
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
       "type": "minimax",
       "device": "default"
     },
     "class_type": "CLIPLoader",
     "_meta": {
-      "title": "Load CLIP"
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "22": {
     "inputs": {
-      "vae_name": "pixel_space"
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
-      "title": "Load VAE"
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "23": {
@@ -259,7 +281,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "24": {
@@ -268,7 +292,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "25": {
@@ -277,7 +303,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "26": {
@@ -302,31 +330,37 @@
     },
     "class_type": "PixaromaH3AudioSync",
     "_meta": {
-      "title": "H3 Audio Sync Pixaroma"
+      "title": "H3 Audio Sync Pixaroma",
+      "cnr_id": "ComfyUI-Pixaroma",
+      "ver": "f389185cc469a0b6cfaadd5eb3aef55f7c6d6383"
     }
   },
   "27": {
     "inputs": {
-      "vae_name": "pixel_space"
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
-      "title": "Load VAE"
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "28": {
     "inputs": {
-      "unet_name": "minimax_h3.safetensors",
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
     "_meta": {
-      "title": "Load Diffusion Model"
+      "title": "Load Diffusion Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "29": {
     "inputs": {
-      "attention": "pytorch attention",
+      "attention": "comfy kitchen attention",
       "model": [
         "28",
         0
@@ -334,7 +368,9 @@
     },
     "class_type": "ModelAttentionBackend",
     "_meta": {
-      "title": "Model Attention Backend"
+      "title": "Model Attention Backend",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "30": {
@@ -350,7 +386,9 @@
     },
     "class_type": "BasicGuider",
     "_meta": {
-      "title": "Basic Guider"
+      "title": "Basic Guider",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "31": {
@@ -378,7 +416,9 @@
     },
     "class_type": "SamplerCustomAdvanced",
     "_meta": {
-      "title": "SamplerCustomAdvanced"
+      "title": "SamplerCustomAdvanced",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "32": {
@@ -387,7 +427,9 @@
     },
     "class_type": "RandomNoise",
     "_meta": {
-      "title": "RandomNoise"
+      "title": "RandomNoise",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "33": {
@@ -396,7 +438,9 @@
     },
     "class_type": "KSamplerSelect",
     "_meta": {
-      "title": "KSamplerSelect"
+      "title": "KSamplerSelect",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "34": {
@@ -414,7 +458,9 @@
     },
     "class_type": "BasicScheduler",
     "_meta": {
-      "title": "BasicScheduler"
+      "title": "BasicScheduler",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "35": {
@@ -430,7 +476,9 @@
     },
     "class_type": "VAEDecode",
     "_meta": {
-      "title": "VAE Decode"
+      "title": "VAE Decode",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "37": {
@@ -445,7 +493,9 @@
     },
     "class_type": "VHS_LoadVideoFFmpeg",
     "_meta": {
-      "title": "Load Video FFmpeg (Upload) \ud83c\udfa5\ud83c\udd65\ud83c\udd57\ud83c\udd62"
+      "title": "Load Video FFmpeg (Upload) \ud83c\udfa5\ud83c\udd65\ud83c\udd57\ud83c\udd62",
+      "cnr_id": "comfyui-videohelpersuite",
+      "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1"
     }
   },
   "38": {
@@ -462,7 +512,9 @@
     },
     "class_type": "CreateVideo",
     "_meta": {
-      "title": "Create Video"
+      "title": "Create Video",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "39": {
@@ -471,7 +523,7 @@
       "format": "auto",
       "format.codec": "h264",
       "format.codec.encoding": "re-encode",
-      "format.codec.encoding.crf": 18,
+      "format.codec.encoding.crf": 16,
       "codec": "auto",
       "video": [
         "38",
@@ -480,7 +532,9 @@
     },
     "class_type": "SaveVideo",
     "_meta": {
-      "title": "Save Video"
+      "title": "Save Video",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "40": {
@@ -489,14 +543,20 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   },
   "41": {
-    "inputs": {},
+    "inputs": {
+      "audio": null
+    },
     "class_type": "LoadAudio",
     "_meta": {
-      "title": "Load Audio (song, or silence)"
+      "title": "Load Audio (song, or silence)",
+      "cnr_id": "comfy-core",
+      "ver": "0.46.2"
     }
   }
 }
