@@ -209,6 +209,36 @@ Rectangle {
         const s = editor.plan.shot(id)
         if (s.id !== undefined) selected({kind: "shot", id: id, start: s.startMs, end: s.endMs, label: "Shot " + s.number})
     }
+    function regionSelection(r) { return {kind: "region", start: r.start, end: r.end, label: r.label, firstRow: r.firstRow, lastRow: r.lastRow} }
+    function instrumentalName(r) { return "♪ " + (r.kind === "intro" ? "Instrumental intro" : r.kind === "outro" ? "Instrumental outro" : "Instrumental") }
+    function instrumentalSelection(r) { return {kind: "instrumental", start: r.start, end: r.end, label: instrumentalName(r)} }
+    // X: the shot playing at this frame (V2 over V1, as it plays); pressed again on that shot, or
+    // where there is none, its section or instrumental part.
+    function selectUnder(frame) {
+        const ms = Math.round(frame / editor.fps * 1000)
+        const all = Array.from(shots || [])
+        const shot = all.find(x => x.track === 2 && x.start <= frame && frame < x.end) || all.find(x => x.track === 1 && x.start <= frame && frame < x.end)
+        const onShot = shot && selection && selection.kind === "shot" && selection.id === shot.id
+        if (shot && !onShot) { selectShot(shot.id); return }
+        const region = Array.from(regions || []).find(r => r.start <= ms && ms < r.end)
+        if (region) { selected(regionSelection(region)); return }
+        const part = Array.from(instrumental || []).find(r => r.start <= ms && ms < r.end)
+        if (part) selected(instrumentalSelection(part))
+    }
+    // Dragging an edge of the selection in the ruler: what is left is a plain range, at least a frame.
+    function moveSelectionEdge(which, x) {
+        const s = selection
+        if (!s) return
+        const least = Math.ceil(1000 / editor.fps)
+        const t = Math.round(Math.max(0, Math.min(duration, sec(x))) * 1000)
+        const a = which === "start" ? Math.min(t, s.end - least) : s.start
+        const b = which === "end" ? Math.max(t, s.start + least) : s.end
+        selected({kind: "range", start: a, end: b, label: "Range"})
+    }
+    function span(ms) {
+        const t = ms / 1000
+        return t < 60 ? t.toFixed(1) + " s" : Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0")
+    }
     readonly property var shotColors: ({
         lipsync: ["#24505a", "#6fc3d2"], performance: ["#2a4652", "#7fb0c0"], story: ["#363c66", "#959ce6"],
         broll: ["#47395c", "#b99ade"], insert: ["#56482b", "#dcb66c"], abstract: ["#28534a", "#79cdb5"],
@@ -389,6 +419,13 @@ Rectangle {
             }
         }
 
+        // Empty lane space selects a range when dragged: an I-beam says so. Clips and sections set
+        // their own cursors over it.
+        Item {
+            y: tl.rulerH; width: parent.width; height: parent.height - tl.rulerH
+            HoverHandler { cursorShape: Qt.IBeamCursor }
+        }
+
         PinchHandler {
             target: null
             property real last: 1
@@ -422,9 +459,8 @@ Rectangle {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: tl.selected({kind: "region", start: parent.modelData.start, end: parent.modelData.end,
-                                            label: parent.modelData.label, firstRow: parent.modelData.firstRow,
-                                            lastRow: parent.modelData.lastRow})
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: tl.selected(tl.regionSelection(parent.modelData))
                     onDoubleClicked: tl.zoomTo(parent.modelData.start, parent.modelData.end)
                 }
             }
@@ -433,7 +469,7 @@ Rectangle {
             model: tl.instrumental
             Rectangle {
                 required property var modelData
-                readonly property string name: "♪ " + (modelData.kind === "intro" ? "Instrumental intro" : modelData.kind === "outro" ? "Instrumental outro" : "Instrumental")
+                readonly property string name: tl.instrumentalName(modelData)
                 x: tl.px(modelData.start / 1000); y: tl.sectionY + 2
                 width: Math.max(2, (modelData.end - modelData.start) / 1000 * tl.pps); height: tl.sectionH - 4
                 visible: x + width > 0 && x < lanes.width
@@ -444,7 +480,8 @@ Rectangle {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: tl.selected({kind: "instrumental", start: parent.modelData.start, end: parent.modelData.end, label: parent.name})
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: tl.selected(tl.instrumentalSelection(parent.modelData))
                     onDoubleClicked: tl.zoomTo(parent.modelData.start, parent.modelData.end)
                 }
             }
@@ -892,11 +929,53 @@ Rectangle {
             y: 0; height: lanes.height
             color: "#ecedc9"; opacity: 0.07
         }
-        Rectangle {
-            visible: tl.selection !== null && tl.selection.end > tl.selection.start
-            x: tl.selection ? tl.px(tl.selection.start / 1000) : 0
-            width: tl.selection ? Math.max(1, (tl.selection.end - tl.selection.start) / 1000 * tl.pps) : 0
-            y: tl.rulerH - 4; height: 4; color: "#d9c46a"; z: 11
+        // The selection in the ruler: what it is and how long, edges to drag, × to clear.
+        Item {
+            id: selBar
+            objectName: "selectionBar"
+            readonly property var sel: tl.selection
+            readonly property bool roomy: width >= 44
+            visible: sel !== null && sel.end > sel.start
+            x: sel ? tl.px(sel.start / 1000) : 0
+            width: sel ? Math.max(2, (sel.end - sel.start) / 1000 * tl.pps) : 0
+            y: 13; height: 10; z: 11
+            Rectangle { anchors.fill: parent; radius: 3; color: "#d9c46a" }
+            Text {
+                objectName: "selectionLabel"
+                // Kept in view when the selection starts off the left edge.
+                x: Math.max(5, -selBar.x + 5)
+                width: Math.max(0, Math.min(selBar.width, lanes.width - selBar.x) - x - (selBar.roomy ? 17 : 4))
+                visible: width > 20
+                anchors.verticalCenter: parent.verticalCenter
+                text: selBar.sel ? selBar.sel.label + " · " + tl.span(selBar.sel.end - selBar.sel.start) : ""
+                color: "#1d1a0b"; font.pixelSize: 9; font.weight: Font.DemiBold; elide: Text.ElideRight
+            }
+            Rectangle {
+                objectName: "selectionClear"
+                width: 11; height: 11; radius: 5.5
+                x: selBar.roomy ? Math.min(selBar.width, lanes.width - selBar.x) - 15 : selBar.width + 7
+                color: clearMouse.containsMouse ? "#f2e08a" : selBar.roomy ? "#bfa94f" : "#d9c46a"
+                Text { anchors.centerIn: parent; text: "×"; color: "#1d1a0b"; font.pixelSize: 10; font.bold: true }
+                MouseArea {
+                    id: clearMouse
+                    anchors.fill: parent; anchors.margins: -3
+                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: tl.selected(null)
+                }
+                ToolTip.visible: clearMouse.containsMouse; ToolTip.delay: 500; ToolTip.text: "Clear the selection (Esc)"
+            }
+            MouseArea {
+                objectName: "selectionStart"
+                x: -5; y: -selBar.y; width: 9; height: tl.rulerH
+                cursorShape: Qt.SizeHorCursor
+                onPositionChanged: m => { if (pressed) tl.moveSelectionEdge("start", mapToItem(lanes, m.x, 0).x) }
+            }
+            MouseArea {
+                objectName: "selectionEnd"
+                x: selBar.width - 4; y: -selBar.y; width: 9; height: tl.rulerH
+                cursorShape: Qt.SizeHorCursor
+                onPositionChanged: m => { if (pressed) tl.moveSelectionEdge("end", mapToItem(lanes, m.x, 0).x) }
+            }
         }
         Rectangle {
             x: tl.px(tl.playheadSeconds) - 1; y: 0; width: 2; height: lanes.height

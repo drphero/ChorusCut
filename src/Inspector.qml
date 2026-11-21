@@ -111,6 +111,22 @@ Rectangle {
                     color: editor.lyrics.flaggedLines ? "#e0a24a" : "#87dec7"
                 }
                 Small { visible: editor.lyrics.flaggedLines > 0; text: "Go to next line to check"; onClicked: ins.nextFlagged() }
+                // How to select part of the song: nothing on the timeline says so on its own.
+                Rectangle {
+                    objectName: "selectHint"
+                    Layout.fillWidth: true; Layout.topMargin: 10
+                    implicitHeight: hintText.implicitHeight + 16
+                    radius: 5; color: "#1f2b30"; border.color: "#34434a"
+                    Text {
+                        id: hintText
+                        x: 8; y: 8; width: parent.width - 16
+                        wrapMode: Text.Wrap; lineHeight: 1.25; color: "#c3cdce"; font.pixelSize: 12
+                        textFormat: Text.StyledText
+                        text: "<b>Select part of the song</b><br>"
+                              + "Drag across the waveform or any empty space · click a section, shot or lyric (⇧-click for more lines) · "
+                              + "press <b>I</b> and <b>O</b> at the playhead · <b>X</b> selects the shot or section under it · Esc clears"
+                    }
+                }
                 Caption {
                     Layout.fillWidth: true; Layout.topMargin: 10; wrapMode: Text.Wrap; lineHeight: 1.25
                     text: "Click a lyric to select it. Drag it to move; drag an edge to trim. Zoom in (pinch, ⌘-scroll or ⌘=) to edit single words.\n\n"

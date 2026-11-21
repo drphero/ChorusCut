@@ -90,6 +90,19 @@ ApplicationWindow {
     readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
+    function playheadMs() { return Math.round(editor.frame / editor.fps * 1000) }
+    // I keeps the selection's end when it is after the playhead, else runs to the end of the song;
+    // O keeps its start when it is before, else runs from the beginning.
+    function markIn() {
+        const t = playheadMs(), s = selection
+        const end = s && s.end > t ? s.end : Math.round(editor.length / editor.fps * 1000)
+        if (end > t) select({kind: "range", start: t, end: end, label: "Range"})
+    }
+    function markOut() {
+        const t = playheadMs(), s = selection
+        const start = s && s.start < t ? s.start : 0
+        if (t > start) select({kind: "range", start: start, end: t, label: "Range"})
+    }
     function selectRow(row) {
         if (row < 0 || row >= lines.length) return
         const l = lines[row]
@@ -219,6 +232,10 @@ ApplicationWindow {
                onActivated: win.selectRow(win.selection && win.selection.firstRow !== undefined ? win.selection.firstRow - 1 : win.currentRow()) }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Down"
                onActivated: win.selectRow(win.selection && win.selection.lastRow !== undefined ? win.selection.lastRow + 1 : win.currentRow() + 1) }
+    // In and out at the playhead, as in other editors; X selects what is under it.
+    Shortcut { enabled: editor.ready && !win.typing; sequence: "I"; onActivated: win.markIn() }
+    Shortcut { enabled: editor.ready && !win.typing; sequence: "O"; onActivated: win.markOut() }
+    Shortcut { enabled: editor.ready && !win.typing; sequence: "X"; onActivated: timeline.selectUnder(editor.frame) }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Escape"; onActivated: win.selection = null }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.ZoomIn, "Ctrl+="]; onActivated: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)) }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.ZoomOut]; onActivated: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)) }
