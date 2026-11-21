@@ -100,7 +100,12 @@ public:
     // lipSync, seconds, from, to (project frames the take covers)}.
     Q_INVOKABLE QVariantList takesFor(int shot) const;
     // What the cut plays: each shot's chosen take, [{track, start, end, file, in, take, shot}].
-    QVariantList timelineTakes() const;
+    // pick (shot -> take) plays another of a shot's takes in its place, for previewing a take
+    // before choosing it; renders and exports never pass one.
+    QVariantList timelineTakes(const QHash<int, int>& pick = {}) const;
+    // Where these takes are, in song order (shots by start, then the order made), leaving out
+    // takes that are gone: [{take, shot, shotNumber, number (the take's number on its shot)}].
+    QVariantList placeTakes(const QList<int>& takes) const;
     QVariantList checks() const;
     QVariantList gates() const;
     QVariantList coverage() const;

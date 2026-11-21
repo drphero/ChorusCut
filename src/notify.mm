@@ -61,13 +61,16 @@ static void macRequest(std::function<void(QString, QString)> done) {
         macStatus([done, why](QString state) { done(state, why); });
     }];
 }
-static void macPost(const QString& title, const QString& body, bool sound, const QString& owner, int ownerId) {
+// A notification with a tag replaces the last one with that tag, so takes finishing while the user
+// is away add up to one notification instead of a pile.
+static void macPost(const QString& title, const QString& body, bool sound, const QString& owner, int ownerId, const QString& tag) {
     UNMutableNotificationContent* content = [UNMutableNotificationContent new];
     content.title = title.toNSString();
     content.body = body.toNSString();
     if (sound) content.sound = UNNotificationSound.defaultSound;
     content.userInfo = @{@"owner": owner.toNSString(), @"ownerId": @(ownerId)};
-    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil];
+    NSString* identifier = tag.isEmpty() ? NSUUID.UUID.UUIDString : tag.toNSString();
+    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil];
     [center() addNotificationRequest:request withCompletionHandler:nil];
 }
 
@@ -146,32 +149,54 @@ void Notifier::jobFinished(const QString& owner, int ownerId, const QString& use
         what = item["fields"].toMap()["name"].toString();
         if (what.isEmpty()) what = owner == "location" ? "A location" : owner == "look" ? "A look" : "A character";
     }
-    QString title, body;
-    if (ok) {
-        title = take ? what + ": take ready" : what + (count == 1 ? ": picture ready" : QString(": %1 pictures ready").arg(count));
-        body = take ? (use == "take-sync" ? "A new take, singing to the song." : "A new take from the reference pictures.") + QString(" Click to see it.")
-                    : "Generated pictures arrived, waiting for you to choose.";
+    QString title, body, tag, about = owner;
+    int aboutId = ownerId;
+    if (ok && take) {
+        // Several takes waiting (several shots generating while the user was away): one notice
+        // that counts them all, and Show goes through them one at a time.
+        const auto waiting = editor->newTakes();
+        tag = "chorus-takes";
+        if (waiting.size() > 1) {
+            QList<int> others;
+            for (const auto& v : waiting) {
+                const int n = v.toMap()["shotNumber"].toInt();
+                if (v.toMap()["shot"].toInt() != ownerId && !others.contains(n)) others << n;
+            }
+            QStringList names;
+            for (int n : others) names << QString::number(n);
+            const QString list = names.size() > 1 ? names.mid(0, names.size() - 1).join(", ") + " and " + names.last() : names.value(0);
+            title = QString("%1 new takes to watch").arg(waiting.size());
+            body = what + " just finished" + (others.isEmpty() ? QString() : (others.size() == 1 ? "; also shot " : "; also shots ") + list)
+                   + ". Show plays them one at a time.";
+            about = "takes"; aboutId = 0;
+        } else {
+            title = what + ": take ready";
+            body = (use == "take-sync" ? "A new take, singing to the song." : "A new take from the reference pictures.") + QString(" Show plays it.");
+        }
+    } else if (ok) {
+        title = what + (count == 1 ? ": picture ready" : QString(": %1 pictures ready").arg(count));
+        body = "Generated pictures arrived, waiting for you to choose.";
     } else {
         title = what + (take ? ": take failed" : ": picture failed");
         body = text;
     }
-    deliver(title, body, owner, ownerId, ok);
+    deliver(title, body, about, aboutId, ok, tag);
 }
 
 void Notifier::test() {
     deliver("Chorus Cut notifications", "This is how a finished take will tell you.", {}, 0, true);
 }
 
-void Notifier::deliver(const QString& title, const QString& body, const QString& owner, int ownerId, bool ok) {
+void Notifier::deliver(const QString& title, const QString& body, const QString& owner, int ownerId, bool ok, const QString& tag) {
     banner = QVariantMap{{"title", title}, {"body", body}, {"owner", owner}, {"ownerId", ownerId}, {"ok", ok}};
     emit latestChanged();
     const bool away = QGuiApplication::applicationState() != Qt::ApplicationActive;
     if (backgroundOnly && !away) return;
     if (useSystem) {
-        if (!logPath.isEmpty()) log({{"kind", "notification"}, {"title", title}, {"body", body}, {"sound", useSound}, {"owner", owner}, {"ownerId", ownerId}});
+        if (!logPath.isEmpty()) log({{"kind", "notification"}, {"title", title}, {"body", body}, {"sound", useSound}, {"owner", owner}, {"ownerId", ownerId}, {"tag", tag}});
         else if (macAvailable() && allowed != "denied") {
             if (allowed == "notAsked") requestPermission();
-            macPost(title, body, useSound, owner, ownerId);
+            macPost(title, body, useSound, owner, ownerId, tag);
         }
     }
     if (useDock) {

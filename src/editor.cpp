@@ -79,6 +79,7 @@ Editor::Editor() {
     agentBridge = new AgentBridge(this, this);  // after the requests it delivers; serves agents once start() is called
     notices = new Notifier(this);
     render = new Renderer(this);
+    connect(generatorJobs, &Generator::takeArrived, this, &Editor::takeArrived);
     connect(generatorJobs, &Generator::finished, notices, &Notifier::jobFinished);
     connect(this, &Editor::imageReady, this, [this](const QImage& image) { shown = image; });
     auto changed = [this] { emit edited(); };
@@ -95,11 +96,20 @@ Editor::Editor() {
     // Choosing, adding or moving takes changes what the cut plays.
     connect(planState, &Plan::changed, this, [this] {
         if (!project || !timeline) return;
-        const QString key = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes())).toJson(QJsonDocument::Compact));
+        // Removed takes are no longer new; an audition ends once its take is chosen or gone.
+        const int before = fresh.size();
+        fresh.erase(std::remove_if(fresh.begin(), fresh.end(), [this](int t) { return planState->item("take", t).isEmpty(); }), fresh.end());
+        if (fresh.size() != before) { saveFresh(); emit newTakesChanged(); }
+        if (auditionTakeId) {
+            const auto t = planState->item("take", auditionTakeId);
+            if (t.isEmpty() || t["chosen"].toBool() || t["shot"].toInt() != auditionShot) {
+                auditionShot = auditionTakeId = 0;
+                emit auditionChanged();
+            }
+        }
+        const QString key = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes(auditionPick()))).toJson(QJsonDocument::Compact));
         if (key == takesKey) return;
-        const int at = cursor;
-        build();
-        seek(at);
+        rebuildPlaying();
     });
 }
 
@@ -123,7 +133,9 @@ void Editor::closeProject() {
     peakData.clear();
     history.clear();
     cursor = 0;
+    fresh.clear(); auditionShot = auditionTakeId = 0; watchTake = watchFrames = 0;
     info({});
+    emit newTakesChanged(); emit auditionChanged();
     emit imageReady(QImage());
     emit peaksChanged(); emit projectChanged(); emit edited(); emit cursorChanged();
 }
@@ -255,6 +267,9 @@ bool Editor::openProject(const QUrl& folder) {
     cursor = 0;
     history.clear();
     loadTracks();
+    auditionShot = auditionTakeId = 0; watchTake = watchFrames = 0;
+    loadFresh();
+    emit auditionChanged();
     build();
     computePeaks();
     info({});
@@ -331,7 +346,7 @@ void Editor::assemble(Mlt::Tractor& tractor, Mlt::Profile& p, const Cut& cut) {
     // transitions MLT shows the topmost track that has a picture, so V2 covers V1 and both
     // cover the base picture; gaps show what is below. A render puts a card where a shot has none.
     struct Clip { int start, end, in; QString file; bool card; QSize size; };
-    const auto takes = planState->timelineTakes();
+    const auto takes = planState->timelineTakes(cut.pick);
     for (int track : {1, 2}) {
         QList<Clip> list;
         if (!cut.hidden.contains(track == 1 ? "v1" : "v2")) {
@@ -375,8 +390,9 @@ void Editor::build() {
     listener.reset();
     output.reset();
     timeline = std::make_unique<Mlt::Tractor>(*profile);
-    takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes())).toJson(QJsonDocument::Compact));
-    assemble(*timeline, *profile, Cut{hidden, QString(), {}});
+    builtTakes = planState->timelineTakes(auditionPick());
+    takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(builtTakes)).toJson(QJsonDocument::Compact));
+    assemble(*timeline, *profile, Cut{hidden, QString(), {}, auditionPick()});
     timeline->set_in_and_out(0,length()-1);
     timeline->set_speed(0);
 }
@@ -424,10 +440,12 @@ void Editor::onFrame(mlt_properties, void* self, mlt_event_data data) {
         if (serial != e->generation.load() || !e->running) return;
         e->cursor=qBound(0,position,e->length()-1);
         emit e->imageReady(img); emit e->cursorChanged();
+        e->noteWatched();
         if (e->passageEnd>0 && position>=e->passageEnd-1) {
             const int start=e->passageStart, end=e->passageEnd;
             e->seek(end-1);
-            if (e->loopOn && start>=0) {
+            // An audition repeats its shot until the user chooses.
+            if ((e->loopOn || e->auditionTakeId) && start>=0) {
                 e->seek(start);
                 e->passageStart=start; e->passageEnd=end;
                 e->togglePlay();
@@ -489,6 +507,97 @@ void Editor::setTrackMuted(const QString& track, bool mute) {
     saveTracks();
     updateMonitorGain();
     emit tracksChanged();
+}
+// ---------------------------------------------------------------- new takes and auditions
+QVariantList Editor::newTakes() const { return planState->placeTakes(fresh); }
+QVariantMap Editor::audition() const {
+    return auditionTakeId ? QVariantMap{{"shot", auditionShot}, {"take", auditionTakeId}} : QVariantMap{};
+}
+QHash<int, int> Editor::auditionPick() const {
+    QHash<int, int> pick;
+    if (auditionTakeId) pick.insert(auditionShot, auditionTakeId);
+    return pick;
+}
+void Editor::loadFresh() {
+    fresh.clear();
+    QSqlQuery q(project->db);
+    if (q.exec("SELECT value FROM view_state WHERE key='newTakes'") && q.next())
+        for (const auto& v : QJsonDocument::fromJson(q.value(0).toString().toUtf8()).array())
+            if (!planState->item("take", v.toInt()).isEmpty() && !fresh.contains(v.toInt())) fresh << v.toInt();
+    emit newTakesChanged();
+}
+void Editor::saveFresh() {
+    if (!project) return;
+    QJsonArray ids;
+    for (int t : fresh) ids.append(t);
+    QSqlQuery q(project->db);
+    q.exec("CREATE TABLE IF NOT EXISTS view_state(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    q.prepare("INSERT OR REPLACE INTO view_state VALUES('newTakes', ?)");
+    q.addBindValue(QString::fromUtf8(QJsonDocument(ids).toJson(QJsonDocument::Compact)));
+    if (!q.exec()) info("Could not keep which takes are new: " + q.lastError().text());
+}
+void Editor::takeArrived(int, int take) {
+    if (!project || take <= 0 || fresh.contains(take)) return;
+    fresh << take;
+    saveFresh();
+    emit newTakesChanged();
+}
+void Editor::markTakeSeen(int take) {
+    if (!fresh.removeAll(take)) return;
+    saveFresh();
+    emit newTakesChanged();
+}
+// While the cut plays, a new take that has been on screen for a second (or half of a short
+// one) has been watched.
+void Editor::noteWatched() {
+    if (fresh.isEmpty()) { watchTake = 0; return; }
+    int on = 0, span = 0;
+    for (int track : {2, 1}) {
+        for (const auto& v : builtTakes) {
+            const auto t = v.toMap();
+            if (t["track"].toInt() == track && t["start"].toInt() <= cursor && cursor < t["end"].toInt()) {
+                on = t["take"].toInt(); span = t["end"].toInt() - t["start"].toInt();
+                break;
+            }
+        }
+        if (on) break;
+    }
+    if (on != watchTake) { watchTake = on; watchFrames = 0; }
+    if (!on || !fresh.contains(on)) return;
+    if (++watchFrames >= qMax(1, qMin(qRound(fps()), span / 2))) markTakeSeen(on);
+}
+void Editor::rebuildPlaying() {
+    const bool resume = running;
+    const int at = cursor, start = passageStart, end = passageEnd;
+    build();
+    seek(at);
+    if (resume) { passageStart = start; passageEnd = end; togglePlay(); }
+}
+void Editor::auditionTake(int take, bool play) {
+    if (!project) return;
+    const auto t = planState->item("take", take);
+    const auto s = planState->shot(t["shot"].toInt());
+    if (t.isEmpty() || s.isEmpty()) return;
+    const bool sameShot = auditionShot == s["id"].toInt() || (!auditionTakeId && running && cursor >= s["start"].toInt() && cursor < s["end"].toInt());
+    const bool changed = auditionTakeId != take;
+    auditionShot = s["id"].toInt();
+    auditionTakeId = take;
+    markTakeSeen(take);
+    if (changed) emit auditionChanged();
+    if (sameShot && running) {
+        // Another take of the shot playing now: switch in place and play on.
+        if (changed) rebuildPlaying();
+        return;
+    }
+    if (changed) build();
+    if (play) playLyric(s["startMs"].toInt(), s["endMs"].toInt());
+    else seek(s["start"].toInt());
+}
+void Editor::endAudition() {
+    if (!auditionTakeId) return;
+    auditionShot = auditionTakeId = 0;
+    emit auditionChanged();
+    rebuildPlaying();
 }
 void Editor::togglePlay() {
     if (!ready()) return;

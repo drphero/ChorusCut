@@ -20,6 +20,25 @@ Rectangle {
     // The monitor's own "editor" property would shadow the context's inside it.
     readonly property var source: editor
     VideoMonitor { objectName: mv.monitorName; editor: mv.source; anchors.fill: parent; anchors.margins: 4; visible: mv.hasPicture }
+    // While a take is auditioned: on its shot, which take this is, so the pop-out says it too.
+    Rectangle {
+        id: auditionTag
+        objectName: mv.monitorName ? mv.monitorName + "Audition" : ""
+        readonly property var a: editor.audition
+        readonly property var shot: a.shot !== undefined ? (editor.plan.revision, editor.plan.item("shot", a.shot)) : null
+        readonly property var take: a.take !== undefined ? (editor.plan.revision, editor.plan.takesFor(a.shot).find(t => t.id === a.take)) || null : null
+        visible: take !== null && shot !== null && editor.frame >= shot.start && editor.frame < shot.end
+        x: 12; y: 12
+        width: tagText.implicitWidth + 16; height: tagText.implicitHeight + 8; radius: 4
+        color: "#d0201c12"; border.color: take && take.chosen ? "#87dec7" : "#e7b75f"
+        Text {
+            id: tagText
+            anchors.centerIn: parent
+            text: auditionTag.take ? "Take " + auditionTag.take.number + (auditionTag.take.chosen ? " · chosen" : " · not chosen") : ""
+            color: auditionTag.take && auditionTag.take.chosen ? "#87dec7" : "#e7b75f"
+            font.pixelSize: 12 * Math.min(1.4, mv.lyricScale); font.weight: Font.DemiBold
+        }
+    }
     Item {
         id: preview
         visible: mv.lyricsShown

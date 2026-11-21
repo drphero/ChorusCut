@@ -578,6 +578,8 @@ Rectangle {
                     }
                 }
                 readonly property int failedTakes: editor.generator.jobs.filter(j => j.owner === "shot" && j.ownerId === modelData.id && j.state === "failed").length
+                // Takes that arrived and haven't been watched.
+                readonly property int newTakes: editor.newTakes.filter(n => n.shot === modelData.id).length
                 // Takes on their way: an amber sweep along the bottom of the card, at any size.
                 Rectangle {
                     objectName: "shotGenerating" + shotCard.modelData.id
@@ -597,14 +599,16 @@ Rectangle {
                     visible: (shotCard.modelData.takes > 0 || shotCard.makingTakes > 0 || shotCard.failedTakes > 0) && shotCard.width > 60 && shotCard.height >= 26
                     anchors.right: parent.right; anchors.rightMargin: 4; anchors.bottom: parent.bottom; anchors.bottomMargin: 6
                     width: takesText.implicitWidth + 8; height: takesText.implicitHeight + 2; radius: 3
-                    color: "#c0121b20"
+                    readonly property bool lit: shotCard.newTakes > 0 && shotCard.makingTakes === 0 && shotCard.failedTakes === 0
+                    color: lit ? "#e0204a44" : "#c0121b20"
+                    border.color: lit ? "#87dec7" : "transparent"
                     Text {
                         id: takesText
                         objectName: "shotTakes" + shotCard.modelData.id
                         anchors.centerIn: parent
                         text: shotCard.makingTakes > 0 ? "generating " + shotCard.makingTakes
                             : shotCard.failedTakes > 0 ? "take failed"
-                            : shotCard.modelData.takes + (shotCard.modelData.takes === 1 ? " take" : " takes")
+                            : shotCard.modelData.takes + (shotCard.modelData.takes === 1 ? " take" : " takes") + (shotCard.newTakes ? " · " + shotCard.newTakes + " new" : "")
                         color: shotCard.makingTakes > 0 ? "#e7b75f" : shotCard.failedTakes > 0 ? "#f0a08f" : "#ecedc9"; font.pixelSize: 10
                     }
                 }

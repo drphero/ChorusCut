@@ -13,6 +13,19 @@ Rectangle {
     signal zoomTo(int startMs, int endMs)
     signal nextFlagged()
     signal select(var selection)
+    // Scrolls the selected shot's takes into view (after the shot's details have laid out).
+    function revealTakes() { revealTimer.restart() }
+    Timer {
+        id: revealTimer
+        interval: 80
+        onTriggered: {
+            if (!takesCaption.visible) return
+            const f = scroller.contentItem
+            const y = takesCaption.mapToItem(f.contentItem, 0, 0).y
+            if (y < f.contentY || y + 110 > f.contentY + f.height)
+                f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, y - 40))
+        }
+    }
 
     readonly property var firstLine: selection && selection.firstRow !== undefined ? lines[selection.firstRow] : null
     readonly property var lastLine: selection && selection.lastRow !== undefined ? lines[selection.lastRow] : null
@@ -90,6 +103,7 @@ Rectangle {
     component Value: Text { color: "#edf1ef"; font.pixelSize: 13; wrapMode: Text.Wrap }
 
     ScrollView {
+        id: scroller
         anchors.fill: parent; anchors.margins: 12
         contentWidth: availableWidth
         ColumnLayout {
@@ -528,6 +542,10 @@ Rectangle {
                                                                editor.generator.takeOptions(ins.shot.id)) : ({})
                     readonly property var takes: ins.hasShot ? (ins.plan.revision, ins.plan.takesFor(ins.shot.id)) : []
                     readonly property var jobs: ins.hasShot ? editor.generator.jobs.filter(j => j.owner === "shot" && j.ownerId === ins.shot.id) : []
+                    // Takes not watched yet, and the one the viewer is auditioning.
+                    readonly property var freshIds: editor.newTakes.map(n => n.take)
+                    function isNew(id) { return freshIds.indexOf(id) >= 0 }
+                    readonly property int auditioned: ins.hasShot && editor.audition.shot === ins.shot.id ? editor.audition.take : 0
                     property string note: ""
                     function setPrompt(text) {
                         const all = Object.assign({}, ins.shotFields.prompts || {})
@@ -563,9 +581,12 @@ Rectangle {
                     }
                     // Takes: the chosen one plays in the cut. Click to choose; right-click for more.
                     Caption {
+                        id: takesCaption
                         objectName: "shotTakeCount"
                         visible: shotVideo.takes.length > 0 || shotVideo.jobs.length > 0
-                        text: shotVideo.takes.length ? "Takes: " + shotVideo.takes.length + (shotVideo.takes.some(t => t.chosen) ? "" : " · none chosen") : "Takes"
+                        readonly property int fresh: shotVideo.takes.filter(t => shotVideo.isNew(t.id)).length
+                        text: shotVideo.takes.length ? "Takes: " + shotVideo.takes.length + (shotVideo.takes.some(t => t.chosen) ? "" : " · none chosen")
+                                                       + (fresh ? " · " + fresh + " new" : "") : "Takes"
                     }
                     Flow {
                         Layout.fillWidth: true
@@ -577,16 +598,26 @@ Rectangle {
                                 required property var modelData
                                 objectName: "shotTake" + modelData.number
                                 width: 74; height: 60
+                                readonly property bool watching: shotVideo.auditioned === modelData.id
+                                readonly property bool fresh: shotVideo.isNew(modelData.id)
                                 Rectangle {
                                     width: 74; height: 44; radius: 3; clip: true; color: "#0c1216"
-                                    border.color: takeTile.modelData.chosen ? "#87dec7" : "#34434a"; border.width: takeTile.modelData.chosen ? 2 : 1
+                                    border.color: takeTile.watching ? "#e7b75f" : takeTile.modelData.chosen ? "#87dec7" : "#34434a"
+                                    border.width: takeTile.watching || takeTile.modelData.chosen ? 2 : 1
                                     Image { anchors.fill: parent; anchors.margins: 2; source: takeTile.modelData.thumbUrl || ""; fillMode: Image.PreserveAspectCrop
-                                            asynchronous: true; sourceSize: Qt.size(148, 88); opacity: takeTile.modelData.chosen ? 1 : 0.6 }
+                                            asynchronous: true; sourceSize: Qt.size(148, 88); opacity: takeTile.modelData.chosen || takeTile.watching || takeTile.fresh ? 1 : 0.6 }
                                     Text { visible: takeTile.modelData.missing; anchors.centerIn: parent; text: "missing"; color: "#f0a08f"; font.pixelSize: 9 }
                                 }
+                                // Not watched yet.
+                                Rectangle {
+                                    objectName: "shotTakeNew" + takeTile.modelData.number
+                                    visible: takeTile.fresh
+                                    x: 74 - width - 3; y: 3; width: newText.implicitWidth + 8; height: 13; radius: 6.5; color: "#87dec7"
+                                    Text { id: newText; anchors.centerIn: parent; text: "new"; color: "#122328"; font.pixelSize: 9; font.weight: Font.DemiBold }
+                                }
                                 Text { y: 46; width: 74; elide: Text.ElideRight; font.pixelSize: 9
-                                       text: (takeTile.modelData.chosen ? "chosen" : "take " + takeTile.modelData.number) + (takeTile.modelData.lipSync ? " · sync" : "")
-                                       color: takeTile.modelData.chosen ? "#87dec7" : "#8fa0a4" }
+                                       text: (takeTile.watching ? "watching" : takeTile.modelData.chosen ? "chosen" : "take " + takeTile.modelData.number) + (takeTile.modelData.lipSync ? " · sync" : "")
+                                       color: takeTile.watching ? "#e7b75f" : takeTile.modelData.chosen ? "#87dec7" : "#8fa0a4" }
                                 MouseArea {
                                     id: takeMouse
                                     anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
@@ -595,6 +626,8 @@ Rectangle {
                                         if (m.button === Qt.RightButton) { takeMenu.popup(); return }
                                         // Choosing rebuilds this list, so everything else happens first.
                                         const id = takeTile.modelData.id, chosen = takeTile.modelData.chosen, plan = ins.plan
+                                        editor.markTakeSeen(id)
+                                        if (chosen) editor.endAudition()
                                         editor.seek(ins.shot.start)
                                         if (!chosen) plan.run({op: "set", kind: "take", id: id, fields: {approved: true}})
                                     }
@@ -602,9 +635,11 @@ Rectangle {
                                 ToolTip.visible: takeMouse.containsMouse; ToolTip.delay: 400
                                 ToolTip.text: "Take " + takeTile.modelData.number + " · " + takeTile.modelData.seconds.toFixed(2) + " s"
                                               + (takeTile.modelData.generation && takeTile.modelData.generation.seed !== undefined ? " · seed " + takeTile.modelData.generation.seed : "")
-                                              + (takeTile.modelData.chosen ? "\nPlays in the cut" : "\nClick to play this one in the cut")
+                                              + (takeTile.fresh ? " · new" : "")
+                                              + (takeTile.modelData.chosen ? "\nPlays in the cut" : "\nClick to play this one in the cut; right-click to watch it first")
                                 Menu {
                                     id: takeMenu
+                                    MenuItem { objectName: "takeWatch"; text: "Watch in the viewer"; onTriggered: editor.auditionTake(takeTile.modelData.id, true) }
                                     MenuItem { objectName: "takeChoose"; text: takeTile.modelData.chosen ? "Chosen for this shot" : "Choose for this shot"; enabled: !takeTile.modelData.chosen
                                                onTriggered: ins.plan.run({op: "set", kind: "take", id: takeTile.modelData.id, fields: {approved: true}}) }
                                     MenuItem { objectName: "takeAgain"; text: "Generate again with its seed…"

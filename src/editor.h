@@ -84,6 +84,13 @@ class Editor : public QObject {
     // monitor. None of them changes the plan or the exported timeline.
     Q_PROPERTY(QStringList hiddenTracks READ hiddenTracks NOTIFY tracksChanged)
     Q_PROPERTY(QStringList mutedTracks READ mutedTracks NOTIFY tracksChanged)
+    // Takes that arrived and haven't been watched yet, kept with the project, in song order:
+    // [{take, shot, shotNumber, number}]. A take stops being new once it is auditioned, chosen,
+    // or played in the cut for a moment.
+    Q_PROPERTY(QVariantList newTakes READ newTakes NOTIFY newTakesChanged)
+    // The take the viewer plays in its shot's place without choosing it: {shot, take}, or empty.
+    // Only the viewer: renders and exports play the chosen takes.
+    Q_PROPERTY(QVariantMap audition READ audition NOTIFY auditionChanged)
 public:
     Editor();
     Lyrics* lyrics() { return &lyricState; }
@@ -149,6 +156,13 @@ public:
     QStringList mutedTracks() const { return muted; }
     Q_INVOKABLE void setTrackHidden(const QString& track, bool hide);
     Q_INVOKABLE void setTrackMuted(const QString& track, bool mute);
+    QVariantList newTakes() const;
+    QVariantMap audition() const;
+    // Plays take in its shot's place in the viewer. With play, the shot plays and repeats until
+    // the audition ends; switching takes while it plays keeps the place.
+    Q_INVOKABLE void auditionTake(int take, bool play);
+    Q_INVOKABLE void endAudition();
+    Q_INVOKABLE void markTakeSeen(int take);
     // The frame the viewers show now.
     QImage currentImage() const { return shown; }
     Q_INVOKABLE void seek(int frame);
@@ -167,6 +181,7 @@ public:
         QStringList hidden;
         QString fit;               // "" (playback), "fill", "fit" or "stretch"
         QHash<int, QString> cards; // shot id -> placeholder picture
+        QHash<int, int> pick;      // shot id -> take auditioned in place of the chosen one (viewer only)
     };
     void assemble(Mlt::Tractor& tractor, Mlt::Profile& profile, const Cut& cut);
     Renderer* renderer() { return render; }
@@ -192,7 +207,20 @@ signals:
     void peaksChanged();
     void loopingChanged();
     void tracksChanged();
+    void newTakesChanged();
+    void auditionChanged();
 private:
+    QList<int> fresh;                       // new take ids, as they arrived
+    int auditionShot = 0, auditionTakeId = 0;
+    int watchTake = 0, watchFrames = 0;     // the new take playing in the cut, and for how long
+    QVariantList builtTakes;                // what the take tracks were built from
+    QHash<int, int> auditionPick() const;
+    void loadFresh();
+    void saveFresh();
+    void takeArrived(int shot, int take);
+    void noteWatched();
+    // Rebuilds the cut where the playhead is, playing on if it was playing.
+    void rebuildPlaying();
     QStringList hidden, muted;
     QImage shown;
     void loadTracks();

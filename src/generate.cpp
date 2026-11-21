@@ -559,6 +559,7 @@ void Generator::collectTake(int id, const QJsonObject& outputs) {
         const int ownerId = job->ownerId;
         for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
         emit changed();
+        emit takeArrived(ownerId, r.value("id").toInt());
         emit finished(owner, ownerId, use, true, {}, 1);
     });
 }

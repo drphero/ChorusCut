@@ -1028,7 +1028,8 @@ int main(int argc, char** argv) {
         auto zoom = find(window, "inspectorZoomTo");
         if (zoom) { scrollIntoView(zoom); click(zoom); QTest::qWait(150); }
         auto takesLabel = find(window, QString("shotTakes%1").arg(shotId));
-        if (!takesLabel || takesLabel->property("text") != "1 take") return fail(125, "the timeline's shot does not show its take");
+        if (!takesLabel || takesLabel->property("text") != "1 take · 1 new") return fail(125, "the timeline's shot does not show its new take: " + (takesLabel ? takesLabel->property("text").toString() : QString("none")));
+        if (!find(window, "shotTakeNew1") || !find(window, "newTakesButton")) return fail(125, "the take is not marked new");
         auto monitor = find(window, "monitor");
         if (!monitor) return fail(125, "the monitor is hidden though a take plays");
         // The monitor follows the editor by itself (its editor property), as in the app.
@@ -1521,6 +1522,149 @@ int main(int argc, char** argv) {
                 return fail(149, "after reopening, hidden " + editor.hiddenTracks().join(",") + " muted " + editor.mutedTracks().join(","));
             editor.setTrackHidden("lyrics", false);
             editor.setTrackHidden("v2", false);
+            QTest::qWait(200);
+
+            // ---- New takes. Several finishing while the user is away add up to one notice, and
+            // Show plays them one at a time in the viewer without choosing them.
+            // The pop-out viewer earlier took the focus; keys go to the main window again.
+            window->requestActivate();
+            if (!QTest::qWaitForWindowActive(window)) return fail(160, "the window did not take the focus back");
+            auto textOf = [&](const QString& name) { auto item = find(window, name); return item ? item->property("text").toString() : QString("<missing>"); };
+            for (const auto& v : editor.newTakes()) editor.markTakeSeen(v.toMap()["take"].toInt());
+            if (find(window, "newTakesButton")) return fail(160, "the New takes button shows with none new");
+            const auto laterLine = editor.lyrics()->lines()[4].toMap();
+            const int other = plan->run({{"op", "shot.add"}, {"track", 1}, {"start", int(std::lround(laterLine["start"].toInt() / 1000.0 * editor.fps()))},
+                                         {"end", int(std::lround(laterLine["end"].toInt() / 1000.0 * editor.fps()))}})["id"].toInt();
+            if (!other) return fail(160, "could not plan a second shot");
+            plan->run({{"op", "set"}, {"kind", "shot"}, {"id", other}, {"fields", QVariantMap{{"type", "lipsync"}, {"route", "h3-lipsync"},
+                       {"who", QVariantList{QVariantMap{{"character", mara}}}}, {"prompts", QVariantMap{{"h3-lipsync", syncPrompt}}}}}});
+            const int toldAway = notices().size();
+            const int takesBefore = plan->takesFor(shotId).size();
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            if (const QString why = gen->generateTake(shotId); !why.isEmpty()) return fail(160, why);
+            if (const QString why = gen->generateTake(other); !why.isEmpty()) return fail(160, why);
+            if (!waitFor([&] { return gen->jobs().isEmpty() && plan->takesFor(other).size() == 1 && plan->takesFor(shotId).size() == takesBefore + 1; }, 30000))
+                return fail(160, "the two takes did not arrive: " + json(gen->jobs()));
+            QTest::qWait(150);
+            const QString otherName = plan->shot(other)["number"].toString();
+            const QString title = find(window, "noticeTitle") ? textOf("noticeTitle") : QString();
+            const auto awayTold = notices().mid(toldAway);
+            if (title != "2 new takes to watch" || awayTold.size() < 3 || !awayTold.last().contains("\"dock\"")
+                || !awayTold[awayTold.size() - 2].contains("\"title\":\"2 new takes to watch\"") || !awayTold[awayTold.size() - 2].contains("\"owner\":\"takes\"")
+                || !awayTold[awayTold.size() - 2].contains("\"tag\":\"chorus-takes\""))
+                return fail(161, "the notice for two takes: " + title + " | " + awayTold.join(" | "));
+            auto chipOf = [&](int shot) {
+                const auto sh = plan->shot(shot);
+                window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", shot}, {"start", sh["startMs"]}, {"end", sh["endMs"]}});
+                QTest::qWait(150);
+                if (auto zoomTo = find(window, "inspectorZoomTo")) { click(zoomTo); QTest::qWait(150); }
+                const QString text = textOf(QString("shotTakes%1").arg(shot));
+                window->setProperty("selection", QVariant::fromValue(nullptr));
+                QTest::qWait(100);
+                return text;
+            };
+            if (textOf("newTakesButton") != "2 new takes" || chipOf(other) != "1 take · 1 new" || !chipOf(shotId).endsWith(" · 1 new"))
+                return fail(161, "the new takes are not marked on the button and the shots: " + textOf("newTakesButton") + " | " + chipOf(other) + " | " + chipOf(shotId));
+            capture("new-takes-notice");
+            // Show: the first in song order plays in its shot's place, not chosen, with the bar under the viewer.
+            const auto queue = editor.newTakes();
+            const int firstNew = queue[0].toMap()["take"].toInt(), firstShot = queue[0].toMap()["shot"].toInt();
+            const int secondShot = queue[1].toMap()["shot"].toInt();
+            const QColor chosenColour = colourAt((plan->shot(firstShot)["start"].toInt() + plan->shot(firstShot)["end"].toInt()) / 2);
+            click(find(window, "noticeShow"));
+            if (selectedShot() != firstShot || editor.audition()["take"].toInt() != firstNew || !window->property("reviewing").toBool())
+                return fail(162, "Show did not audition the first new take: " + json(editor.audition()));
+            if (!waitFor([&] { return editor.playing(); }, 1500)) return fail(162, "the auditioned take is not playing");
+            auto reviewText = find(window, "reviewText");
+            if (!reviewText || !reviewText->property("text").toString().contains("not chosen") || !find(window, "monitorAudition") || !find(window, "reviewUse") || !find(window, "reviewNext"))
+                return fail(162, "the bar under the viewer: " + (reviewText ? reviewText->property("text").toString() : QString("missing")));
+            if (editor.newTakes().size() != 1 || textOf("newTakesButton") != "1 new take") return fail(162, "watching the take did not take it off the new ones");
+            {
+                // The inspector shows the takes, the one playing outlined.
+                const int number = plan->takesFor(firstShot).size();
+                auto tile = find(window, QString("shotTake%1").arg(number));
+                QQuickItem* view = tile ? tile->parentItem() : nullptr;
+                while (view && !view->inherits("QQuickFlickable")) view = view->parentItem();
+                const QRectF r = tile && view ? tile->mapRectToItem(view, QRectF(0, 0, tile->width(), tile->height())) : QRectF();
+                if (!tile || !view || r.top() < 0 || r.bottom() > view->height()) return fail(162, "the inspector did not scroll to the takes");
+            }
+            capture("new-takes-audition");
+            QTest::keyClick(window, Qt::Key_Space);
+            if (!waitFor([&] { return !editor.playing(); }, 1500))
+                return fail(163, QString("Space did not pause the audition; typing %1, focus %2").arg(window->property("typing").toBool())
+                                 .arg(window->activeFocusItem() ? window->activeFocusItem()->metaObject()->className() + QString(" ") + window->activeFocusItem()->objectName() : QString("none")));
+            const int mid = (plan->shot(firstShot)["start"].toInt() + plan->shot(firstShot)["end"].toInt()) / 2;
+            const QColor auditionColour = colourAt(mid);
+            if (!auditionColour.isValid() || auditionColour == chosenColour) return fail(163, "the viewer does not show the auditioned take");
+            if (plan->item("take", firstNew)["chosen"].toBool()) return fail(163, "auditioning chose the take");
+            // [ and ] step through the shot's takes in the viewer.
+            QTest::keyClick(window, Qt::Key_BracketLeft);
+            QTest::qWait(150);
+            if (editor.audition()["take"].toInt() == firstNew || editor.audition()["shot"].toInt() != firstShot) return fail(163, "[ did not go to the previous take");
+            QTest::keyClick(window, Qt::Key_BracketRight);
+            QTest::qWait(150);
+            if (editor.audition()["take"].toInt() != firstNew) return fail(163, "] did not come back to the new take");
+            if (editor.playing()) { QTest::keyClick(window, Qt::Key_Space); waitFor([&] { return !editor.playing(); }, 1500); }
+            // Keep: the cut plays the chosen take again, and the bar offers the next new one.
+            click(find(window, "reviewKeep"));
+            if (!editor.audition().isEmpty() || plan->item("take", firstNew)["chosen"].toBool() || colourAt(mid) != chosenColour)
+                return fail(164, "Keep did not go back to the chosen take");
+            reviewText = find(window, "reviewText");
+            if (!reviewText || reviewText->property("text") != "1 new take left to watch" || find(window, "monitorAudition")) return fail(164, "after Keep, the bar: " + (reviewText ? reviewText->property("text").toString() : QString("gone")));
+            // Next: the other shot's take, its first, so chosen already; Done ends the review.
+            click(find(window, "reviewNext"));
+            if (selectedShot() != secondShot || editor.audition()["shot"].toInt() != secondShot || !editor.newTakes().isEmpty() || find(window, "newTakesButton"))
+                return fail(165, "Next new take did not go to the other shot");
+            if (secondShot == other && (!textOf("reviewText").contains("chosen, plays in the cut") || !find(window, "reviewDone")))
+                return fail(165, "the bar for a chosen take: " + textOf("reviewText"));
+            click(find(window, "reviewDone"));
+            QTest::qWait(150);
+            if (find(window, "takeReview") || !editor.audition().isEmpty() || window->property("reviewing").toBool()) return fail(165, "Done left the bar up");
+            if (editor.playing()) editor.togglePlay();
+            // One take finishing: its own notice; Show plays it and Use chooses it.
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            if (const QString why = gen->generateTake(other); !why.isEmpty()) return fail(166, why);
+            if (!waitFor([&] { return gen->jobs().isEmpty() && plan->takesFor(other).size() == 2; }, 20000)) return fail(166, "the other shot's second take did not arrive");
+            QTest::qWait(150);
+            if (textOf("noticeTitle") != "Shot " + otherName + ": take ready") return fail(166, "one take's notice: " + textOf("noticeTitle"));
+            const int secondTake = plan->takesFor(other)[1].toMap()["id"].toInt();
+            click(find(window, "noticeShow"));
+            if (editor.audition()["take"].toInt() != secondTake || !find(window, "reviewUse")) return fail(166, "Show did not audition the shot's new take");
+            // Leaving the shot ends the audition; Show again from the take's menu.
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTest::qWait(150);
+            if (!editor.audition().isEmpty() || find(window, "takeReview")) return fail(166, "Escape did not end the audition");
+            window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", other}, {"start", laterLine["start"]}, {"end", laterLine["end"]}});
+            QTest::qWait(150);
+            auto tile2 = find(window, "shotTake2");
+            scrollIntoView(tile2);
+            QTest::mouseClick(window, Qt::RightButton, {}, center(tile2));
+            if (!clickMenuItem(tile2, "takeWatch") || editor.audition()["take"].toInt() != secondTake) return fail(166, "Watch in the viewer did not audition the take");
+            click(find(window, "reviewUse"));
+            if (!plan->item("take", secondTake)["chosen"].toBool() || !editor.audition().isEmpty() || find(window, "takeReview"))
+                return fail(166, "Use did not choose the take and end the audition");
+            if (editor.playing()) editor.togglePlay();
+            // A new take stays new across reopening the project, until it plays in the cut.
+            window->setProperty("selection", QVariant::fromValue(nullptr));
+            if (const QString why = gen->generateTake(other); !why.isEmpty()) return fail(167, why);
+            if (!waitFor([&] { return gen->jobs().isEmpty() && plan->takesFor(other).size() == 3; }, 20000)) return fail(167, "the third take did not arrive");
+            editor.notifier()->dismissLatest();
+            const int thirdTake = plan->takesFor(other)[2].toMap()["id"].toInt();
+            if (!editor.openProject(project)) return fail(167, "reopening: " + editor.status());
+            QTest::qWait(300);
+            if (editor.newTakes().size() != 1 || editor.newTakes()[0].toMap()["take"].toInt() != thirdTake || !find(window, "newTakesButton"))
+                return fail(167, "the new take was not kept: " + json(editor.newTakes()));
+            plan->run({{"op", "set"}, {"kind", "take"}, {"id", thirdTake}, {"fields", QVariantMap{{"approved", true}}}});
+            editor.undo();  // the take arrived new and still is; choosing by undo does not count as watching
+            editor.redo();
+            if (editor.newTakes().isEmpty()) return fail(167, "choosing in the plan alone should not mark the take watched");
+            window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", other}, {"start", laterLine["start"]}, {"end", laterLine["end"]}});
+            QTest::qWait(150);
+            QTest::keyClick(window, Qt::Key_Return);
+            if (!waitFor([&] { return editor.newTakes().isEmpty(); }, 5000)) return fail(167, "playing the take in the cut did not mark it watched");
+            waitFor([&] { return !editor.playing(); }, 5000);
+            if (find(window, "newTakesButton")) return fail(167, "the New takes button stayed up");
+            window->setProperty("selection", QVariant::fromValue(nullptr));
         }
         flows->remove(syncId);
         flows->remove(refId);

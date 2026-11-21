@@ -838,15 +838,17 @@ QVariantList Plan::takesFor(int shot) const {
     return out;
 }
 
-QVariantList Plan::timelineTakes() const {
+QVariantList Plan::timelineTakes(const QHash<int, int>& pick) const {
     // Each shot's chosen take, as the part of it the cut plays: [{track, start, end, file, in}].
     QVariantList out;
     if (!project) return out;
     for (int shot : shotOrder()) {
         const auto s = row("shot", shot);
+        const int picked = pick.value(shot);
+        const bool usePick = picked && takeIds(shot).contains(picked);
         for (int take : takeIds(shot)) {
             const auto t = row("take", take);
-            if (!t["fields"].toObject()["approved"].toBool()) continue;
+            if (usePick ? take != picked : !t["fields"].toObject()["approved"].toBool()) continue;
             const auto [from, to] = takeSpan(take);
             const int a = qMax(s["start"].toInt(), from), b = qMin(s["end"].toInt(), to);
             const QString file = project->dir.filePath(t["file"].toString());
@@ -854,6 +856,18 @@ QVariantList Plan::timelineTakes() const {
                 out.append(QVariantMap{{"track", s["track"].toInt()}, {"start", a}, {"end", b}, {"file", file}, {"in", a - from}, {"take", take}, {"shot", shot}});
             break;
         }
+    }
+    return out;
+}
+
+QVariantList Plan::placeTakes(const QList<int>& takes) const {
+    QVariantList out;
+    const auto order = shotOrder();
+    for (int shot : order) {
+        const auto ids = takeIds(shot);
+        for (int i = 0; i < ids.size(); ++i)
+            if (takes.contains(ids[i]))
+                out.append(QVariantMap{{"take", ids[i]}, {"shot", shot}, {"shotNumber", order.indexOf(shot) + 1}, {"number", i + 1}});
     }
     return out;
 }

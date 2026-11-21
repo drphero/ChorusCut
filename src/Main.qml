@@ -84,6 +84,49 @@ ApplicationWindow {
 
     // The single selection shared by the timeline and the inspector.
     property var selection: null
+    // An audition plays one of the selected shot's takes in the viewer; it ends when the
+    // selection leaves that shot. Reviewing: going through new takes from a notice or the New
+    // takes button, so the bar under the viewer offers the next one.
+    property bool reviewing: false
+    onSelectionChanged: {
+        const a = editor.audition
+        const s = selection
+        if (a.shot !== undefined && !(s && s.kind === "shot" && s.id === a.shot)) editor.endAudition()
+        if (!s) reviewing = false
+    }
+    // Plays take in its shot's place and shows it, the shot selected and the takes in view.
+    function reviewTake(take) {
+        const place = editor.plan.item("take", take)
+        if (place.shot === undefined) return
+        showShot(place.shot)
+        editor.auditionTake(take, true)
+        inspector.revealTakes()
+    }
+    // The first new take in song order, other than the one being auditioned; none: review ends.
+    function reviewNext() {
+        const next = editor.newTakes.find(n => n.take !== editor.audition.take)
+        if (next) { reviewing = true; reviewTake(next.take) }
+        else reviewing = false
+    }
+    // Another of the auditioned shot's takes, by = -1 or +1; with none auditioned, the selected shot's.
+    function stepTake(by) {
+        const s = selection
+        if (!s || s.kind !== "shot") return
+        const takes = editor.plan.takesFor(s.id)
+        if (!takes.length) return
+        const at = editor.audition.take !== undefined ? takes.findIndex(t => t.id === editor.audition.take) : takes.findIndex(t => t.chosen)
+        const next = takes[Math.max(0, Math.min(takes.length - 1, (at < 0 ? 0 : at) + by))]
+        editor.auditionTake(next.id, true)
+    }
+    // A notice's Show, or a click on its macOS notification: new takes play, anything else opens.
+    function openNotice(owner, ownerId) {
+        if (owner === "takes") { reviewNext(); return }
+        if (owner === "shot") {
+            const own = editor.newTakes.filter(n => n.shot === ownerId)
+            if (own.length) { reviewing = editor.newTakes.length > 1; reviewTake(own[own.length - 1].take); return }
+        }
+        showJob(owner, ownerId)
+    }
     // The large view of a picture the pointer rests on in any picker (PictureTile finds it here).
     readonly property alias peek: picturePeek
     property var lines: editor.lyrics.lines
@@ -160,7 +203,7 @@ ApplicationWindow {
     }
     Connections {
         target: editor.notifier
-        function onActivated(owner, ownerId) { win.raise(); win.requestActivate(); win.showJob(owner, ownerId); editor.notifier.dismissLatest() }
+        function onActivated(owner, ownerId) { win.raise(); win.requestActivate(); win.openNotice(owner, ownerId); editor.notifier.dismissLatest() }
     }
     // Opens what a plan check is about: its shot, its span of the song, or its Plan page.
     function showCheck(c) {
@@ -237,6 +280,10 @@ ApplicationWindow {
     Shortcut { enabled: editor.ready && !win.typing; sequence: "O"; onActivated: win.markOut() }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "X"; onActivated: timeline.selectUnder(editor.frame) }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Escape"; onActivated: win.selection = null }
+    // [ and ] play the selected shot's other takes in the viewer; N goes to the next new take.
+    Shortcut { enabled: editor.ready && !win.typing; sequence: "["; onActivated: win.stepTake(-1) }
+    Shortcut { enabled: editor.ready && !win.typing; sequence: "]"; onActivated: win.stepTake(1) }
+    Shortcut { enabled: editor.ready && !win.typing && editor.newTakes.length > 0; sequence: "N"; onActivated: win.reviewNext() }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.ZoomIn, "Ctrl+="]; onActivated: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)) }
     Shortcut { enabled: editor.ready && !win.typing; sequences: [StandardKey.ZoomOut]; onActivated: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)) }
     Shortcut { enabled: editor.ready && !win.typing; sequence: "Ctrl+0"; onActivated: timeline.fit() }
@@ -529,6 +576,15 @@ ApplicationWindow {
                 }
             }
             Action {
+                objectName: "newTakesButton"
+                visible: editor.newTakes.length > 0
+                text: editor.newTakes.length === 1 ? "1 new take" : editor.newTakes.length + " new takes"
+                leftPadding: 26
+                onClicked: win.reviewNext()
+                ToolTip.text: "Takes you haven't watched yet. Click to play them one at a time (N)."
+                Rectangle { width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter; color: win.mint }
+            }
+            Action {
                 id: jobsButton
                 objectName: "jobsButton"
                 readonly property int running: editor.generator.jobs.filter(j => j.state !== "failed").length
@@ -625,6 +681,7 @@ ApplicationWindow {
                         lines: win.lines
                         lyricScale: Math.max(1, Math.min(1.8, height / 420))
                     }
+                    TakeReview { Layout.fillWidth: true }
                     RowLayout {
                         id: transport
                         Layout.fillWidth: true
@@ -771,7 +828,9 @@ ApplicationWindow {
         width: Math.min(380, noticeColumn.implicitWidth + 28); height: noticeColumn.implicitHeight + 20
         radius: 6; color: n.ok === false ? "#3a2622" : "#203530"; border.color: n.ok === false ? "#b4544a" : "#3f9c84"
         onNChanged: if (visible) noticeHide.restart()
-        Timer { id: noticeHide; interval: 12000; onTriggered: if (!noticeHover.hovered) editor.notifier.dismissLatest(); else restart() }
+        // It waits while the app is in the background, so it is still there when the user comes back.
+        Timer { id: noticeHide; interval: 12000; onTriggered: if (!noticeHover.hovered && Qt.application.state === Qt.ApplicationActive) editor.notifier.dismissLatest(); else restart() }
+        Connections { target: Qt.application; function onStateChanged() { if (noticeBanner.visible && Qt.application.state === Qt.ApplicationActive) noticeHide.restart() } }
         HoverHandler { id: noticeHover }
         ColumnLayout {
             id: noticeColumn
@@ -784,7 +843,7 @@ ApplicationWindow {
                 spacing: 6
                 Item { Layout.fillWidth: true }
                 Tab { objectName: "noticeShow"; visible: (noticeBanner.n.owner || "") !== ""; text: "Show"
-                      onClicked: { const n = noticeBanner.n; editor.notifier.dismissLatest(); win.showJob(n.owner, n.ownerId) } }
+                      onClicked: { const n = noticeBanner.n; editor.notifier.dismissLatest(); win.openNotice(n.owner, n.ownerId) } }
                 Tab { objectName: "noticeDismiss"; text: "Dismiss"; onClicked: editor.notifier.dismissLatest() }
             }
         }

@@ -24,7 +24,8 @@ class Notifier : public QObject {
     Q_PROPERTY(QString permission READ permission NOTIFY permissionChanged)
     // Why the last request for permission got no answer from macOS; empty when it answered.
     Q_PROPERTY(QString refusal READ refusalText NOTIFY permissionChanged)
-    // The latest in-app banner: {title, body, owner, ownerId, ok}; empty when dismissed.
+    // The latest in-app banner: {title, body, owner, ownerId, ok}; empty when dismissed. owner is
+    // "takes" when several new takes are waiting.
     Q_PROPERTY(QVariantMap latest READ latest NOTIFY latestChanged)
 public:
     explicit Notifier(Editor* editor);
@@ -70,7 +71,8 @@ private:
     QVariantMap banner;
     QString logPath;
     void set(bool& field, bool on, const char* key);
-    void deliver(const QString& title, const QString& body, const QString& owner, int ownerId, bool ok);
+    // tag: a later notification with the same tag replaces this one in Notification Center.
+    void deliver(const QString& title, const QString& body, const QString& owner, int ownerId, bool ok, const QString& tag = {});
     void refreshPermission();
     void log(const QVariantMap& entry) const;
 };
