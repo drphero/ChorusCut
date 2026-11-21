@@ -97,10 +97,12 @@ bool Project::connect(QString& error) {
 
 std::unique_ptr<Mlt::Profile> Project::previewProfile() const {
     auto profile = std::make_unique<Mlt::Profile>("atsc_720p_24");
+    // The picture's shape at up to 1920 × 1080: a Retina or full-screen viewer needs at least the
+    // sources' own pixels (takes are around 1376 × 768), and the viewer scales down smoothly.
     QSize size(performance.width, performance.height);
-    if (size.isEmpty()) size = QSize(640,360);
+    if (size.isEmpty()) size = QSize(1920,1080);
     const QSize aspect = size;
-    if (size.width() > 960 || size.height() > 540) size.scale(960,540,Qt::KeepAspectRatio);
+    size.scale(1920,1080,Qt::KeepAspectRatio);
     profile->set_width(qMax(2,size.width() & ~1));
     profile->set_height(qMax(2,size.height() & ~1));
     profile->set_display_aspect(aspect.width(), aspect.height());

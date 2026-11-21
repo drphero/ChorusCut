@@ -35,6 +35,12 @@ target_link_libraries(choruscut-mcp PRIVATE Qt6::Core Qt6::Network)
 set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
 add_dependencies(ChorusCut choruscut-mcp)
 set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.prototype)
+# macOS refuses notification permission to a bundle carrying only the linker's signature, which
+# names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
+# build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.
+add_custom_target(ChorusCutSign ALL
+    COMMAND codesign --force --sign - --identifier org.choruscut.prototype "$<TARGET_BUNDLE_DIR:ChorusCut>"
+    DEPENDS ChorusCut choruscut-mcp VERBATIM)
 
 # Uses the same editor commands as QML. Build explicitly for the import regression.
 qt_add_executable(ChorusCutImportCheck EXCLUDE_FROM_ALL tests/import_check.cpp)

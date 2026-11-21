@@ -151,7 +151,8 @@ Popup {
             visible: jp.notifier.system && jp.notifier.permission !== "allowed"
             Layout.fillWidth: true; Layout.leftMargin: 24; wrapMode: Text.Wrap; font.pixelSize: 11
             color: "#e7b75f"
-            text: jp.notifier.permission === "denied" ? "macOS has notifications turned off for Chorus Cut."
+            text: jp.notifier.refusal ? jp.notifier.refusal
+                : jp.notifier.permission === "denied" ? "macOS has notifications turned off for Chorus Cut."
                 : jp.notifier.permission === "unavailable" ? "This build can't post macOS notifications; the banner and Dock still work."
                 : "macOS will ask you once to allow them."
         }

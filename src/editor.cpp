@@ -9,6 +9,7 @@
 #include <QFutureWatcher>
 #include <QtConcurrentRun>
 #include <QQuickWindow>
+#include <QSGImageNode>
 #include <QMouseEvent>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -30,15 +31,26 @@ void Monitor::setEditor(Editor* next) {
     }
     emit editorChanged();
 }
-void Monitor::paint(QPainter* p) {
-    if (frame.isNull()) return;
+QSGNode* Monitor::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
+    auto node = static_cast<QSGImageNode*>(old);
+    if (frame.isNull() || !window()) { delete node; return nullptr; }
+    if (!node) {
+        node = window()->createImageNode();
+        node->setOwnsTexture(true);  // setTexture then deletes the previous frame's texture
+        node->setFiltering(QSGTexture::Linear);
+        node->setMipmapFiltering(QSGTexture::Linear);
+        fresh = true;
+    }
+    if (fresh) {
+        node->setTexture(window()->createTextureFromImage(frame, QQuickWindow::TextureHasMipmaps));
+        fresh = false;
+    }
     QSizeF fit = frame.size();
     fit.scale(boundingRect().size(), Qt::KeepAspectRatio);
     QRectF rect(QPointF(), fit);
     rect.moveCenter(boundingRect().center());
-    // The viewer rarely matches the preview size; scale smoothly rather than by dropping pixels.
-    p->setRenderHint(QPainter::SmoothPixmapTransform);
-    p->drawImage(rect, frame);
+    node->setRect(rect);
+    return node;
 }
 namespace {
 // One undoable picture edit. The trim is already committed when the command is pushed.

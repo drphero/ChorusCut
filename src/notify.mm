@@ -50,9 +50,16 @@ static void macStatus(std::function<void(QString)> done) {
         dispatch_async(dispatch_get_main_queue(), ^{ done(state); });
     }];
 }
-static void macRequest(std::function<void(QString)> done) {
+// done(state, why): why is macOS's refusal, empty when it answered.
+static void macRequest(std::function<void(QString, QString)> done) {
     [center() requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-                            completionHandler:^(BOOL, NSError*) { macStatus(done); }];
+                            completionHandler:^(BOOL, NSError* error) {
+        QString why;
+        if (error) why = error.domain.length && [error.domain isEqualToString:UNErrorDomain] && error.code == UNErrorCodeNotificationsNotAllowed
+                ? QStringLiteral("macOS won't let this copy of Chorus Cut ask: it isn't signed as an app. Rebuild it (the build signs it), then try again.")
+                : QString::fromNSString(error.localizedDescription);
+        macStatus([done, why](QString state) { done(state, why); });
+    }];
 }
 static void macPost(const QString& title, const QString& body, bool sound, const QString& owner, int ownerId) {
     UNMutableNotificationContent* content = [UNMutableNotificationContent new];
@@ -102,7 +109,12 @@ void Notifier::refreshPermission() {
 void Notifier::requestPermission() {
     if (!logPath.isEmpty() || !macAvailable()) { refreshPermission(); return; }
     QPointer<Notifier> self(this);
-    macRequest([self](QString state) { if (self && self->allowed != state) { self->allowed = state; emit self->permissionChanged(); } });
+    macRequest([self](QString state, QString why) {
+        if (!self || (self->allowed == state && self->refusal == why)) return;
+        self->allowed = state;
+        self->refusal = why;
+        emit self->permissionChanged();
+    });
 }
 
 void Notifier::openSystemSettings() {

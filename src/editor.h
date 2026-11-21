@@ -9,7 +9,7 @@
 #include "agent.h"
 #include "notify.h"
 #include <mlt++/Mlt.h>
-#include <QtQuick/QQuickPaintedItem>
+#include <QtQuick/QQuickItem>
 #include <QImage>
 #include <QUndoStack>
 #include <QVector>
@@ -21,19 +21,23 @@
 class Editor;
 // Paints the editor's current frame. Any number can show it at once (the Edit page's viewer and
 // the pop-out window): each follows the editor it is given and starts from its latest frame.
-class Monitor : public QQuickPaintedItem {
+// The viewer. Draws the frame as a texture the GPU scales: linear when enlarging, through
+// mipmaps when shrinking, so a large preview frame stays sharp and doesn't shimmer in a small
+// viewer, at any display's pixel density.
+class Monitor : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(Editor* editor READ editor WRITE setEditor NOTIFY editorChanged)
 public:
-    using QQuickPaintedItem::QQuickPaintedItem;
-    void showImage(const QImage& next) { frame = next; update(); }
-    void paint(QPainter* painter) override;
+    explicit Monitor(QQuickItem* parent = nullptr) : QQuickItem(parent) { setFlag(ItemHasContents); }
+    void showImage(const QImage& next) { frame = next; fresh = true; update(); }
+    QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
     Editor* editor() const { return source; }
     void setEditor(Editor* next);
 signals:
     void editorChanged();
 private:
     QImage frame;
+    bool fresh = false;
     Editor* source = nullptr;
     QMetaObject::Connection link;
 };

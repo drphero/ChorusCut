@@ -22,6 +22,8 @@ class Notifier : public QObject {
     Q_PROPERTY(bool onlyInBackground READ onlyInBackground WRITE setOnlyInBackground NOTIFY optionsChanged)
     // macOS's answer for this app: "allowed", "denied", "notAsked" or "unavailable" (not an app bundle).
     Q_PROPERTY(QString permission READ permission NOTIFY permissionChanged)
+    // Why the last request for permission got no answer from macOS; empty when it answered.
+    Q_PROPERTY(QString refusal READ refusalText NOTIFY permissionChanged)
     // The latest in-app banner: {title, body, owner, ownerId, ok}; empty when dismissed.
     Q_PROPERTY(QVariantMap latest READ latest NOTIFY latestChanged)
 public:
@@ -41,6 +43,7 @@ public:
     void setDock(bool on) { set(useDock, on, "dock"); }
     void setOnlyInBackground(bool on) { set(backgroundOnly, on, "onlyInBackground"); }
     QString permission() const { return allowed; }
+    QString refusalText() const { return refusal; }
     QVariantMap latest() const { return banner; }
     Q_INVOKABLE void dismissLatest();
     // Asks macOS for permission (it asks the user the first time), then refreshes permission.
@@ -63,6 +66,7 @@ private:
     bool wantTakes = true, wantPictures = false, wantFailures = true;
     bool useSystem = true, useSound = true, useDock = true, backgroundOnly = true;
     QString allowed = "notAsked";
+    QString refusal;
     QVariantMap banner;
     QString logPath;
     void set(bool& field, bool on, const char* key);

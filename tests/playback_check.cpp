@@ -2,6 +2,9 @@
 // MLT runs in real time, audio to SDL's disk driver) and compares every frame the viewer is sent
 // with the same position decoded on its own by a seek, which is known to be clean.
 //
+// Then checks sharpness: the preview holds at least the pixels of the largest take, and the
+// viewer, drawn at Retina density (2 device pixels per point), matches a smooth scale of it.
+//
 // usage: ChorusCutPlaybackCheck PROJECT_COPY START_FRAME FRAMES [OUT_DIR]
 // Use a copy: opening a project saves its thumbnail.
 #include "editor.h"
@@ -38,6 +41,7 @@ static double psnr(const QImage& a, const QImage& b) {
 int main(int argc, char** argv) {
     if (argc < 4) { qCritical() << "usage: ChorusCutPlaybackCheck PROJECT_COPY START_FRAME FRAMES [OUT_DIR]"; return 1; }
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    qputenv("QT_SCALE_FACTOR", "2");
     QTemporaryDir scratch;
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
@@ -53,6 +57,22 @@ int main(int argc, char** argv) {
 
     Editor editor;
     if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath()))) { qCritical() << editor.status(); return 2; }
+
+    // The preview must not throw away the takes' own pixels.
+    QSize largest;
+    {
+        Mlt::Profile probe;
+        for (const QFileInfo& f : QDir(QFileInfo(argv[1]).absoluteFilePath() + "/Media/Takes").entryInfoList({"*.mp4", "*.mov", "*.webm"}, QDir::Files)) {
+            Mlt::Producer take(probe, "avformat", f.absoluteFilePath().toUtf8());
+            const QSize size(take.get_int("width"), take.get_int("height"));
+            if (size.width() * size.height() > largest.width() * largest.height()) largest = size;
+        }
+    }
+    const QSize preview = editor.imageAt(start).size();
+    qInfo().noquote() << QString("preview %1x%2, largest take %3x%4").arg(preview.width()).arg(preview.height()).arg(largest.width()).arg(largest.height());
+    if (largest.isValid() && (preview.width() < largest.width() * 0.97 || preview.height() < largest.height() * 0.97)) {
+        qCritical() << "FAIL: the preview is smaller than the takes it shows"; return 7;
+    }
     struct Shown { int position; QImage image; };
     QList<Shown> shown;
     QObject::connect(&editor, &Editor::imageReady, &editor, [&](const QImage& image) {
@@ -100,16 +120,22 @@ int main(int argc, char** argv) {
     editor.seek(start + count / 2);
     QTest::qWait(300);
     const QImage frame = editor.imageAt(start + count / 2);
-    QImage drawn = window->grabWindow().convertToFormat(QImage::Format_RGB888);
-    drawn = drawn.scaled(window->size(), Qt::IgnoreAspectRatio, Qt::FastTransformation);  // to logical pixels
-    QSize fit = frame.size(); fit.scale(window->size(), Qt::KeepAspectRatio);
-    const QRect area(QPoint((window->width() - fit.width()) / 2, (window->height() - fit.height()) / 2), fit);
-    const QImage painted = drawn.copy(area.adjusted(2, 2, -2, -2));
-    auto as = [&](Qt::TransformationMode mode) { return frame.scaled(fit, Qt::IgnoreAspectRatio, mode).copy(QRect(QPoint(2, 2), fit - QSize(4, 4))); };
-    const double smooth = psnr(painted, as(Qt::SmoothTransformation)), blocky = psnr(painted, as(Qt::FastTransformation));
-    qInfo().noquote() << QString("viewer at %1x%2: %3 dB from a smooth scale, %4 dB from nearest-neighbour").arg(fit.width()).arg(fit.height()).arg(smooth, 0, 'f', 1).arg(blocky, 0, 'f', 1);
+    // In device pixels: the viewer must use the display's density, not draw at points and stretch.
+    const QImage drawn = window->grabWindow().convertToFormat(QImage::Format_RGB888);
+    const qreal dpr = window->devicePixelRatio();
+    QSize fit = frame.size(); fit.scale(drawn.size(), Qt::KeepAspectRatio);
+    const QRect area(QPoint((drawn.width() - fit.width()) / 2, (drawn.height() - fit.height()) / 2), fit);
+    const QImage painted = drawn.copy(area.adjusted(3, 3, -3, -3));
+    auto as = [&](const QImage& from, Qt::TransformationMode mode) { return from.scaled(fit, Qt::IgnoreAspectRatio, mode).copy(QRect(QPoint(3, 3), fit - QSize(6, 6))); };
+    const QImage points = frame.scaled(fit / dpr, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    const double smooth = psnr(painted, as(frame, Qt::SmoothTransformation)), blocky = psnr(painted, as(frame, Qt::FastTransformation));
+    const double stretched = psnr(painted, as(points, Qt::SmoothTransformation));
+    qInfo().noquote() << QString("viewer at %1x%2 device pixels (x%3): %4 dB from a smooth scale, %5 dB from nearest-neighbour, %6 dB from drawing at points and stretching")
+                         .arg(fit.width()).arg(fit.height()).arg(dpr).arg(smooth, 0, 'f', 1).arg(blocky, 0, 'f', 1).arg(stretched, 0, 'f', 1);
     if (!out.isEmpty()) painted.save(out + "/viewer.png");
+    if (dpr < 2) { qCritical() << "FAIL: the viewer window isn't at Retina density"; return 6; }
     if (smooth < blocky + 1) { qCritical() << "FAIL: the viewer scales the frame by dropping pixels"; return 6; }
-    qInfo() << "PASS: every played frame matches its clean decode, and the viewer scales it smoothly";
+    if (smooth < stretched + 1) { qCritical() << "FAIL: the viewer draws at points and stretches to the display"; return 6; }
+    qInfo() << "PASS: every played frame matches its clean decode, the preview keeps the takes' pixels, and the viewer scales it smoothly at Retina density";
     return 0;
 }
