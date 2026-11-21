@@ -112,6 +112,9 @@ int main(int argc, char** argv) {
     // Our own socket, so a running Chorus Cut is never involved.
     const QByteArray socketName = "chorus-mcp-check-" + QByteArray::number(QCoreApplication::applicationPid());
     qputenv("CHORUS_AGENT_SOCKET", socketName);
+    // Antigravity's config goes in scratch, so the user's own ~/.gemini is never touched.
+    const QString antigravity = scratch.filePath("gemini/config/mcp_config.json");
+    qputenv("CHORUS_ANTIGRAVITY_CONFIG", QFile::encodeName(antigravity));
     QGuiApplication app(argc, argv);
     app.setOrganizationName("Chorus Cut Tests");
     app.setApplicationName("MCP Check");
@@ -315,8 +318,50 @@ int main(int argc, char** argv) {
     if (!status || !status->property("text").toString().contains("Check Agent")) return fail(15, "the Agent sheet does not show the connection");
     if (!find(window, "channelCommand")) return fail(15, "the Agent sheet does not show how to start Claude Code with live requests");
     capture("agent-sheet");
-    click(find(window, "agentDone"));
-    if (!waitFor([&] { return !window->findChild<QObject*>("agentSheet")->property("visible").toBool(); }, 1500)) return fail(15, "Done did not close the Agent sheet");
+    auto closeSheet = [&] {
+        click(find(window, "agentDone"));
+        return waitFor([&] { return !window->findChild<QObject*>("agentSheet")->property("visible").toBool(); }, 1500);
+    };
+    // Antigravity: with no config yet, Add creates it with only Chorus Cut.
+    {
+        auto add = find(window, "antigravityAdd");
+        if (!add || add->property("text") != "Add" || !add->isEnabled()) return fail(30, "the Agent sheet has no Add button for Antigravity");
+        click(add);
+        const auto made = QJsonDocument::fromJson([&] { QFile f(antigravity); f.open(QIODevice::ReadOnly); return f.readAll(); }()).object();
+        if (made["mcpServers"].toObject()["ChorusCut"].toObject()["command"] != editor.agent()->shimPath() || made["mcpServers"].toObject().size() != 1)
+            return fail(30, "Add did not create Antigravity's config with choruscut-mcp: " + QString::fromUtf8(QJsonDocument(made).toJson(QJsonDocument::Compact)));
+        if (add->property("text") != "Added" || add->isEnabled() || !find(window, "antigravityNote")->property("text").toString().startsWith("Added to"))
+            return fail(30, "the Antigravity row does not show it was added");
+    }
+    auto writeConfig = [&](const QByteArray& bytes) { QFile f(antigravity); f.open(QIODevice::WriteOnly | QIODevice::Truncate); f.write(bytes); };
+    auto readConfig = [&] { QFile f(antigravity); f.open(QIODevice::ReadOnly); return f.readAll(); };
+    // A file that is not JSON is left exactly as it was.
+    {
+        const QByteArray broken = "{\"mcpServers\": {\"notes\": {\"command\": \"notes-mcp\"},}\n";
+        writeConfig(broken);
+        if (!closeSheet()) return fail(30, "Done did not close the Agent sheet");
+        click(find(window, "agentButton"));
+        auto add = find(window, "antigravityAdd");
+        if (!add || !find(window, "antigravityNote")->property("text").toString().contains("not valid JSON")) return fail(30, "a broken Antigravity config is not reported");
+        click(add);
+        if (readConfig() != broken) return fail(30, "Add rewrote a broken Antigravity config");
+    }
+    // Another build's entry is updated, and every other server and setting is kept.
+    {
+        writeConfig(R"({"theme": "dark", "mcpServers": {"notes": {"command": "notes-mcp", "args": ["--ro"]}, "ChorusCut": {"command": "/old/choruscut-mcp"}}})");
+        if (!closeSheet()) return fail(30, "Done did not close the Agent sheet");
+        click(find(window, "agentButton"));
+        auto add = find(window, "antigravityAdd");
+        if (!add || add->property("text") != "Update") return fail(30, "another build's Antigravity entry is not offered as an update");
+        click(add);
+        const auto merged = QJsonDocument::fromJson(readConfig()).object();
+        const auto servers = merged["mcpServers"].toObject();
+        if (merged["theme"] != "dark" || servers["notes"].toObject() != QJsonObject{{"command", "notes-mcp"}, {"args", QJsonArray{"--ro"}}} ||
+            servers["ChorusCut"].toObject() != QJsonObject{{"command", editor.agent()->shimPath()}} || add->property("text") != "Added")
+            return fail(16, "Update did not merge into Antigravity's config: " + QString::fromUtf8(QJsonDocument(merged).toJson(QJsonDocument::Compact)));
+        capture("agent-sheet-antigravity");
+    }
+    if (!closeSheet()) return fail(15, "Done did not close the Agent sheet");
 
     // 7b. Requests from the app: a Claude Code session gets them live as channel events; another
     // client does not. The agent reads, answers and asks back; everything stays in the project.

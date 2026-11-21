@@ -20,6 +20,10 @@ class AgentBridge : public QObject {
     Q_PROPERTY(QString shimPath READ shimPath CONSTANT)
     Q_PROPERTY(QString claudeCommand READ claudeCommand CONSTANT)
     Q_PROPERTY(QString codexCommand READ codexCommand CONSTANT)
+    // Antigravity has no add command: its MCP servers live in a JSON file this app merges into.
+    Q_PROPERTY(QString antigravityConfig READ antigravityConfig CONSTANT)
+    // "missing", "added" (this build's server), "other" (another build's), or "unreadable".
+    Q_PROPERTY(QString antigravityState READ antigravityState NOTIFY antigravityChanged)
     // Starts Claude Code with Chorus Cut as a channel, so requests from the app reach it live.
     Q_PROPERTY(QString channelCommand READ channelCommand CONSTANT)
     // Whether an agent that can take channel events (Claude Code) is connected now.
@@ -37,6 +41,14 @@ public:
     QString shimPath() const;
     QString claudeCommand() const;
     QString codexCommand() const;
+    // ~/.gemini/config/mcp_config.json, or CHORUS_ANTIGRAVITY_CONFIG (tests).
+    QString antigravityConfig() const;
+    QString antigravityState() const;
+    // Sets mcpServers.ChorusCut to this build's choruscut-mcp, keeping every other entry. A file
+    // that is not a JSON object is left alone. True when the file now has the entry.
+    Q_INVOKABLE bool addToAntigravity();
+    // Rereads the file, for when the sheet opens after someone edited it.
+    Q_INVOKABLE void checkAntigravity() { emit antigravityChanged(); }
     QString channelCommand() const { return "claude --dangerously-load-development-channels server:ChorusCut"; }
     bool liveClient() const;
     // Pushes a user's message to every connected Claude Code; true when one was there to take it.
@@ -47,6 +59,7 @@ public:
     QJsonObject call(const QString& tool, const QJsonObject& arguments);
 signals:
     void stateChanged();
+    void antigravityChanged();
     // An agent's pass changed the plan; label is its undo text.
     void passApplied(const QString& label, int changes, const QString& client);
 private:

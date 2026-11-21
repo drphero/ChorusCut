@@ -5,12 +5,15 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QSaveFile>
 #include <cmath>
 
 namespace {
@@ -23,6 +26,23 @@ QJsonObject failure(const QString& message) {
 }
 QJsonObject json(const QVariant& v) { return QJsonObject::fromVariantMap(v.toMap()); }
 QString quoted(const QString& path) { return "\"" + QString(path).replace("\"", "\\\"") + "\""; }
+
+// Antigravity's config: an absent or empty file is an empty object; anything else must parse to
+// an object whose mcpServers, if present, is an object. ok is false when it does not.
+QJsonObject readMcpConfig(const QString& path, bool* ok) {
+    *ok = true;
+    QFile file(path);
+    if (!file.exists()) return {};
+    if (!file.open(QIODevice::ReadOnly)) { *ok = false; return {}; }
+    const QByteArray bytes = file.readAll().trimmed();
+    if (bytes.isEmpty()) return {};
+    QJsonParseError error;
+    const auto doc = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject()) { *ok = false; return {}; }
+    const auto config = doc.object();
+    if (config.contains("mcpServers") && !config["mcpServers"].isObject()) *ok = false;
+    return config;
+}
 }
 
 AgentBridge::AgentBridge(Editor* editor, QObject* parent) : QObject(parent), editor(editor) {
@@ -111,6 +131,35 @@ QStringList AgentBridge::clients() const { return peers.values(); }
 QString AgentBridge::shimPath() const { return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("choruscut-mcp"); }
 QString AgentBridge::claudeCommand() const { return "claude mcp add --scope user ChorusCut -- " + quoted(shimPath()); }
 QString AgentBridge::codexCommand() const { return "codex mcp add ChorusCut -- " + quoted(shimPath()); }
+QString AgentBridge::antigravityConfig() const {
+    const QString custom = qEnvironmentVariable("CHORUS_ANTIGRAVITY_CONFIG");
+    return custom.isEmpty() ? QDir::home().filePath(".gemini/config/mcp_config.json") : custom;
+}
+
+QString AgentBridge::antigravityState() const {
+    bool ok;
+    const auto config = readMcpConfig(antigravityConfig(), &ok);
+    if (!ok) return "unreadable";
+    const QJsonValue entry = config["mcpServers"].toObject().value("ChorusCut");
+    if (entry.isUndefined()) return "missing";
+    return entry.toObject()["command"].toString() == shimPath() ? "added" : "other";
+}
+
+bool AgentBridge::addToAntigravity() {
+    const QString path = antigravityConfig();
+    bool ok;
+    QJsonObject config = readMcpConfig(path, &ok);
+    if (!ok) { emit antigravityChanged(); return false; }
+    QJsonObject servers = config["mcpServers"].toObject();
+    servers["ChorusCut"] = QJsonObject{{"command", shimPath()}};
+    config["mcpServers"] = servers;
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    const bool written = file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(config).toJson(QJsonDocument::Indented)) >= 0 && file.commit();
+    emit antigravityChanged();
+    return written;
+}
+
 void AgentBridge::copy(const QString& value) const { if (auto board = QGuiApplication::clipboard()) board->setText(value); }
 
 void AgentBridge::accept() {

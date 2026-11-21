@@ -316,7 +316,7 @@ ApplicationWindow {
     TakePopup { id: takePopup; onWorkflowsRequested: win.openWorkflows(); onAskRequested: shot => win.askAgent("shot", shot, "prompts", "Video prompt") }
     function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
 
-    // Connecting an agent: Claude Code, Codex or any MCP client runs choruscut-mcp, which talks to this app.
+    // Connecting an agent: Claude Code, Codex, Antigravity or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {
         id: agentSheet
         objectName: "agentSheet"
@@ -324,6 +324,7 @@ ApplicationWindow {
         width: Math.min(640, win.width - 80)
         modal: true
         padding: 20
+        onAboutToShow: editor.agent.checkAntigravity()
         background: Rectangle { color: "#1d2930"; radius: 6; border.color: "#34434a" }
         component CommandRow: RowLayout {
             id: cmdRow
@@ -348,10 +349,33 @@ ApplicationWindow {
             LabelText { text: "Agent"; font.pixelSize: 17; font.bold: true }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet
-                text: "Plan with your own Claude Code or Codex. It works on the project open here: you see every change as it lands, each pass is one step you can undo, and fields you wrote or locked are left alone. Run one of these once in a terminal to add Chorus Cut to your agent:"
+                text: "Plan with your own Claude Code, Codex or Antigravity. It works on the project open here: you see every change as it lands, each pass is one step you can undo, and fields you wrote or locked are left alone. Run one of these once in a terminal, or add it to Antigravity here, to connect your agent:"
             }
             CommandRow { label: "Claude Code"; command: editor.agent.claudeCommand }
             CommandRow { label: "Codex"; command: editor.agent.codexCommand }
+            // Antigravity reads its MCP servers from a file, so the app adds the entry itself.
+            RowLayout {
+                id: antigravityRow
+                readonly property string setup: editor.agent.antigravityState
+                Layout.fillWidth: true
+                spacing: 8
+                Text { text: "Antigravity"; color: win.quiet; font.pixelSize: 12; Layout.preferredWidth: 86 }
+                Text {
+                    objectName: "antigravityNote"
+                    Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
+                    color: antigravityRow.setup === "unreadable" ? "#e7b75f" : antigravityRow.setup === "added" ? win.mint : win.quiet
+                    text: antigravityRow.setup === "added" ? "Added to " + editor.agent.antigravityConfig + ". If Antigravity was open, restart it to pick this up."
+                        : antigravityRow.setup === "other" ? "Antigravity points at another Chorus Cut build. Update it to use this one."
+                        : antigravityRow.setup === "unreadable" ? editor.agent.antigravityConfig + " is not valid JSON, so it was left alone. Fix or empty it, then add again."
+                        : "Adds Chorus Cut to " + editor.agent.antigravityConfig + ", keeping your other servers."
+                }
+                Action {
+                    objectName: "antigravityAdd"
+                    enabled: antigravityRow.setup !== "added"
+                    text: antigravityRow.setup === "added" ? "Added" : antigravityRow.setup === "other" ? "Update" : "Add"
+                    onClicked: editor.agent.addToAntigravity()
+                }
+            }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
                 text: "To send requests from the app straight into a Claude Code session (“ask” on any field), start Claude Code like this. Channels are a Claude Code research preview; it asks you to confirm at startup, and Team or Enterprise plans need an owner to turn channels on. Without it, requests wait in Plan ▸ Requests until your agent checks them."
@@ -476,7 +500,7 @@ ApplicationWindow {
                 leftPadding: 26
                 onClicked: editor.requests.waitingOnUser ? win.showRequests(0) : agentSheet.open()
                 ToolTip.text: (editor.requests.waitingOnUser ? editor.requests.waitingOnUser + " waiting for your answer. " : "")
-                              + (editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "Plan with Claude Code or Codex")
+                              + (editor.agent.clients.length ? "Connected: " + editor.agent.clients.join(", ") : "Plan with Claude Code, Codex or Antigravity")
                 Rectangle {
                     width: 8; height: 8; radius: 4; x: 11; anchors.verticalCenter: parent.verticalCenter
                     color: editor.agent.clients.length ? win.mint : editor.agent.note ? "#e7b75f" : "#748084"
