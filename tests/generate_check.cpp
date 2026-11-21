@@ -34,6 +34,7 @@
 #include <QWheelEvent>
 #include <QPointingDevice>
 #include <QDebug>
+#include <QCryptographicHash>
 #include <functional>
 
 static QQuickItem* findItem(QQuickItem* root, const QString& name) {
@@ -1665,6 +1666,159 @@ int main(int argc, char** argv) {
             waitFor([&] { return !editor.playing(); }, 5000);
             if (find(window, "newTakesButton")) return fail(167, "the New takes button stayed up");
             window->setProperty("selection", QVariant::fromValue(nullptr));
+
+            // ---- Face refine. The workflow: Brent's H3 Face Refine graph with the take loaded by
+            // name in both loaders, the song through a Load Audio, cut detection off.
+            {
+                auto uploadName = [&](const QString& path) {
+                    QFile f(path);
+                    f.open(QIODevice::ReadOnly);
+                    return "chorus-" + QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha1).toHex().left(16) + "." + QFileInfo(path).suffix().toLower();
+                };
+                auto raw = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_face_raw_api.json")));
+                const auto rawFlow = flows->get(raw["id"].toString());
+                const QString rawProblems = rawFlow["problems"].toStringList().join(" | ");
+                if (rawFlow["use"] != "take-face" || rawFlow["ready"].toBool() || !rawProblems.contains("Load Video FFmpeg (Upload)") || !rawProblems.contains("Load Audio"))
+                    return fail(170, "the raw export's problems: " + rawProblems);
+                flows->remove(raw["id"].toString());
+                auto imported = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_face_api.json")));
+                const QString faceId = imported["id"].toString();
+                const auto faceFlow = flows->get(faceId);
+                QStringList mapped;
+                for (const auto& v : faceFlow["inputs"].toList()) {
+                    const auto m = v.toMap();
+                    if (!m["slot"].toString().isEmpty()) mapped << m["key"].toString() + "=" + m["slot"].toString() + (m["slot"] == "picture" ? m["index"].toString() : "");
+                }
+                const QString wanted = "2/identity_threshold=setting 2/video=video 17/custom_denoise=setting 17/preset=setting 20/prompt=prompt 23/image=picture0 24/image=picture1 "
+                                       "25/image=picture2 32/noise_seed=seed 33/sampler_name=setting 34/steps=setting 34/scheduler=setting 37/video=video 39/filename_prefix=prefix 40/image=face 41/audio=audio";
+                QStringList want = wanted.split(' ');
+                std::sort(mapped.begin(), mapped.end());
+                std::sort(want.begin(), want.end());
+                if (faceFlow["use"] != "take-face" || !faceFlow["ready"].toBool() || mapped != want)
+                    return fail(170, "the face workflow: " + faceFlow["use"].toString() + " " + faceFlow["problems"].toStringList().join(" | ") + " :: " + mapped.join(" "));
+                gen->fetchChoices(faceId);
+                // Jo joins Mara in the second shot, with one picture of his face.
+                const int jo = plan->run({{"op", "add"}, {"kind", "character"}, {"fields", QVariantMap{{"name", "Jo"}}}})["id"].toInt();
+                QImage joPicture(64, 64, QImage::Format_RGB32);
+                joPicture.fill(QColor("#4060a0"));
+                const QString joPath = scratch.filePath("jo-face.png");
+                joPicture.save(joPath);
+                const int joFace = plan->run({{"op", "ref.add"}, {"owner", "character"}, {"ownerId", jo}, {"path", joPath}})["id"].toInt();
+                plan->run({{"op", "set"}, {"kind", "reference"}, {"id", joFace}, {"fields", QVariantMap{{"approved", true}}}});
+                plan->run({{"op", "set"}, {"kind", "shot"}, {"id", other}, {"fields", QVariantMap{{"who", QVariantList{QVariantMap{{"character", mara}}, QVariantMap{{"character", jo}}}}}}});
+                const auto source = plan->takesFor(other)[2].toMap();
+                const int sourceId = source["id"].toInt();
+                const auto options = gen->refineOptions(sourceId);
+                QVariantMap maraOpts, joOpts;
+                for (const auto& p : options["people"].toList()) (p.toMap()["character"].toInt() == mara ? maraOpts : joOpts) = p.toMap();
+                if (!options["ready"].toBool() || !source["lipSync"].toBool() || maraOpts.isEmpty() || joOpts["face"].toInt() != joFace || joOpts["pictures"].toList() != QVariantList{joFace} || !maraOpts["face"].toInt())
+                    return fail(171, "the refine options: " + json(options));
+                const int maraFace = maraOpts["face"].toInt();
+                // With real input: the take's menu, Refine faces…, tick Jo only, add to his prompt.
+                window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", other}, {"start", laterLine["start"]}, {"end", laterLine["end"]}});
+                QTest::qWait(150);
+                auto openRefineOn = [&](int number) {
+                    auto tile = find(window, QString("shotTake%1").arg(number));
+                    if (!tile) return false;
+                    scrollIntoView(tile);
+                    QTest::mouseClick(window, Qt::RightButton, {}, center(tile));
+                    clickMenuItem(tile, "takeRefine");
+                    auto popup = window->findChild<QObject*>("refinePopup");
+                    return popup && waitFor([&] { return popup->property("opened").toBool(); }, 1500);
+                };
+                if (!openRefineOn(3)) return fail(172, "Refine faces… did not open the dialog");
+                auto refinePopup = window->findChild<QObject*>("refinePopup");
+                QTest::qWait(200);
+                auto maraBox = find(window, QString("refinePerson_%1").arg(mara)), joBox = find(window, QString("refinePerson_%1").arg(jo));
+                if (!maraBox || !joBox || maraBox->property("checked").toBool() || joBox->property("checked").toBool() || find(window, "refineGo")->property("enabled").toBool())
+                    return fail(172, "with two people in the shot, nobody should start ticked");
+                click(joBox);
+                if (!joBox->property("checked").toBool() || !find(window, QString("refineFace_%1").arg(joFace)) || !find(window, QString("refinePick_%1").arg(joFace)))
+                    return fail(172, "ticking Jo did not show his face and pictures");
+                auto joPrompt = find(window, QString("refinePrompt_%1").arg(jo));
+                if (!joPrompt || joPrompt->property("text") != "<Picture 1> shows Jo.") return fail(172, "Jo's default prompt: " + (joPrompt ? joPrompt->property("text").toString() : QString("missing")));
+                capture("refine-dialog");
+                click(joPrompt);
+                QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+                typeText(" Short dark hair.");
+                const QString joWords = "<Picture 1> shows Jo. Short dark hair.";
+                if (joPrompt->property("text") != joWords) return fail(172, "typing Jo's prompt: " + joPrompt->property("text").toString());
+                const int promptsBefore = stubLog()["prompts"].toArray().size();
+                mode("finish");
+                click(find(window, "refineGo"));
+                if (refinePopup->property("opened").toBool()) return fail(173, "Refine did not start: " + textOf("refineWhy"));
+                if (!waitFor([&] { return plan->takesFor(other).size() == 4 && gen->jobs().isEmpty(); }, 30000)) return fail(173, "the refined take did not arrive: " + json(gen->jobs()));
+                const auto prompts = stubLog()["prompts"].toArray();
+                const QJsonObject faceGraph = prompts.last().toObject();
+                const QString takeName = uploadName(projectDir.filePath(source["file"].toString()));
+                const QString joName = uploadName(projectDir.filePath(plan->item("reference", joFace)["file"].toString()));
+                QString previewWire;
+                for (const QString& node : faceGraph.keys())
+                    if (faceGraph[node].toObject()["class_type"] == "PreviewImage") previewWire = QString::fromUtf8(QJsonDocument(faceGraph[node].toObject()["inputs"].toObject()["images"].toArray()).toJson(QJsonDocument::Compact));
+                if (prompts.size() != promptsBefore + 1 || input(faceGraph, "2", "video") != takeName || input(faceGraph, "37", "video") != takeName
+                    || input(faceGraph, "40", "image") != joName || input(faceGraph, "23", "image") != joName || faceGraph.contains("24") || faceGraph.contains("25")
+                    || input(faceGraph, "20", "prompt") != joWords || input(faceGraph, "39", "filename_prefix") != "ChorusCut/face" || previewWire != "[\"2\",3]")
+                    return fail(174, "the face graph: " + QString::fromUtf8(QJsonDocument(faceGraph).toJson(QJsonDocument::Compact)).left(1500));
+                QJsonObject song;
+                for (const auto& u : stubLog()["uploads"].toArray()) if (u.toObject()["name"] == input(faceGraph, "41", "audio").toString()) song = u.toObject();
+                if (song["wavBytes"].toInt() != 44 + int(std::llround(source["frames"].toInt() / 24.0 * 48000)) * 4 || song["silent"].toBool())
+                    return fail(174, "the song under the sung take: " + QString::fromUtf8(QJsonDocument(song).toJson(QJsonDocument::Compact)));
+                const auto refined = plan->takesFor(other)[3].toMap();
+                if (refined["refined"] != "Jo" || refined["refinedFromNumber"].toInt() != 3 || refined["from"] != source["from"] || refined["frames"] != source["frames"]
+                    || !refined["lipSync"].toBool() || refined["chosen"].toBool() || refined["facesUrl"].toString().isEmpty() || refined["generation"].toMap()["face"].toInt() != joFace)
+                    return fail(175, "the refined take: " + json(refined));
+                if (plan->item("character", jo)["fields"].toMap()["facePrompt"] != joWords) return fail(175, "Jo's prompt was not kept with him");
+                if (!editor.newTakes().size() || editor.newTakes().last().toMap()["take"].toInt() != refined["id"].toInt()) return fail(175, "the refined take is not new");
+                // The tile says whose face, and watching it shows who was found.
+                editor.auditionTake(refined["id"].toInt(), false);
+                QTest::qWait(200);
+                if (!find(window, "takeFacesFound")) return fail(175, "watching the refined take does not show the faces found");
+                capture("refine-result");
+                editor.endAudition();
+                // Two people: Mara first, then Jo on Mara's result.
+                if (!openRefineOn(3)) return fail(176, "the dialog did not open again");
+                QTest::qWait(200);
+                click(find(window, QString("refinePerson_%1").arg(mara)));
+                click(find(window, QString("refinePerson_%1").arg(jo)));
+                if (textOf(QString("refinePrompt_%1").arg(jo)) != joWords || textOf("refineGo") != "Refine 2 faces") return fail(176, "the second run's dialog: " + textOf("refineGo"));
+                click(find(window, "refineGo"));
+                if (!waitFor([&] { return gen->jobs().size() == 2; }, 3000) || gen->jobs()[1].toMap()["state"] != "waiting")
+                    return fail(176, "the second pass should wait for the first: " + json(gen->jobs()));
+                if (!waitFor([&] { return plan->takesFor(other).size() == 6 && gen->jobs().isEmpty(); }, 40000)) return fail(176, "the two passes did not arrive: " + json(gen->jobs()));
+                const auto chain = stubLog()["prompts"].toArray();
+                const auto first = chain[chain.size() - 2].toObject(), second = chain.last().toObject();
+                const auto maraTake = plan->takesFor(other)[4].toMap(), joTake = plan->takesFor(other)[5].toMap();
+                const QString maraName = uploadName(projectDir.filePath(plan->item("reference", maraFace)["file"].toString()));
+                if (input(first, "2", "video") != takeName || input(first, "40", "image") != maraName
+                    || input(second, "2", "video") != uploadName(projectDir.filePath(plan->item("take", maraTake["id"].toInt())["file"].toString()))
+                    || input(second, "40", "image") != joName || maraTake["refined"] != "Mara" || joTake["refined"] != "Jo" || joTake["refinedFromNumber"].toInt() != 5
+                    || joTake["from"] != source["from"] || joTake["frames"] != source["frames"])
+                    return fail(177, "the chain: " + json(maraTake) + " | " + json(joTake));
+                // A take that isn't sung gets silence of its length.
+                int unsung = 0, unsungFrames = 0;
+                for (const auto& t : plan->takesFor(shotId)) if (!t.toMap()["lipSync"].toBool() && !unsung) { unsung = t.toMap()["id"].toInt(); unsungFrames = t.toMap()["frames"].toInt(); }
+                const int shotTakes = plan->takesFor(shotId).size();
+                if (const QString why = gen->refineFaces(unsung, {QVariantMap{{"character", mara}, {"face", maraFace}, {"pictures", QVariantList{}}, {"prompt", "Mara."}}}); !why.isEmpty())
+                    return fail(178, why);
+                if (!waitFor([&] { return plan->takesFor(shotId).size() == shotTakes + 1 && gen->jobs().isEmpty(); }, 30000)) return fail(178, "the unsung take's refine did not arrive: " + json(gen->jobs()));
+                const auto quiet = stubLog()["prompts"].toArray().last().toObject();
+                QJsonObject silence;
+                for (const auto& u : stubLog()["uploads"].toArray()) if (u.toObject()["name"] == input(quiet, "41", "audio").toString()) silence = u.toObject();
+                if (!silence["silent"].toBool() || silence["wavBytes"].toInt() != 44 + int(std::llround(unsungFrames / 24.0 * 48000)) * 4 || plan->takesFor(shotId).last().toMap()["lipSync"].toBool())
+                    return fail(178, "the unsung take's sound: " + QString::fromUtf8(QJsonDocument(silence).toJson(QJsonDocument::Compact)));
+                // A result that wouldn't fit its place is refused.
+                call("/_stub/mode", {{"mode", "finish"}, {"faceExtra", 17}}, true);
+                if (const QString why = gen->refineFaces(sourceId, {QVariantMap{{"character", jo}, {"face", joFace}, {"pictures", QVariantList{joFace}}, {"prompt", joWords}}}); !why.isEmpty())
+                    return fail(179, why);
+                if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["state"] == "failed"; }, 30000)
+                    || !gen->jobs()[0].toMap()["text"].toString().contains("would not fit") || plan->takesFor(other).size() != 6)
+                    return fail(179, "a refined take of the wrong length was not refused: " + json(gen->jobs()));
+                call("/_stub/mode", {{"mode", "finish"}, {"faceExtra", 0}}, true);
+                gen->dismiss(gen->jobs()[0].toMap()["id"].toInt());
+                flows->remove(faceId);
+                window->setProperty("selection", QVariant::fromValue(nullptr));
+                editor.notifier()->dismissLatest();
+            }
         }
         flows->remove(syncId);
         flows->remove(refId);

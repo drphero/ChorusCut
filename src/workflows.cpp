@@ -19,6 +19,7 @@ const QList<Named>& useTable() {
         {"ref-any", "Reference picture, from a prompt or from pictures", "Both: a model that draws from text alone or edits from any number of pictures (its picture inputs must be optional)."},
         {"take-ref", "Shot take from reference pictures", "Reference to video: a shot's take from its prompt and the pictures picked for it (H3's <Picture n>)."},
         {"take-sync", "Shot take singing to the song", "Reference to video with the song locked in: a lip-sync shot's take from its prompt, its pictures and the song under it, through a Load Audio node."},
+        {"take-face", "Refine faces on a take", "Redraws one person's face on a finished take (H3 Face Refine): finds them by a picture of their face, redraws it towards their pictures, and stitches it back. Its song comes through a Load Audio node (silence for takes not sung)."},
     };
     return table;
 }
@@ -27,10 +28,17 @@ const QList<Named>& slotTable() {
         {"prompt", "Prompt", ""}, {"negative", "Negative prompt", ""}, {"picture", "Picture", "indexed"},
         {"seed", "Seed", ""}, {"width", "Width", ""}, {"height", "Height", ""}, {"prefix", "File name prefix", ""},
         {"audio", "Song excerpt (Load Audio)", ""}, {"frames", "Length in frames", ""}, {"seconds", "Length in seconds", ""},
+        {"video", "The take (video file)", ""}, {"face", "Face to find (Load Image)", ""},
         {"setting", "Adjust when generating", ""},
     };
     return table;
 }
+// Loaders that read a video from ComfyUI's input folder by name, where Chorus Cut uploads a take.
+// The Path variants need a path on the ComfyUI machine, which an upload doesn't give.
+bool uploadedVideo(const QString& cls) {
+    return cls == "H3FaceSelect" || cls == "VHS_LoadVideoFFmpeg" || cls == "VHS_LoadVideo" || cls == "LoadVideo";
+}
+bool pathVideo(const QString& cls) { return cls == "VHS_LoadVideoFFmpegPath" || cls == "VHS_LoadVideoPath"; }
 bool isVideoSaver(const QString& cls) {
     return cls == "SaveVideo" || cls.contains("VideoCombine") || cls == "SaveWEBM" || cls == "SaveAnimatedWEBP";
 }
@@ -55,6 +63,7 @@ QJsonObject inputsOf(const QJsonObject& graph, const QString& node) { return gra
 // (a Load Audio with nothing picked exports "inputs": {}), but Chorus Cut fills it anyway.
 QString fileInput(const QString& cls) {
     if (cls.contains("LoadAudio")) return "audio";
+    if (uploadedVideo(cls)) return "video";
     if (cls.contains("LoadImage") && !cls.contains("Mask")) return "image";
     return {};
 }
@@ -104,6 +113,9 @@ bool usualSetting(const QString& cls, const QString& input, const QJsonValue& va
     if (cls == "BasicScheduler") return input == "steps" || input == "scheduler" || input == "denoise";
     if (cls == "CFGGuider") return input == "cfg";
     if (cls == "FluxGuidance") return input == "guidance";
+    // Face refine: how hard the face is redrawn, and how close a face must be to count as theirs.
+    if (cls == "H3FaceRefineStrength") return input == "preset" || input == "custom_denoise";
+    if (cls == "H3FaceSelect") return input == "identity_threshold";
     // Shape and size pickers: aspect ratio and megapixel choices, whatever node offers them.
     if (input == "aspect_ratio" || input == "megapixels") return true;
     return false;
@@ -248,12 +260,22 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
             if (classOf(graph, node).contains("Text") && inputsOf(graph, node)["text"].isString()) { positive = {node, "text"}; break; }
     add("prompt", positive.first, positive.second);
     if (negative != positive) add("negative", negative.first, negative.second);
+    // Face refine: the take goes into every loader that reads a video by name, and the picture
+    // the face is found by is the Load Image wired to identity_reference, not a reference picture.
+    for (const QString& node : order) {
+        const auto inputs = inputsOf(graph, node);
+        if (uploadedVideo(classOf(graph, node)) && takesFile(graph, node, "video")) add("video", node, "video");
+        if (classOf(graph, node) == "H3FaceSelect" && isLink(inputs["identity_reference"])) {
+            const QString from = inputs["identity_reference"].toArray()[0].toString();
+            if (classOf(graph, from).contains("LoadImage") && takesFile(graph, from, "image")) add("face", from, "image");
+        }
+    }
     int picture = 0;
     QString saver, preview;
     for (const QString& node : order) {
         const QString cls = classOf(graph, node);
         const auto inputs = inputsOf(graph, node);
-        if (cls.contains("LoadImage") && takesFile(graph, node, "image")) add("picture", node, "image", picture++);
+        if (cls.contains("LoadImage") && takesFile(graph, node, "image") && !taken.contains(node + "/image")) add("picture", node, "image", picture++);
         for (const char* name : {"seed", "noise_seed"})
             if (inputs[name].isDouble()) add("seed", node, name);
         if (cls.contains("Latent") && inputs["width"].isDouble() && inputs["height"].isDouble()) {
@@ -312,13 +334,15 @@ QVariantMap Workflows::importFile(const QUrl& file, const QString& use) {
     const QString problem = checkGraph(doc);
     if (!problem.isEmpty()) return {{"ok", false}, {"error", problem}};
     QJsonObject adapter = detect(doc.object());
-    bool pictures = false, audio = false, video = false;
+    bool pictures = false, audio = false, video = false, face = false;
     for (const auto& s : adapter["slots"].toArray()) {
         pictures |= s.toObject()["slot"] == "picture";
         audio |= s.toObject()["slot"] == "audio";
     }
+    const QJsonObject nodes = doc.object();
+    for (auto it = nodes.begin(); it != nodes.end(); ++it) face |= it.value().toObject()["class_type"] == "H3FaceSelect";
     for (const auto& o : adapter["outputs"].toArray()) video |= isVideoSaver(classOf(doc.object(), o.toString()));
-    const QString chosen = !use.isEmpty() ? use : audio ? "take-sync" : video ? "take-ref" : pictures ? "ref-edit" : "ref-text";
+    const QString chosen = !use.isEmpty() ? use : face ? "take-face" : audio ? "take-sync" : video ? "take-ref" : pictures ? "ref-edit" : "ref-text";
     const QString name = QFileInfo(path).completeBaseName();
     QString id = slug(name);
     for (int n = 2; root.exists(id); ++n) id = slug(name) + "-" + QString::number(n);
@@ -342,16 +366,31 @@ QStringList Workflows::problems(const QString& id) const {
     QStringList out;
     const auto adapter = adapterOf(id);
     const QString use = adapter["use"].toString();
-    int prompts = 0, pictures = 0, audio = 0, length = 0;
+    int prompts = 0, pictures = 0, audio = 0, length = 0, videos = 0, faces = 0;
     for (const auto& s : adapter["slots"].toArray()) {
         prompts += s.toObject()["slot"] == "prompt";
         pictures += s.toObject()["slot"] == "picture";
         audio += s.toObject()["slot"] == "audio";
         length += s.toObject()["slot"] == "frames" || s.toObject()["slot"] == "seconds";
+        videos += s.toObject()["slot"] == "video";
+        faces += s.toObject()["slot"] == "face";
     }
     if (!prompts) out << "Choose the input that takes the prompt.";
-    const bool take = use == "take-ref" || use == "take-sync";
-    if (take && !length) out << "Choose the input that sets the video's length (in frames or seconds).";
+    const bool take = use == "take-ref" || use == "take-sync" || use == "take-face";
+    if ((use == "take-ref" || use == "take-sync") && !length) out << "Choose the input that sets the video's length (in frames or seconds).";
+    if (use == "take-face") {
+        const auto graph = graphOf(id);
+        bool sync = false;
+        for (const QString& node : nodeOrder(graph)) {
+            const QString cls = classOf(graph, node);
+            sync |= cls.contains("AudioSync");
+            if (pathVideo(cls))
+                out << QString("Node %1 (%2) reads a path on the ComfyUI computer, which an uploaded take doesn't have: use Load Video FFmpeg (Upload) instead (it decodes the same way).").arg(node, cls);
+        }
+        if (!videos) out << "Choose the input that takes the video (H3 Load Video + Face Select's video).";
+        if (!faces) out << "Wire a Load Image into H3 Load Video + Face Select's identity_reference, and choose it as the face to find.";
+        if (sync && !audio) out << "Add a Load Audio node feeding H3 Audio Sync's track, and choose it as the song excerpt: takes carry no sound of their own.";
+    }
     if (use == "take-sync" && !audio) out << "Add a Load Audio node for the song, and choose it as the song excerpt.";
     if (take && !adapter["outputs"].toArray().isEmpty()) {
         bool saves = false;
@@ -436,7 +475,7 @@ bool Workflows::setSlot(const QString& id, const QString& node, const QString& i
         const auto o = s.toObject();
         if (o["node"].toString() == node && o["input"].toString() == input) continue;
         // A picture index or the prompt goes to one input at a time.
-        if (!slot.isEmpty() && o["slot"].toString() == slot && (slot == "prompt" || slot == "negative" || slot == "prefix" || slot == "audio" || slot == "frames" || slot == "seconds" ||
+        if (!slot.isEmpty() && o["slot"].toString() == slot && (slot == "prompt" || slot == "negative" || slot == "prefix" || slot == "audio" || slot == "frames" || slot == "seconds" || slot == "face" ||
                                                                  (slot == "picture" && o["index"].toInt() == index))) continue;
         mapping.append(o);
     }
@@ -529,7 +568,7 @@ int Workflows::declaredPictures(const QString& id) const {
 QPair<QString, QString> Workflows::growingInput(const QString& id) const {
     const auto adapter = adapterOf(id);
     const QString use = adapter["use"].toString();
-    if (use != "take-ref" && use != "take-sync") return {};
+    if (use != "take-ref" && use != "take-sync" && use != "take-face") return {};
     QString last;
     int top = -1;
     for (const auto& s : adapter["slots"].toArray())
@@ -787,6 +826,8 @@ QJsonObject Workflows::build(const QString& id, const Values& v, QString& error)
         else if (slot == "height") { if (v.height <= 0) continue; value = v.height; }
         else if (slot == "prefix") { if (v.prefix.isEmpty()) continue; value = v.prefix; }
         else if (slot == "audio") { if (v.audio.isEmpty()) continue; value = v.audio; }
+        else if (slot == "video") { if (v.video.isEmpty()) continue; value = v.video; }
+        else if (slot == "face") { if (v.face.isEmpty()) continue; value = v.face; }
         else if (slot == "frames") { if (v.frames <= 0) continue; value = v.frames; }
         else if (slot == "seconds") { if (v.frames <= 0 || v.fps <= 0) continue; value = double(v.frames) / v.fps; }
         else continue;

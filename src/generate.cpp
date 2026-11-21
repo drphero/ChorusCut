@@ -41,7 +41,7 @@ QVariantList Generator::jobs() const {
     for (const auto& j : list)
         out.append(QVariantMap{{"id", j.id}, {"owner", j.owner}, {"ownerId", j.ownerId}, {"use", j.use}, {"view", j.view},
                                {"workflow", j.workflowName}, {"state", j.state}, {"text", j.text},
-                               {"started", double(j.started)}, {"since", double(j.since)}});
+                               {"started", double(j.started)}, {"since", double(j.since)}, {"what", j.what}});
     return out;
 }
 
@@ -403,6 +403,186 @@ QVariantMap Generator::takeOptions(int shotId, const QString& wanted, double han
     return out;
 }
 
+namespace {
+// A silent 48 kHz stereo 16-bit WAV of this length, for a face refine of a take that isn't sung.
+QString writeSilence(double seconds, const QString& path) {
+    const quint32 frames = quint32(std::llround(seconds * 48000)), bytes = frames * 4;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) return "Cannot write " + QFileInfo(path).fileName() + ".";
+    QByteArray h;
+    auto u32 = [&](quint32 v) { for (int i = 0; i < 4; ++i) h.append(char((v >> (8 * i)) & 0xff)); };
+    auto u16 = [&](quint16 v) { h.append(char(v & 0xff)); h.append(char(v >> 8)); };
+    h.append("RIFF"); u32(36 + bytes); h.append("WAVEfmt "); u32(16); u16(1); u16(2); u32(48000); u32(48000 * 4); u16(4); u16(16);
+    h.append("data"); u32(bytes);
+    f.write(h);
+    f.write(QByteArray(int(bytes), '\0'));
+    return {};
+}
+}
+
+QVariantMap Generator::refineOptions(int takeId, const QString& wanted) const {
+    auto plan = editor->plan();
+    auto flows = editor->workflows();
+    const auto take = plan->item("take", takeId);
+    if (take.isEmpty()) return {{"ready", false}, {"why", "That take is gone."}, {"people", QVariantList{}}, {"workflows", QVariantList{}}};
+    const int shotId = take["shot"].toInt();
+    const auto shot = plan->item("shot", shotId);
+    QVariantMap out{{"take", takeId}, {"shot", shotId}, {"lipSync", take["locked"].toBool()}, {"frames", take["frames"]},
+                    {"workflows", flows->ready("take-face")}};
+    const QString workflow = !wanted.isEmpty() && flows->serves(wanted, "take-face") ? wanted : flows->forUse("take-face");
+    out["workflow"] = workflow;
+    out["workflowName"] = workflow.isEmpty() ? QString() : flows->nameOf(workflow);
+    const int most = workflow.isEmpty() ? 3 : flows->pictureCount(workflow);
+    out["maxPictures"] = most;
+    QString why;
+    if (workflow.isEmpty()) why = "Set up a workflow for refining faces (Workflows…): H3 Face Refine, exported in the Export (API) format.";
+    else if (!QFileInfo::exists(editor->current()->dir.filePath(take["file"].toString()))) why = "This take's video file is missing.";
+    // The take's pictures, to start each person from what made it.
+    QList<int> made;
+    for (const auto& v : take["generation"].toMap()["inputs"].toList()) made << v.toInt();
+    QVariantList people;
+    const QVariant who = shot["fields"].toMap()["who"];
+    for (const auto& w : who.typeId() == QMetaType::QVariantList ? who.toList() : QVariantList{}) {
+        const int character = w.toMap()["character"].toInt(), look = w.toMap()["look"].toInt();
+        const auto person = plan->item("character", character);
+        if (person.isEmpty()) continue;
+        const QString name = person["fields"].toMap()["name"].toString().isEmpty() ? "Someone" : person["fields"].toMap()["name"].toString();
+        QVariantList own = plan->referencesFor("character", character), available = own;
+        if (look) for (const auto& r : plan->referencesFor("look", look)) available << r;
+        QVariantList faces;
+        int face = 0;
+        // Found by their Face view's chosen picture, else any chosen picture of theirs, else any.
+        for (const auto& r : own) if (!r.toMap()["missing"].toBool()) faces << r;
+        for (const auto& r : faces) if (!face && r.toMap()["approved"].toBool() && r.toMap()["viewName"].toString().compare("Face", Qt::CaseInsensitive) == 0) face = r.toMap()["id"].toInt();
+        for (const auto& r : faces) if (!face && r.toMap()["approved"].toBool()) face = r.toMap()["id"].toInt();
+        if (!face && !faces.isEmpty()) face = faces.first().toMap()["id"].toInt();
+        QSet<int> theirs;
+        for (const auto& r : available) theirs.insert(r.toMap()["id"].toInt());
+        QVariantList pictures;
+        for (int id : made) if (theirs.contains(id) && pictures.size() < qMin(3, most)) pictures << id;
+        if (pictures.isEmpty())
+            for (const auto& r : available)
+                if (r.toMap()["approved"].toBool() && !r.toMap()["missing"].toBool() && pictures.size() < qMin(3, most)) pictures << r.toMap()["id"];
+        people.append(QVariantMap{{"character", character}, {"look", look}, {"name", name}, {"face", face}, {"faces", faces},
+                                  {"pictures", pictures}, {"available", available}, {"prompt", person["fields"].toMap()["facePrompt"].toString()},
+                                  {"why", face ? QString() : "No picture of " + name + " to find their face by: add one to their Face view."}});
+    }
+    out["people"] = people;
+    if (why.isEmpty() && people.isEmpty()) why = "No one is in this shot (Who), so there is no face to refine.";
+    out["why"] = why;
+    out["ready"] = why.isEmpty();
+    return out;
+}
+
+QString Generator::refineFaces(int takeId, const QVariantList& passes, const QVariantMap& o) {
+    auto plan = editor->plan();
+    auto flows = editor->workflows();
+    const auto opts = refineOptions(takeId, o.value("workflow").toString());
+    if (!opts["ready"].toBool()) return opts["why"].toString();
+    if (passes.isEmpty()) return "Tick whose face to refine.";
+    const QString workflow = opts["workflow"].toString();
+    QMap<int, QVariantMap> people;
+    for (const auto& p : opts["people"].toList()) people[p.toMap()["character"].toInt()] = p.toMap();
+    for (const auto& v : passes) {
+        const auto pass = v.toMap();
+        const auto person = people.value(pass["character"].toInt());
+        if (person.isEmpty()) return "Only people in the shot (Who) can be refined.";
+        if (plan->item("reference", pass["face"].toInt()).isEmpty()) return "Choose a picture to find " + person["name"].toString() + "'s face by.";
+        if (pass["pictures"].toList().size() > opts["maxPictures"].toInt())
+            return QString("%1 takes at most %2 pictures.").arg(flows->nameOf(workflow)).arg(opts["maxPictures"].toInt());
+        for (const auto& r : pass["pictures"].toList())
+            if (plan->item("reference", r.toInt()).isEmpty()) return "A picture picked for " + person["name"].toString() + " is gone.";
+    }
+    constexpr qint64 kMaxSeed = (qint64(1) << 53) - 1;
+    qint64 seed = -1;
+    const QString given = o.value("seed").toString().trimmed();
+    if (!given.isEmpty()) {
+        bool ok = false;
+        seed = given.toLongLong(&ok);
+        if (!ok || seed < 0 || seed > kMaxSeed) return "The seed must be a whole number from 0 to " + QString::number(kMaxSeed) + ".";
+    }
+    QString error;
+    const QJsonObject chosen = flows->checkValues(workflow, o.value("settings").toMap(), error);
+    if (!error.isEmpty()) return error;
+    if (!ensureTable()) return "Could not record the job in the project.";
+    if (o.contains("keep")) { error = keepSettings(workflow, o.value("keep").toMap()); if (!error.isEmpty()) return error; }
+    QJsonArray shown;
+    QJsonObject used;
+    for (const auto& v : flows->settings(workflow)) {
+        const auto st = v.toMap();
+        const QJsonValue value = chosen.contains(st["key"].toString()) ? chosen[st["key"].toString()] : QJsonValue::fromVariant(st["value"]);
+        used[st["key"].toString()] = value;
+        shown.append(QJsonObject{{"key", st["key"].toString()}, {"label", st["label"].toString()}, {"value", value}});
+    }
+    const int shotId = opts["shot"].toInt();
+    int previous = 0, first = 0;
+    for (int i = 0; i < passes.size(); ++i) {
+        const auto pass = passes[i].toMap();
+        Job job;
+        job.id = ++serial;
+        job.owner = "shot";
+        job.ownerId = shotId;
+        job.use = "take-face";
+        job.workflow = workflow;
+        job.workflowName = flows->nameOf(workflow);
+        job.prompt = pass["prompt"].toString().trimmed();
+        for (const auto& r : pass["pictures"].toList()) job.inputs << r.toInt();
+        job.character = pass["character"].toInt();
+        job.face = pass["face"].toInt();
+        job.what = people.value(job.character)["name"].toString() + "'s face";
+        job.hasSeed = flows->hasSlot(workflow, "seed");
+        job.seed = seed >= 0 ? seed : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+        job.settings = used;
+        job.shown = shown;
+        job.aspectChosen = true;
+        job.source = i == 0 ? takeId : 0;
+        job.after = previous;
+        list.append(job);
+        if (i == 0) { first = job.id; say(list.last(), "uploading", "Preparing…"); }
+        else say(list.last(), "waiting", "Waits for " + people.value(passes[i - 1].toMap()["character"].toInt())["name"].toString() + "'s face, then refines that take");
+        previous = job.id;
+    }
+    withInfo(workflow, [this, first] { startRefine(first); });
+    return {};
+}
+
+void Generator::startRefine(int id) {
+    Job* job = find(id);
+    if (!job) return;
+    auto plan = editor->plan();
+    auto project = editor->current();
+    const auto take = plan->item("take", job->source);
+    if (take.isEmpty()) { failJob(id, "The take to refine was removed."); return; }
+    const QString video = project->dir.filePath(take["file"].toString());
+    if (!QFileInfo::exists(video)) { failJob(id, "The take's video file is missing."); return; }
+    const auto face = plan->item("reference", job->face);
+    if (face.isEmpty()) { failJob(id, "The picture to find the face by was removed."); return; }
+    // The refined take lands where its source is, as long, and as locked to the song.
+    job->anchor = take["anchor"].toInt();
+    job->frames = take["frames"].toInt();
+    job->takeFps = take["fps"].toDouble() > 0 ? take["fps"].toDouble() : 24;
+    job->locked = take["locked"].toBool();
+    job->width = take["width"].toInt();
+    job->height = take["height"].toInt();
+    job->handles = take["generation"].toMap().value("handles", kDefaultHandles).toDouble();
+    QStringList files{video, project->dir.filePath(face["file"].toString())};
+    for (int r : job->inputs) {
+        const auto ref = plan->item("reference", r);
+        if (ref.isEmpty()) { failJob(id, "A picture picked for this pass was removed."); return; }
+        files << project->dir.filePath(ref["file"].toString());
+    }
+    // Takes carry no sound: a sung take gets the song under it, any other silence of its length.
+    const QString folder = project->dir.filePath("Jobs");
+    QDir().mkpath(folder);
+    job->excerpt = QDir(folder).filePath(QString("face-shot%1-take%2-%3.wav").arg(job->ownerId).arg(job->source).arg(job->id));
+    const double seconds = job->frames / job->takeFps;
+    const QString problem = job->locked ? editor->writeExcerpt(job->anchor / editor->fps(), seconds, job->excerpt) : writeSilence(seconds, job->excerpt);
+    if (!problem.isEmpty()) { failJob(id, problem); return; }
+    files << job->excerpt;
+    say(*job, "uploading", job->locked ? "Uploading the take, pictures and the song…" : "Uploading the take and pictures…");
+    upload(id, files, {});
+}
+
 QString Generator::generateTake(int shotId, const QVariantMap& o) {
     auto flows = editor->workflows();
     const auto opts = takeOptions(shotId, o.value("workflow").toString(), o.contains("handles") ? o.value("handles").toDouble() : -1);
@@ -522,7 +702,7 @@ void Generator::collectTake(int id, const QJsonObject& outputs) {
     QDir().mkpath(folder);
     const QString path = QDir(folder).filePath(job->promptId + "." + QFileInfo(file["filename"].toString()).suffix().toLower());
     const int mine = epoch;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, id, path, mine] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id, path, mine, outputs] {
         reply->deleteLater();
         if (mine != epoch) return;
         Job* job = find(id);
@@ -531,37 +711,73 @@ void Generator::collectTake(int id, const QJsonObject& outputs) {
         if (reply->error() != QNetworkReply::NoError) { failJob(id, "Could not download the take: " + ComfyJobs::errorOf(reply)); return; }
         if (!out.open(QIODevice::WriteOnly) || out.write(reply->readAll()) < 0) { failJob(id, "Could not save the take in the project."); return; }
         out.close();
-        auto plan = editor->plan();
-        if (plan->shot(job->ownerId).isEmpty()) { failJob(id, "The shot was removed before its take arrived; it is in the project's Jobs folder."); return; }
-        // What arrived, measured: a workflow may round the length its own way.
-        const QString thumb = path + ".jpg";
-        const auto probe = Editor::probeVideo(path, thumb);
-        if (probe.isEmpty()) { failJob(id, "The take ComfyUI made can't be read."); return; }
-        QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use},
-                               {"prompt", job->prompt}, {"promptId", job->promptId}, {"handles", job->handles},
-                               {"songFrom", job->anchor / editor->fps()}, {"songSeconds", job->frames / job->takeFps}};
-        if (job->hasSeed) generation["seed"] = double(job->seed);
-        if (!job->shown.isEmpty()) generation["settings"] = job->shown.toVariantList();
-        QVariantList inputs;
-        for (int i : job->inputs) inputs << i;
-        generation["inputs"] = inputs;
-        const double rate = probe["fps"].toDouble() > 0 ? probe["fps"].toDouble() : job->takeFps;
-        const auto r = plan->run({{"op", "take.add"}, {"shot", job->ownerId}, {"path", path}, {"thumb", thumb},
-                                  {"frames", probe["frames"].toInt() > 0 ? probe["frames"].toInt() : job->frames}, {"fps", rate},
-                                  {"anchor", job->anchor}, {"locked", job->locked}, {"width", probe["width"]}, {"height", probe["height"]},
-                                  {"generation", generation}});
-        if (!r.value("ok").toBool()) { failJob(id, r.value("error").toString()); return; }
-        QFile::remove(path);
-        QFile::remove(thumb);
-        if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
-        record(*job, "done");
-        const QString owner = job->owner, use = job->use;
-        const int ownerId = job->ownerId;
-        for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
-        emit changed();
-        emit takeArrived(ownerId, r.value("id").toInt());
-        emit finished(owner, ownerId, use, true, {}, 1);
+        // A face refine's picture of the faces found comes down too, when the graph made one.
+        QJsonObject preview;
+        if (!job->previewNode.isEmpty()) preview = outputs[job->previewNode].toObject()["images"].toArray().first().toObject();
+        if (preview.isEmpty()) { addTake(id, path, {}); return; }
+        QUrlQuery q;
+        q.addQueryItem("filename", preview["filename"].toString());
+        q.addQueryItem("subfolder", preview["subfolder"].toString());
+        q.addQueryItem("type", preview["type"].toString());
+        auto shot = net.get(editor->comfy()->request("/view?" + q.toString(QUrl::FullyEncoded)));
+        const QString faces = path + "-faces." + (QFileInfo(preview["filename"].toString()).suffix().isEmpty() ? QString("png") : QFileInfo(preview["filename"].toString()).suffix().toLower());
+        connect(shot, &QNetworkReply::finished, this, [this, shot, id, path, faces, mine] {
+            shot->deleteLater();
+            if (mine != epoch || !find(id)) return;
+            QFile f(faces);
+            const bool saved = shot->error() == QNetworkReply::NoError && f.open(QIODevice::WriteOnly) && f.write(shot->readAll()) >= 0;
+            f.close();
+            addTake(id, path, saved ? faces : QString());
+        });
     });
+}
+
+void Generator::addTake(int id, const QString& path, const QString& faces) {
+    Job* job = find(id);
+    if (!job) return;
+    auto plan = editor->plan();
+    if (plan->shot(job->ownerId).isEmpty()) { failJob(id, "The shot was removed before its take arrived; it is in the project's Jobs folder."); return; }
+    // What arrived, measured: a workflow may round the length its own way.
+    const QString thumb = path + ".jpg";
+    const auto probe = Editor::probeVideo(path, thumb);
+    if (probe.isEmpty()) { failJob(id, "The take ComfyUI made can't be read."); return; }
+    const bool face = job->use == "take-face";
+    // A refined take must fit exactly where its source plays.
+    if (face && (probe["frames"].toInt() != job->frames || probe["width"].toInt() != job->width || probe["height"].toInt() != job->height)) {
+        failJob(id, QString("The refined take is %1 × %2, %3 frames; the take it came from is %4 × %5, %6 frames, so it would not fit in its place. It is in the project's Jobs folder.")
+                        .arg(probe["width"].toInt()).arg(probe["height"].toInt()).arg(probe["frames"].toInt()).arg(job->width).arg(job->height).arg(job->frames));
+        return;
+    }
+    QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use},
+                           {"prompt", job->prompt}, {"promptId", job->promptId}, {"handles", job->handles},
+                           {"songFrom", job->anchor / editor->fps()}, {"songSeconds", job->frames / job->takeFps}};
+    if (job->hasSeed) generation["seed"] = double(job->seed);
+    if (!job->shown.isEmpty()) generation["settings"] = job->shown.toVariantList();
+    QVariantList inputs;
+    for (int i : job->inputs) inputs << i;
+    generation["inputs"] = inputs;
+    if (face) { generation["source"] = job->source; generation["character"] = job->character; generation["face"] = job->face; }
+    const double rate = probe["fps"].toDouble() > 0 ? probe["fps"].toDouble() : job->takeFps;
+    const auto r = plan->run({{"op", "take.add"}, {"shot", job->ownerId}, {"path", path}, {"thumb", thumb}, {"faces", faces},
+                              {"frames", probe["frames"].toInt() > 0 ? probe["frames"].toInt() : job->frames}, {"fps", rate},
+                              {"anchor", job->anchor}, {"locked", job->locked}, {"width", probe["width"]}, {"height", probe["height"]},
+                              {"generation", generation}});
+    if (!r.value("ok").toBool()) { failJob(id, r.value("error").toString()); return; }
+    QFile::remove(path);
+    QFile::remove(thumb);
+    if (!faces.isEmpty()) QFile::remove(faces);
+    if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
+    record(*job, "done");
+    const QString owner = job->owner, use = job->use, workflow = job->workflow;
+    const int ownerId = job->ownerId, made = r.value("id").toInt();
+    for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
+    // The next face pass refines this take.
+    QList<int> next;
+    for (auto& j : list) if (j.after == id) { j.after = 0; j.source = made; next << j.id; say(j, "uploading", "Preparing…"); }
+    emit changed();
+    emit takeArrived(ownerId, made);
+    emit finished(owner, ownerId, use, true, {}, 1);
+    for (int n : next) withInfo(workflow, [this, n] { startRefine(n); });
 }
 
 QString Generator::composeSheet(int view, const QVariantList& panels) {
@@ -767,7 +983,15 @@ void Generator::submit(int id, const QStringList& names) {
     v.settings = job->settings;
     v.optional = optionalFor(job->workflow);
     v.prefix = "ChorusCut/reference";
-    if (job->owner == "shot") {
+    if (job->use == "take-face") {
+        // Uploaded as: the take, the face to find, the pictures, the sound.
+        QStringList rest = names;
+        v.video = rest.takeFirst();
+        v.face = rest.takeFirst();
+        v.audio = rest.takeLast();
+        v.pictures = rest;
+        v.prefix = "ChorusCut/face";
+    } else if (job->owner == "shot") {
         // The song excerpt goes up last, after the pictures.
         if (job->use == "take-sync" && !v.pictures.isEmpty()) v.audio = v.pictures.takeLast();
         v.frames = job->frames;
@@ -777,7 +1001,7 @@ void Generator::submit(int id, const QStringList& names) {
     // Locations take the video's frame; people and looks a portrait; props a square. The workflow's own size
     // sets the scale its model prefers.
     const QSize base = flows->size(job->workflow);
-    if (base.width() > 0 && base.height() > 0) {
+    if (base.width() > 0 && base.height() > 0 && job->use != "take-face") {
         double ratio = job->owner == "prop" ? 1.0 : 3.0 / 4.0;
         if (job->owner == "location" || job->owner == "shot") {
             const QString aspect = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
@@ -789,8 +1013,21 @@ void Generator::submit(int id, const QStringList& names) {
         v.height = round16(ratio >= 1 ? longSide / ratio : longSide);
     }
     QString error;
-    const QJsonObject graph = flows->build(job->workflow, v, error);
+    QJsonObject graph = flows->build(job->workflow, v, error);
     if (graph.isEmpty()) { failJob(id, error); return; }
+    // A face refine also brings back the select node's numbered picture of the faces it found,
+    // the one it refined outlined, so who was matched can be checked.
+    if (job->use == "take-face") {
+        int next = 0;
+        for (const QString& k : graph.keys()) next = qMax(next, k.toInt());
+        for (const QString& node : graph.keys())
+            if (graph[node].toObject()["class_type"] == "H3FaceSelect") {
+                job->previewNode = QString::number(next + 1);
+                graph[job->previewNode] = QJsonObject{{"class_type", "PreviewImage"}, {"inputs", QJsonObject{{"images", QJsonArray{node, 3}}}},
+                                                      {"_meta", QJsonObject{{"title", "Chorus Cut: faces found"}}}};
+                break;
+            }
+    }
     job->graph = graph;
     say(*job, "queued", "Queueing…");
     auto r = editor->comfy()->request("/prompt");
@@ -820,7 +1057,8 @@ void Generator::submit(int id, const QStringList& names) {
                                  {"settings", job->shown}, {"graph", job->graph}, {"view", job->view}, {"instruction", job->instruction},
                                  {"inputs", [&] { QJsonArray a; for (int i : job->inputs) a.append(i); return a; }()},
                                  {"frames", job->frames}, {"takeFps", job->takeFps}, {"anchor", job->anchor}, {"locked", job->locked},
-                                 {"handles", job->handles}};
+                                 {"handles", job->handles}, {"source", job->source}, {"character", job->character}, {"face", job->face},
+                                 {"what", job->what}, {"width", job->width}, {"height", job->height}, {"previewNode", job->previewNode}};
         for (const QVariant& value : {QVariant(job->promptId), QVariant(job->owner == "shot" ? "take" : "reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
                                       QVariant(QDateTime::currentSecsSinceEpoch()), QVariant("queued"),
                                       QVariant(QString::fromUtf8(QJsonDocument(detail).toJson(QJsonDocument::Compact))), QVariant(clientId)})
@@ -979,8 +1217,13 @@ void Generator::failJob(int id, const QString& why) {
     if (!job) return;
     if (!job->promptId.isEmpty()) record(*job, "failed", why);
     const bool fresh = job->state != "failed";
+    const QString what = job->what;
     say(*job, "failed", why);
     if (fresh) emit finished(job->owner, job->ownerId, job->use, false, why, 0);
+    // Face passes waiting on this one can't run.
+    QList<int> next;
+    for (const auto& j : list) if (j.after == id && j.state != "failed") next << j.id;
+    for (int n : next) failJob(n, what + " failed, so this pass didn't run.");
 }
 
 void Generator::record(const Job& job, const QString& state, const QString& detail) {
@@ -1031,8 +1274,12 @@ void Generator::cancel(int id) {
 }
 
 void Generator::dismiss(int id) {
+    // Face passes waiting on this one go with it.
+    QList<int> next;
+    for (const auto& j : list) if (j.after == id) next << j.id;
     for (int i = 0; i < list.size(); ++i)
-        if (list[i].id == id) { list.removeAt(i); emit changed(); return; }
+        if (list[i].id == id) { list.removeAt(i); emit changed(); break; }
+    for (int n : next) dismiss(n);
 }
 
 void Generator::retry(int id) {
@@ -1045,6 +1292,17 @@ void Generator::retry(int id) {
     for (const auto& v : job->shown) settings[v.toObject()["key"].toString()] = v.toObject()["value"].toVariant();
     QVariantList inputs;
     for (int i : job->inputs) inputs << i;
+    if (job->use == "take-face") {
+        // The same pass again, on the take it refined (or was to refine).
+        const int source = job->source ? job->source : 0;
+        QVariantList pictures;
+        for (int i : job->inputs) pictures << i;
+        const QString why = source ? refineFaces(source, {QVariantMap{{"character", job->character}, {"face", job->face}, {"pictures", pictures}, {"prompt", job->prompt}}},
+                                                 {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}})
+                                   : "The take this pass was to refine was never made.";
+        if (why.isEmpty()) dismiss(id); else say(*find(id), "failed", why);
+        return;
+    }
     if (job->owner == "shot") {
         const QString why = generateTake(ownerId, {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings},
                                                    {"prompt", job->prompt}, {"handles", job->handles}, {"aspectChosen", true}});
@@ -1092,6 +1350,13 @@ void Generator::resume() {
         job.anchor = d["anchor"].toInt();
         job.locked = d["locked"].toBool();
         job.handles = d["handles"].toDouble(0.5);
+        job.source = d["source"].toInt();
+        job.character = d["character"].toInt();
+        job.face = d["face"].toInt();
+        job.what = d["what"].toString();
+        job.width = d["width"].toInt();
+        job.height = d["height"].toInt();
+        job.previewNode = d["previewNode"].toString();
         if (q.value(1).toString() != editor->comfy()->url()) {
             job.state = "failed";
             job.text = "Started on " + q.value(1).toString() + ", which is not the current ComfyUI.";

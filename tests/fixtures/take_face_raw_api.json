@@ -1,0 +1,495 @@
+{
+  "2": {
+    "inputs": {
+      "video": "",
+      "detector": "bbox/face_yolov8m.pt",
+      "confidence": 0.35,
+      "select": "identity_reference",
+      "select_index": 0,
+      "confirmed_pick": "20",
+      "cut_detection": "auto (pyscenedetect)",
+      "cut_threshold": 3,
+      "skip_first_frames": 0,
+      "frame_load_cap": 0,
+      "select_every_nth": 1,
+      "identity_model": "insightface",
+      "identity_threshold": 0.28,
+      "X": 0,
+      "Y": 0,
+      "frame_index": 0,
+      "identity_reference": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "H3FaceSelect",
+    "_meta": {
+      "title": "H3 Load Video + Face Select"
+    }
+  },
+  "4": {
+    "inputs": {
+      "sigma_frac": 0.006666666666666667,
+      "threshold": 4,
+      "base_offset": 0,
+      "base_images": [
+        "2",
+        0
+      ],
+      "refined_images": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "H3FaceFlowLock",
+    "_meta": {
+      "title": "H3 Face Flow Lock (anti-wobble)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "detector": "face_yolov8m.pt",
+      "confidence": 0.35,
+      "crop_factor": 2.5,
+      "canvas_width": 768,
+      "canvas_height": 768,
+      "canvas_mode": "auto_capped_768",
+      "smooth_window": 21,
+      "size_smooth_window": 51,
+      "smooth_method": "gaussian",
+      "size_mode": "per_frame",
+      "identity_track": true,
+      "identity_threshold": 0.28,
+      "select": "largest_face",
+      "fallback_detector": "none",
+      "fallback_head_frac": 0.5,
+      "select_index": 0,
+      "identity_model": "insightface",
+      "cut_detection": "none",
+      "cut_threshold": 3,
+      "absent_shots": "off",
+      "X": 0,
+      "Y": 0,
+      "frame_index": 0,
+      "images": [
+        "2",
+        0
+      ],
+      "face_pick": [
+        "2",
+        2
+      ]
+    },
+    "class_type": "H3FaceTrackCrop",
+    "_meta": {
+      "title": "H3 Face Track + Crop"
+    }
+  },
+  "6": {
+    "inputs": {
+      "sigma_luma_frac": 0.01,
+      "sigma_chroma_frac": 0.0033333333333333335,
+      "source_offset": 0,
+      "lip_fix": true,
+      "face_detector": "face_yolov8m.pt",
+      "source_images": [
+        "37",
+        0
+      ],
+      "processed_images": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "H3FaceToneMatch",
+    "_meta": {
+      "title": "H3 Face Tone Match (colour back to source)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "paste_region": "face_only",
+      "mask_dilation": 24,
+      "feather": 24,
+      "tone_mode": "freq_sep",
+      "lowpass_face_frac": 0.15,
+      "detail_gain": 1,
+      "blend": 1,
+      "undetected_frames": "fade_out",
+      "base_images": [
+        "2",
+        0
+      ],
+      "refined_crops": [
+        "35",
+        0
+      ],
+      "transform": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "H3FaceStitchPlus",
+    "_meta": {
+      "title": "H3 Face Stitch Plus (antialias + freq-sep + hi-res base)"
+    }
+  },
+  "14": {
+    "inputs": {
+      "av_latent": [
+        "20",
+        1
+      ],
+      "images": [
+        "5",
+        0
+      ],
+      "vae": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "H3InjectVideoLatent",
+    "_meta": {
+      "title": "H3 Inject Video Latent (img2img)"
+    }
+  },
+  "15": {
+    "inputs": {
+      "denoise_multiplier_small_face": 1,
+      "denoise_multiplier_large_face": 1,
+      "scale_mode": "absolute_px",
+      "face_px_small": 30,
+      "face_px_large": 120,
+      "gamma": 1,
+      "smooth_frames": 9,
+      "model": [
+        "26",
+        0
+      ],
+      "av_latent": [
+        "26",
+        1
+      ],
+      "transform": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "H3PerFrameDenoise",
+    "_meta": {
+      "title": "H3 Per-Frame Denoise"
+    }
+  },
+  "17": {
+    "inputs": {
+      "preset": "0.30 (default: re-draws the face toward the references)",
+      "custom_denoise": 0.3
+    },
+    "class_type": "H3FaceRefineStrength",
+    "_meta": {
+      "title": "H3 FaceRefine Plus Strength (preset)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "prompt": "",
+      "width": [
+        "5",
+        4
+      ],
+      "height": [
+        "5",
+        5
+      ],
+      "length": [
+        "5",
+        6
+      ],
+      "ref_image_size": "match",
+      "clip": [
+        "21",
+        0
+      ],
+      "vae": [
+        "22",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "23",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "24",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "MiniMax H3 Reference to Video"
+    }
+  },
+  "21": {
+    "inputs": {
+      "clip_name": null,
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "22": {
+    "inputs": {
+      "vae_name": "pixel_space"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "23": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "24": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "25": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "26": {
+    "inputs": {
+      "model": [
+        "29",
+        0
+      ],
+      "latent": [
+        "14",
+        0
+      ],
+      "audio_vae": [
+        "27",
+        0
+      ],
+      "track": [
+        "2",
+        1
+      ],
+      "H3SyncState": "{\"limit\":15,\"overMode\":\"warn\",\"whenShort\":\"silence\"}"
+    },
+    "class_type": "PixaromaH3AudioSync",
+    "_meta": {
+      "title": "H3 Audio Sync Pixaroma"
+    }
+  },
+  "27": {
+    "inputs": {
+      "vae_name": "pixel_space"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "28": {
+    "inputs": {
+      "unet_name": null,
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "29": {
+    "inputs": {
+      "attention": "pytorch attention",
+      "model": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "Model Attention Backend"
+    }
+  },
+  "30": {
+    "inputs": {
+      "model": [
+        "15",
+        2
+      ],
+      "conditioning": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "31": {
+    "inputs": {
+      "noise": [
+        "32",
+        0
+      ],
+      "guider": [
+        "30",
+        0
+      ],
+      "sampler": [
+        "33",
+        0
+      ],
+      "sigmas": [
+        "34",
+        0
+      ],
+      "latent_image": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "32": {
+    "inputs": {
+      "noise_seed": 0
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "33": {
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "34": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 10,
+      "denoise": [
+        "17",
+        0
+      ],
+      "model": [
+        "15",
+        2
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "35": {
+    "inputs": {
+      "samples": [
+        "31",
+        1
+      ],
+      "vae": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "37": {
+    "inputs": {
+      "video": "",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "start_time": 0,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideoFFmpegPath",
+    "_meta": {
+      "title": "Load Video FFmpeg (Path) \ud83c\udfa5\ud83c\udd65\ud83c\udd57\ud83c\udd62"
+    }
+  },
+  "38": {
+    "inputs": {
+      "fps": 24,
+      "bit_depth": "auto",
+      "color_space": "sRGB",
+      "chroma_subsampling": "auto",
+      "codec": "none",
+      "images": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "Create Video"
+    }
+  },
+  "39": {
+    "inputs": {
+      "filename_prefix": "video/ComfyUI",
+      "format": "auto",
+      "format.codec": "h264",
+      "format.codec.encoding": "re-encode",
+      "format.codec.encoding.crf": 18,
+      "codec": "auto",
+      "video": [
+        "38",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "Save Video"
+    }
+  },
+  "40": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  }
+}

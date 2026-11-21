@@ -85,7 +85,8 @@ public:
     // settings: {key: value} for inputs marked "Adjust when generating", over the kept values.
     // For a take: audio is the uploaded song excerpt; frames the length, given to a seconds input
     // as frames / fps.
-    struct Values { QString prompt, negative, prefix, audio; qint64 seed = -1; int width = 0, height = 0, frames = 0; double fps = 24;
+    // For a face refine: video is the uploaded take, face the picture the face is found by.
+    struct Values { QString prompt, negative, prefix, audio, video, face; qint64 seed = -1; int width = 0, height = 0, frames = 0; double fps = 24;
                     QStringList pictures; QJsonObject settings; OptionalInputs optional; };
     // The graph to queue, or an empty object with the reason in error.
     QJsonObject build(const QString& id, const Values& values, QString& error) const;

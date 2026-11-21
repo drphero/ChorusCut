@@ -130,7 +130,7 @@ ApplicationWindow {
     // The large view of a picture the pointer rests on in any picker (PictureTile finds it here).
     readonly property alias peek: picturePeek
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || renderPopup.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || renderPopup.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || refinePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function playheadMs() { return Math.round(editor.frame / editor.fps * 1000) }
@@ -381,6 +381,8 @@ ApplicationWindow {
     // A shot's takes with options.
     TakePopup { id: takePopup; onWorkflowsRequested: win.openWorkflows(); onAskRequested: shot => win.askAgent("shot", shot, "prompts", "Video prompt") }
     function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
+    RefinePopup { id: refinePopup; onWorkflowsRequested: win.openWorkflows() }
+    function openRefine(take) { if (editor.ready) refinePopup.start(take) }
 
     PicturePeek { id: picturePeek; room: win.Overlay.overlay }
     RenderPopup { id: renderPopup }

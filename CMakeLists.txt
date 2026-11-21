@@ -24,7 +24,7 @@ set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManage
                src/PlanField.qml src/PlanText.qml src/PlanCombo.qml src/Checks.qml src/ReferenceStrip.qml
                src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml
                src/ReferenceViewer.qml src/GeneratePopup.qml src/ReferenceViews.qml src/TakePopup.qml
-               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml src/RenderPopup.qml src/TakeReview.qml)
+               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml src/RenderPopup.qml src/TakeReview.qml src/RefinePopup.qml)
 # App icon, generated from resources/logo/icon.svg and icon-small.svg (16 and 32 px).
 set_source_files_properties(resources/icon/ChorusCut.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py resources/icon/ChorusCut.icns)

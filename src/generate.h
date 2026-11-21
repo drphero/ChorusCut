@@ -61,6 +61,16 @@ public:
     // Queues takes for a shot. options: {workflow, prompt (else the shot's), handles (seconds each
     // side, default 0.5), seed, count, settings, keep, aspectChosen}. "" when queued, else why not.
     Q_INVOKABLE QString generateTake(int shot, const QVariantMap& options = {});
+    // What refining faces on a take would be: {take, shot, lipSync, frames, workflow, workflowName,
+    // workflows, maxPictures, why, ready, people: [{character, look, name, face (reference id or 0),
+    // faces (their pictures to find them by), pictures (default ids for H3: theirs among what made
+    // the take, else their chosen pictures, at most 3), available (every picture of theirs and their
+    // look), prompt (their kept face-refine prompt), why}]}.
+    Q_INVOKABLE QVariantMap refineOptions(int take, const QString& workflow = {}) const;
+    // Queues one face-refine pass per entry of passes ({character, face, pictures: [reference ids],
+    // prompt}), in order: the first refines the take, each next one the take the previous one makes.
+    // options: {workflow, seed, settings, keep}. "" when queued, else why not.
+    Q_INVOKABLE QString refineFaces(int take, const QVariantList& passes, const QVariantMap& options = {});
     // Keeps settings chosen in the Generate dialog with the workflow without generating. "" or why not.
     Q_INVOKABLE QString keepSettings(const QString& workflow, const QVariantMap& values);
     Q_INVOKABLE void fetchChoices(const QString& workflow);
@@ -101,6 +111,10 @@ private:
         double takeFps = 24, handles = 0.5;
         bool locked = false;
         QString excerpt;
+        // A face refine: the take it refines (0 while it waits for the pass before it, after), whose
+        // face, the picture it is found by, the source's size, and the preview node added to the graph.
+        int source = 0, after = 0, character = 0, face = 0, width = 0, height = 0;
+        QString what, previewNode;
         int misses = 0, waiting = 0;
         qint64 started = 0;  // when it was asked for, in ms since the epoch
         qint64 since = 0;    // when it entered its current state
@@ -117,6 +131,9 @@ private:
     // grid. 0 with why when it can't fit.
     int takeFrames(const QString& workflow, double seconds, double fps, double& handles, QString& why) const;
     void startTake(int id, const QStringList& pictures);
+    void startRefine(int id);
+    // Adds a take from a downloaded video (and, for a face refine, its picture of the faces found).
+    void addTake(int id, const QString& path, const QString& faces);
     void collectTake(int id, const QJsonObject& outputs);
     QHash<QString, NodeInfo> info;
     QHash<QString, int> waiting;  // node types being fetched, by server|type

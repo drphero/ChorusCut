@@ -84,7 +84,8 @@ const QMap<QString, QMap<QString, QString>>& fieldTable() {
         {"concept", {{"brief", "text"}, {"logline", "text"}, {"treatment", "text"}, {"videoKind", "enum"}, {"mix", "text"}, {"aspect", "enum"},
                      {"resolution", "text"}, {"style", "text"}, {"palette", "text"}, {"lighting", "text"}, {"era", "text"},
                      {"lens", "text"}, {"grade", "text"}, {"rules", "texts"}}},
-        {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}, {"prompt", "text"}}},
+        // facePrompt: what a face refine pass tells the video model about this person's face.
+        {"character", {{"name", "text"}, {"role", "enum"}, {"identity", "text"}, {"voice", "text"}, {"notes", "text"}, {"prompt", "text"}, {"facePrompt", "text"}}},
         {"look", {{"name", "text"}, {"description", "text"}, {"prompt", "text"}, {"changes", "aspects"}}},
         {"location", {{"name", "text"}, {"description", "text"}, {"timeOfDay", "enum"}, {"lighting", "text"}, {"prompt", "text"}}},
         // An object that matters on screen (a guitar, a letter, a car): seen in shots that list it.
@@ -833,6 +834,7 @@ QVariantList Plan::takesFor(int shot) const {
     for (int i = 0; i < ids.size(); ++i) {
         QVariantMap m = exported("take", ids[i]);
         m["number"] = i + 1;
+        if (m.contains("refinedFrom")) m["refinedFromNumber"] = ids.indexOf(m["refinedFrom"].toInt()) + 1;
         out.append(m);
     }
     return out;
@@ -902,6 +904,12 @@ Plan::Result Plan::takeAdd(const QVariantMap& c, const QString& by) {
         thumb = base + "." + QFileInfo(t).suffix().toLower();
         if (!copyIn(t, thumb)) thumb.clear();
     }
+    // A refined take keeps the picture of the faces found, the one refined outlined.
+    QString faces;
+    if (const QString f = c.value("faces").toString(); QFileInfo(f).isFile()) {
+        faces = base + "-faces." + QFileInfo(f).suffix().toLower();
+        if (!copyIn(f, faces)) faces.clear();
+    }
     for (int existing : takeIds(shot))
         if (row("take", existing)["file"].toString() == relative) return fail("That take is already on the shot.");
     bool hasChoice = false;
@@ -910,7 +918,7 @@ Plan::Result Plan::takeAdd(const QVariantMap& c, const QString& by) {
     QJsonObject entry{{"shot", shot}, {"file", relative}, {"thumb", thumb}, {"frames", c.value("frames").toInt()},
                       {"fps", c.value("fps", 24).toDouble()}, {"anchor", c.value("anchor").toInt()}, {"locked", c.value("locked").toBool()},
                       {"width", c.value("width").toInt()}, {"height", c.value("height").toInt()},
-                      {"generation", QJsonObject::fromVariantMap(c.value("generation").toMap())},
+                      {"generation", QJsonObject::fromVariantMap(c.value("generation").toMap())}, {"faces", faces},
                       {"fields", QJsonObject{}}, {"prov", QJsonObject{}}, {"edited", ++clock}};
     write("take", id, entry);
     // The shot's first take plays at once; later ones wait to be chosen.
@@ -1170,6 +1178,13 @@ QVariantMap Plan::exported(const QString& kind, int id) const {
         m["thumbUrl"] = r["thumb"].toString().isEmpty() ? QString() : QUrl::fromLocalFile(project->dir.filePath(r["thumb"].toString())).toString();
         m["chosen"] = r["fields"].toObject()["approved"].toBool();
         m["lipSync"] = r["locked"].toBool();
+        m["facesUrl"] = r["faces"].toString().isEmpty() ? QString() : QUrl::fromLocalFile(project->dir.filePath(r["faces"].toString())).toString();
+        // A face refine: whose face, and the take it was made from.
+        const auto g = r["generation"].toObject();
+        if (g["use"] == "take-face") {
+            m["refined"] = nameOf("character", g["character"].toInt());
+            m["refinedFrom"] = g["source"].toInt();
+        }
         const double rate = r["fps"].toDouble() > 0 ? r["fps"].toDouble() : 24;
         m["seconds"] = r["frames"].toInt() / rate;
         const auto [from, to] = takeSpan(id);

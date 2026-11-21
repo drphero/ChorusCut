@@ -5,7 +5,9 @@ usage: comfy_stub.py PORT ALIGNMENT_JSON
 Implements the endpoints Chorus Cut uses (/system_stats, /object_info/<node>, /upload/image,
 /prompt, /history/<id>, /queue, /interrupt, /view). An alignment job answers with ALIGNMENT_JSON,
 every word shifted by the stub's current "shift" in milliseconds. Any other graph is a picture
-job: each SaveImage node outputs one PNG (PreviewImage a temporary one), served by /view.
+job: each SaveImage node outputs one PNG (PreviewImage a temporary one), served by /view. A face
+refine (H3FaceSelect) saves a video the size and length of the uploaded take it names, plus
+"faceExtra" frames (to test a refusal).
 Control endpoints:
   POST /_stub/mode  {"mode": "finish" | "hold" | "wait" | "error", "shift": ms}   (wait: pending in the queue)
   POST /_stub/release   finish held jobs
@@ -39,6 +41,20 @@ def png(name):
 
 
 VIDEOS = {}
+UPLOADED = {}
+
+
+def probe(data):
+    """Width, height and frame count of an uploaded video, by ffprobe."""
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        f.write(data)
+        f.flush()
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                              "stream=width,height,nb_read_frames", "-of", "csv=p=0", f.name], capture_output=True, text=True).stdout
+    w, h, n = (int(x) for x in out.strip().split(",")[:3])
+    return w, h, n
 
 
 def video_frames(prompt):
@@ -57,27 +73,32 @@ def video_frames(prompt):
     return 24
 
 
-def video(name, frames):
+def video(name, frames, size="96x54"):
     """A small H.264 MP4 of that many frames at 24 fps, colour taken from the name, made with ffmpeg."""
     import subprocess
     import tempfile
     r, g, b = hashlib.sha1(name.encode()).digest()[:3]
     with tempfile.TemporaryDirectory() as tmp:
         out = tmp + "/v.mp4"
-        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c=0x{r:02x}{g:02x}{b:02x}:s=96x54:r=24",
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c=0x{r:02x}{g:02x}{b:02x}:s={size}:r=24",
                         "-frames:v", str(frames), "-pix_fmt", "yuv420p", "-c:v", "libx264", out], check=True)
         return open(out, "rb").read()
 
 
 def picture_outputs(prompt, number):
     outputs = {}
+    face = next((s["inputs"].get("video") for s in prompt.values() if s.get("class_type") == "H3FaceSelect"), None)
     for node, spec in prompt.items():
         kind = spec.get("class_type", "")
         if kind == "SaveVideo":
             prefix = spec["inputs"].get("filename_prefix", "video/ComfyUI")
             folder, _, base = prefix.rpartition("/")
             name = f"{base}_{number:05}_.mp4"
-            VIDEOS[name] = video(name, video_frames(prompt))
+            if face is not None:
+                w, h, n = probe(UPLOADED[face])
+                VIDEOS[name] = video(name, n + state.get("faceExtra", 0), f"{w}x{h}")
+            else:
+                VIDEOS[name] = video(name, video_frames(prompt))
             outputs[node] = {"images": [{"filename": name, "subfolder": folder, "type": "output"}], "animated": [True]}
         elif kind == "SaveImage":
             prefix = spec["inputs"].get("filename_prefix", "ComfyUI")
@@ -162,6 +183,10 @@ class Handler(BaseHTTPRequestHandler):
                                                         "optional": {"vae": ["VAE", {}], "audio_vae": ["VAE", {}],
                                                                      "ref_images": ["COMFY_AUTOGROW_V3", {"template": {"input": {"required": {"ref_image": ["IMAGE", {}]}}}, "prefix": "ref_image_", "min": 0, "max": 16}],
                                                                      "ref_audios": ["COMFY_AUTOGROW_V3", {}]}}},
+                "H3FaceRefineStrength": {"input": {"required": {"preset": [["0.20 (light)", "0.30 (default: re-draws the face toward the references)", "0.45 (strong)"], {}],
+                                                                "custom_denoise": ["FLOAT", {}]}}},
+                "H3FaceSelect": {"input": {"required": {"video": ["STRING", {}], "select": [["manual", "identity_reference", "largest_face"], {}]},
+                                           "optional": {"identity_reference": ["IMAGE", {}], "identity_threshold": ["FLOAT", {}]}}},
                 "PixaromaH3AudioSync": {"input": {"required": {"model": ["MODEL", {}], "latent": ["LATENT", {}], "audio_vae": ["VAE", {}], "track": ["AUDIO", {}]}}},
                 "ResolutionSelector": {"input": {"required": {"aspect_ratio": [["1:1 (Square)", "3:4 (Portrait Standard)", "4:3 (Landscape Standard)", "16:9 (Widescreen)"], {}],
                                                               "megapixels": ["FLOAT", {}], "multiple": ["INT", {}]}}},
@@ -221,6 +246,12 @@ class Handler(BaseHTTPRequestHandler):
                 at = raw.find(b"RIFF")
                 if at >= 0 and raw[at + 8:at + 12] == b"WAVE":
                     entry["wavBytes"] = int.from_bytes(raw[at + 4:at + 8], "little") + 8
+                    data = raw[at + 44:at + entry["wavBytes"]]
+                    entry["silent"] = not data.strip(b"\0")
+                # The file itself, for a face refine's take.
+                start = raw.find(b"\r\n\r\n", raw.find(b'filename="')) + 4
+                boundary = raw[:raw.find(b"\r\n")]
+                UPLOADED[name] = raw[start:raw.find(b"\r\n" + boundary, start)]
                 state["uploads"].append(entry)
                 return self.send({"name": name, "subfolder": "", "type": "input"})
             if self.path == "/prompt":

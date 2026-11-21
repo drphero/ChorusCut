@@ -89,6 +89,13 @@ Rectangle {
             ToolTip.text: "Go back to the take the cut plays"
         }
         Tab {
+            objectName: "reviewRefine"
+            visible: bar.auditioning && bar.take !== null
+            text: "Refine faces…"
+            onClicked: bar.win.openRefine(bar.take.id)
+            ToolTip.text: "Redraw a face on this take, for people far from the camera"
+        }
+        Tab {
             objectName: "reviewNext"
             visible: bar.others.length > 0
             text: "Next new take ▸" + (bar.others.length > 1 ? " " + bar.others.length : "")

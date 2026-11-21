@@ -616,7 +616,8 @@ Rectangle {
                                     Text { id: newText; anchors.centerIn: parent; text: "new"; color: "#122328"; font.pixelSize: 9; font.weight: Font.DemiBold }
                                 }
                                 Text { y: 46; width: 74; elide: Text.ElideRight; font.pixelSize: 9
-                                       text: (takeTile.watching ? "watching" : takeTile.modelData.chosen ? "chosen" : "take " + takeTile.modelData.number) + (takeTile.modelData.lipSync ? " · sync" : "")
+                                       text: (takeTile.watching ? "watching" : takeTile.modelData.chosen ? "chosen" : "take " + takeTile.modelData.number)
+                                             + (takeTile.modelData.refined ? " · " + takeTile.modelData.refined + "'s face" : takeTile.modelData.lipSync ? " · sync" : "")
                                        color: takeTile.watching ? "#e7b75f" : takeTile.modelData.chosen ? "#87dec7" : "#8fa0a4" }
                                 MouseArea {
                                     id: takeMouse
@@ -636,13 +637,15 @@ Rectangle {
                                 ToolTip.text: "Take " + takeTile.modelData.number + " · " + takeTile.modelData.seconds.toFixed(2) + " s"
                                               + (takeTile.modelData.generation && takeTile.modelData.generation.seed !== undefined ? " · seed " + takeTile.modelData.generation.seed : "")
                                               + (takeTile.fresh ? " · new" : "")
+                                              + (takeTile.modelData.refined ? "\n" + takeTile.modelData.refined + "'s face refined, from take " + takeTile.modelData.refinedFromNumber : "")
                                               + (takeTile.modelData.chosen ? "\nPlays in the cut" : "\nClick to play this one in the cut; right-click to watch it first")
                                 Menu {
                                     id: takeMenu
                                     MenuItem { objectName: "takeWatch"; text: "Watch in the viewer"; onTriggered: editor.auditionTake(takeTile.modelData.id, true) }
                                     MenuItem { objectName: "takeChoose"; text: takeTile.modelData.chosen ? "Chosen for this shot" : "Choose for this shot"; enabled: !takeTile.modelData.chosen
                                                onTriggered: ins.plan.run({op: "set", kind: "take", id: takeTile.modelData.id, fields: {approved: true}}) }
-                                    MenuItem { objectName: "takeAgain"; text: "Generate again with its seed…"
+                                    MenuItem { objectName: "takeRefine"; text: "Refine faces…"; onTriggered: ins.Window.window.openRefine(takeTile.modelData.id) }
+                                    MenuItem { objectName: "takeAgain"; visible: !takeTile.modelData.refined; height: visible ? implicitHeight : 0; text: "Generate again with its seed…"
                                                onTriggered: ins.Window.window.openTake(ins.shot.id, {seed: takeTile.modelData.generation.seed, workflow: takeTile.modelData.generation.workflow,
                                                                                                      settings: Object.fromEntries((takeTile.modelData.generation.settings || []).map(x => [x.key, x.value]))}) }
                                     MenuItem { objectName: "takeRemove"; text: "Remove take"; onTriggered: ins.plan.run({op: "remove", kind: "take", id: takeTile.modelData.id}) }
@@ -672,6 +675,23 @@ Rectangle {
                                     MenuItem { visible: jobTile.modelData.state !== "failed"; height: visible ? implicitHeight : 0; text: "Cancel"; onTriggered: editor.generator.cancel(jobTile.modelData.id) }
                                 }
                             }
+                        }
+                    }
+                    // A refined take, watched or chosen: whose face was found, outlined in green.
+                    ColumnLayout {
+                        readonly property var shown: {
+                            const t = shotVideo.takes
+                            return t.find(x => x.id === shotVideo.auditioned && x.facesUrl) || (shotVideo.auditioned ? null : t.find(x => x.chosen && x.facesUrl)) || null
+                        }
+                        visible: shown !== null
+                        Layout.fillWidth: true; spacing: 3
+                        Caption { text: parent.shown ? "Take " + parent.shown.number + ": " + parent.shown.refined + "'s face was the one outlined in green" : "" }
+                        Image {
+                            objectName: "takeFacesFound"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: width * (implicitWidth > 0 ? implicitHeight / implicitWidth : 9 / 16)
+                            source: parent.shown ? parent.shown.facesUrl : ""
+                            fillMode: Image.PreserveAspectFit; asynchronous: true
                         }
                     }
                     RowLayout {

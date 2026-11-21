@@ -170,8 +170,9 @@ void Notifier::jobFinished(const QString& owner, int ownerId, const QString& use
                    + ". Show plays them one at a time.";
             about = "takes"; aboutId = 0;
         } else {
-            title = what + ": take ready";
-            body = (use == "take-sync" ? "A new take, singing to the song." : "A new take from the reference pictures.") + QString(" Show plays it.");
+            title = what + (use == "take-face" ? ": face refined" : ": take ready");
+            body = (use == "take-face" ? "A take with a face redrawn, in the same place as the one it came from."
+                    : use == "take-sync" ? "A new take, singing to the song." : "A new take from the reference pictures.") + QString(" Show plays it.");
         }
     } else if (ok) {
         title = what + (count == 1 ? ": picture ready" : QString(": %1 pictures ready").arg(count));
