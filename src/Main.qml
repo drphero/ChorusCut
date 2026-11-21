@@ -87,7 +87,7 @@ ApplicationWindow {
     // The large view of a picture the pointer rests on in any picker (PictureTile finds it here).
     readonly property alias peek: picturePeek
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || renderPopup.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function playheadMs() { return Math.round(editor.frame / editor.fps * 1000) }
@@ -336,6 +336,7 @@ ApplicationWindow {
     function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
 
     PicturePeek { id: picturePeek; room: win.Overlay.overlay }
+    RenderPopup { id: renderPopup }
 
     // Connecting an agent: Claude Code, Codex, Antigravity or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {
@@ -560,6 +561,13 @@ ApplicationWindow {
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }
             Action { text: "Redo"; enabled: editor.canRedo; onClicked: editor.redo(); ToolTip.text: editor.redoText ? "Redo " + editor.redoText.toLowerCase() : "" }
+            Action {
+                objectName: "renderButton"
+                text: editor.renderer.busy ? "Rendering " + Math.round(editor.renderer.progress * 100) + "%" : "Render…"
+                enabled: editor.ready
+                onClicked: renderPopup.start(win.selection)
+                ToolTip.text: "Render the cut to an MP4"
+            }
             Action { text: "Export timeline…"; enabled: editor.ready; onClicked: { save.selectedFile = editor.defaultExport; save.open() } }
         }
 

@@ -11,7 +11,7 @@ add_library(chorus_editor STATIC src/lyrics.cpp src/editor.cpp src/editor.h src/
             src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h
             src/agent.cpp src/agent.h src/agent_tools.cpp src/agent_tools.h
             src/workflows.cpp src/workflows.h src/generate.cpp src/generate.h src/requests.cpp src/requests.h
-            src/notify.mm src/notify.h)
+            src/notify.mm src/notify.h src/render.cpp src/render.h)
 # The notifier talks to macOS's notification center; compiled as Objective-C++ by the C++ compiler.
 set_source_files_properties(src/notify.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
 target_include_directories(chorus_editor PUBLIC src)
@@ -24,7 +24,7 @@ set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManage
                src/PlanField.qml src/PlanText.qml src/PlanCombo.qml src/Checks.qml src/ReferenceStrip.qml
                src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml
                src/ReferenceViewer.qml src/GeneratePopup.qml src/ReferenceViews.qml src/TakePopup.qml
-               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml)
+               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml src/RenderPopup.qml)
 # App icon, generated from resources/logo/icon.svg and icon-small.svg (16 and 32 px).
 set_source_files_properties(resources/icon/ChorusCut.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py resources/icon/ChorusCut.icns)
@@ -62,6 +62,11 @@ target_link_libraries(ChorusCutLyricsCheck PRIVATE chorus_editor Qt6::QuickContr
 qt_add_executable(ChorusCutTimelineCheck EXCLUDE_FROM_ALL tests/timeline_check.cpp)
 qt_add_resources(ChorusCutTimelineCheck timeline_ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCutTimelineCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)
+
+# Rendering the cut through the Render dialog, with real input; needs ffmpeg and ffprobe. Build explicitly; see docs/TESTING.md.
+qt_add_executable(ChorusCutRenderCheck EXCLUDE_FROM_ALL tests/render_check.cpp)
+qt_add_resources(ChorusCutRenderCheck render_ui PREFIX "/" FILES ${CHORUS_QML})
+target_link_libraries(ChorusCutRenderCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)
 
 # Real mouse/keyboard checks of the Project Manager. Build explicitly; see docs/TESTING.md.
 qt_add_executable(ChorusCutProjectsCheck EXCLUDE_FROM_ALL tests/projects_check.cpp)

@@ -8,6 +8,7 @@
 #include "plan.h"
 #include "agent.h"
 #include "notify.h"
+#include "render.h"
 #include <mlt++/Mlt.h>
 #include <QtQuick/QQuickItem>
 #include <QImage>
@@ -52,6 +53,7 @@ class Editor : public QObject {
     Q_PROPERTY(Plan* plan READ plan CONSTANT)
     Q_PROPERTY(AgentBridge* agent READ agent CONSTANT)
     Q_PROPERTY(Notifier* notifier READ notifier CONSTANT)
+    Q_PROPERTY(Renderer* renderer READ renderer CONSTANT)
     Q_PROPERTY(bool monitorMuted READ monitorMuted WRITE setMonitorMuted NOTIFY monitorChanged)
     Q_PROPERTY(int monitorDb READ monitorDb WRITE setMonitorDb NOTIFY monitorChanged)
     Q_PROPERTY(int frame READ frame NOTIFY cursorChanged)
@@ -159,6 +161,20 @@ public:
     bool looping() const { return loopOn; }
     QUrl defaultExport() const { return project ? QUrl::fromLocalFile(project->dir.filePath("Chorus.xml")) : QUrl(); }
 
+    // How to assemble the cut. Playback leaves out hidden tracks; a render shows every track,
+    // fits pictures of another shape to the frame, and puts a card where a shot has no take.
+    struct Cut {
+        QStringList hidden;
+        QString fit;               // "" (playback), "fill", "fit" or "stretch"
+        QHash<int, QString> cards; // shot id -> placeholder picture
+    };
+    void assemble(Mlt::Tractor& tractor, Mlt::Profile& profile, const Cut& cut);
+    Renderer* renderer() { return render; }
+    QString projectDir() const;
+    QSize pictureSize() const;
+    int fpsNum() const;
+    int fpsDen() const;
+
     QImage imageAt(int position);
     bool checkMedia();
     bool checkPictures();
@@ -190,6 +206,7 @@ private:
     Plan* planState;
     AgentBridge* agentBridge;
     Notifier* notices;
+    Renderer* render;
     int passageEnd = -1;
     int passageStart = -1;
     QUndoStack history;

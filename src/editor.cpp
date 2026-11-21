@@ -6,6 +6,7 @@
 #include <QSqlError>
 #include <QFileInfo>
 #include <cmath>
+#include <algorithm>
 #include <QFutureWatcher>
 #include <QtConcurrentRun>
 #include <QQuickWindow>
@@ -77,6 +78,7 @@ Editor::Editor() {
     requestThreads = new Requests(this);
     agentBridge = new AgentBridge(this, this);  // after the requests it delivers; serves agents once start() is called
     notices = new Notifier(this);
+    render = new Renderer(this);
     connect(generatorJobs, &Generator::finished, notices, &Notifier::jobFinished);
     connect(this, &Editor::imageReady, this, [this](const QImage& image) { shown = image; });
     auto changed = [this] { emit edited(); };
@@ -105,6 +107,7 @@ Editor::~Editor() { saveThumbnail(); stop(); }
 
 void Editor::closeProject() {
     if (!project) return;
+    render->cancel();
     saveThumbnail();
     thumbTimer.stop();
     comfyJobs->detach();
@@ -270,22 +273,38 @@ static Mlt::Producer producer(Project& project, Mlt::Profile& profile, const Med
     return p;
 }
 
-void Editor::build() {
-    stop();
-    listener.reset();
-    output.reset();
-    timeline = std::make_unique<Mlt::Tractor>(*profile);
-    auto audio = producer(*project, *profile, project->master, true);
-    Mlt::Producer black(*profile, "color", "black");
+// A render's pictures of another shape: Fill crops the overflow, Stretch scales each axis on its
+// own, Fit (MLT's default) pads with black. Playback leaves them as they are.
+// The source's size comes from the project or the take's record: MLT may not know it yet here.
+static void fitPicture(Mlt::Producer& picture, Mlt::Profile& profile, const QString& fit, QSize source) {
+    if (fit != "fill" && fit != "stretch") return;
+    const int w = source.width(), h = source.height();
+    if (fit == "stretch") {
+        if (w <= 0 || h <= 0) return;
+        picture.set("force_aspect_ratio", (double(profile.width()) / profile.height()) / (double(w) / h));
+    } else {
+        // Left inactive, the filter only works out the centre crop; MLT's own crop step (which the
+        // loader adds) applies it. Made active, it ignores center and crops nothing.
+        Mlt::Filter crop(profile, "crop");
+        crop.set("center", 1);
+        picture.attach(crop);
+    }
+}
+
+void Editor::assemble(Mlt::Tractor& tractor, Mlt::Profile& p, const Cut& cut) {
+    auto audio = producer(*project, p, project->master, true);
+    Mlt::Producer black(p, "color", "black");
     black.set("length", length());
     black.set_in_and_out(0,length()-1);
-    Mlt::Playlist picture(*profile);
-    const bool showV1 = !hidden.contains("v1"), showV2 = !hidden.contains("v2");
+    Mlt::Playlist picture(p);
+    const bool showV1 = !cut.hidden.contains("v1"), showV2 = !cut.hidden.contains("v2");
     if (sourceLength() == 0 || (!showV1 && !showV2)) {
         picture.append(black,0,length()-1);
     } else {
-        auto base = producer(*project, *profile, project->performance, false);
-        auto insert = producer(*project, *profile, project->cutaway, false);
+        auto base = producer(*project, p, project->performance, false);
+        auto insert = producer(*project, p, project->cutaway, false);
+        fitPicture(base, p, cut.fit, QSize(project->performance.width, project->performance.height));
+        fitPicture(insert, p, cut.fit, QSize(project->cutaway.width, project->cutaway.height));
         // A hidden V1 leaves black where the performance was; a hidden V2 shows the
         // performance through the cutaway.
         auto appendBase = [&](int start, int end) {
@@ -306,34 +325,65 @@ void Editor::build() {
     }
     picture.set("hide",2); // MLT hide-audio flag.
     audio.set("hide",1);  // MLT hide-video flag.
-    timeline->set_track(audio,0);
-    timeline->set_track(picture,1);
+    tractor.set_track(audio,0);
+    tractor.set_track(picture,1);
     // Each shot's chosen take on V1 and V2, silent: the song is the soundtrack. With no
     // transitions MLT shows the topmost track that has a picture, so V2 covers V1 and both
-    // cover the base picture; gaps show what is below.
+    // cover the base picture; gaps show what is below. A render puts a card where a shot has none.
+    struct Clip { int start, end, in; QString file; bool card; QSize size; };
     const auto takes = planState->timelineTakes();
-    takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(takes)).toJson(QJsonDocument::Compact));
     for (int track : {1, 2}) {
-        Mlt::Playlist clips(*profile);
+        QList<Clip> list;
+        if (!cut.hidden.contains(track == 1 ? "v1" : "v2")) {
+            for (const auto& v : takes) {
+                const auto t = v.toMap();
+                if (t["track"].toInt() != track) continue;
+                const auto take = planState->item("take", t["take"].toInt());
+                list.append({t["start"].toInt(), t["end"].toInt(), t["in"].toInt(), t["file"].toString(), false, QSize(take["width"].toInt(), take["height"].toInt())});
+            }
+            for (auto it = cut.cards.begin(); it != cut.cards.end(); ++it) {
+                const auto s = planState->shot(it.key());
+                if (s["track"].toInt() == track) list.append({s["start"].toInt(), s["end"].toInt(), 0, it.value(), true, QSize()});
+            }
+            std::sort(list.begin(), list.end(), [](const Clip& a, const Clip& b) { return a.start < b.start; });
+        }
+        Mlt::Playlist clips(p);
         int at = 0;
-        for (const auto& v : takes) {
-            const auto t = v.toMap();
-            if (t["track"].toInt() != track || hidden.contains(track == 1 ? "v1" : "v2")) continue;
-            const int start = t["start"].toInt(), end = t["end"].toInt(), in = t["in"].toInt();
-            if (start > at) clips.blank(start - at - 1);
-            Mlt::Producer take(*profile, "loader", t["file"].toString().toUtf8());
-            if (!take.is_valid()) continue;
-            take.set("audio_index", -1);
-            clips.append(take, in, in + (end - start) - 1);
-            at = end;
+        for (const Clip& c : list) {
+            if (c.start < at || c.end <= c.start) continue;
+            if (c.start > at) clips.blank(c.start - at - 1);
+            Mlt::Producer clip(p, c.card ? "qimage" : "loader", c.file.toUtf8());
+            if (!clip.is_valid()) continue;
+            if (c.card) {
+                clip.set("length", c.end - c.start);
+                clip.set_in_and_out(0, c.end - c.start - 1);
+            } else {
+                clip.set("audio_index", -1);
+                fitPicture(clip, p, cut.fit, c.size);
+            }
+            clips.append(clip, c.in, c.in + (c.end - c.start) - 1);
+            at = c.end;
         }
         if (at < length()) clips.blank(length() - at - 1);
         clips.set("hide", 2);
-        timeline->set_track(clips, 1 + track);
+        tractor.set_track(clips, 1 + track);
     }
+}
+
+void Editor::build() {
+    stop();
+    listener.reset();
+    output.reset();
+    timeline = std::make_unique<Mlt::Tractor>(*profile);
+    takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes())).toJson(QJsonDocument::Compact));
+    assemble(*timeline, *profile, Cut{hidden, QString(), {}});
     timeline->set_in_and_out(0,length()-1);
     timeline->set_speed(0);
 }
+QString Editor::projectDir() const { return project ? project->dir.absolutePath() : QString(); }
+QSize Editor::pictureSize() const { return project ? QSize(project->performance.width, project->performance.height) : QSize(); }
+int Editor::fpsNum() const { return project ? project->fpsNum : 24; }
+int Editor::fpsDen() const { return project ? project->fpsDen : 1; }
 QImage Editor::imageAt(int position) {
     timeline->seek(position);
     std::unique_ptr<Mlt::Frame> f(timeline->get_frame());
