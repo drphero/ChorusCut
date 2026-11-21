@@ -27,6 +27,7 @@ Popup {
     property string crfText: "19"
     property string path: ""
     property bool pathTouched: false
+    signal upscaleCutRequested()
     property var opts: ({native: {width: 0, height: 0}, sizes: [], missing: [], shots: 0, aspect: ""})
 
     readonly property bool hasSelection: selection !== null && selection !== undefined && selection.end > selection.start
@@ -207,6 +208,25 @@ Popup {
                         text: (rp.opts.missing.length === 1 ? "Shot " + rp.opts.missing[0] + " has" : rp.opts.missing.length + " shots have") + " no take yet"
                               + (rp.opts.missing.length > 1 && rp.opts.missing.length <= 8 ? " (" + rp.opts.missing.join(", ") + ")" : "")
                               + ". " + (rp.opts.missing.length === 1 ? "It renders" : "They render") + " as a card with the shot's number, who and where, and its purpose."
+                    }
+                }
+
+                // How many shots render from upscaled versions; the rest are drafts scaled up.
+                RowLayout {
+                    objectName: "renderUpscaled"
+                    visible: (rp.opts.withTakes || 0) > 0
+                    Layout.fillWidth: true; spacing: 8
+                    Text {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
+                        color: rp.opts.upscaled === rp.opts.withTakes ? "#87dec7" : "#adb8ba"
+                        text: "Upscaled: " + rp.opts.upscaled + " of " + rp.opts.withTakes + (rp.opts.withTakes === 1 ? " shot" : " shots")
+                              + (rp.opts.upscaled < rp.opts.withTakes ? ". The rest render from their drafts, scaled up." : ".")
+                    }
+                    Small {
+                        objectName: "renderUpscaleCut"
+                        visible: rp.opts.upscaled < rp.opts.withTakes
+                        text: "Upscale the cut…"
+                        onClicked: { rp.close(); rp.upscaleCutRequested() }
                     }
                 }
 

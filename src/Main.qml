@@ -130,7 +130,7 @@ ApplicationWindow {
     // The large view of a picture the pointer rests on in any picker (PictureTile finds it here).
     readonly property alias peek: picturePeek
     property var lines: editor.lyrics.lines
-    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || renderPopup.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || refinePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+    readonly property bool typing: managerOpen || lyricsEditor.visible || comfySheet.visible || agentSheet.visible || renderPopup.visible || workflowsSheet.visible || refViewer.visible || generatePopup.visible || takePopup.visible || refinePopup.visible || upscalePopup.visible || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
 
     function select(next) { selection = next }
     function playheadMs() { return Math.round(editor.frame / editor.fps * 1000) }
@@ -383,9 +383,12 @@ ApplicationWindow {
     function openTake(shot, prefill) { if (editor.ready) takePopup.start(shot, prefill) }
     RefinePopup { id: refinePopup; onWorkflowsRequested: win.openWorkflows() }
     function openRefine(take) { if (editor.ready) refinePopup.start(take) }
+    UpscalePopup { id: upscalePopup; onWorkflowsRequested: win.openWorkflows() }
+    function openUpscale(take) { if (editor.ready) upscalePopup.start(take) }
+    function openUpscaleCut() { if (editor.ready) upscalePopup.startCut() }
 
     PicturePeek { id: picturePeek; room: win.Overlay.overlay }
-    RenderPopup { id: renderPopup }
+    RenderPopup { id: renderPopup; onUpscaleCutRequested: win.openUpscaleCut() }
 
     // Connecting an agent: Claude Code, Codex, Antigravity or any MCP client runs choruscut-mcp, which talks to this app.
     Popup {
@@ -691,10 +694,25 @@ ApplicationWindow {
                         // Narrow windows drop the controls that have keyboard shortcuts.
                         Action { visible: editColumn.width >= 820; text: "Play selection"; enabled: win.selection !== null; onClicked: editor.playRange(win.selection.start, win.selection.end) }
                         Action { text: "Loop"; active: editor.looping; onClicked: editor.looping = !editor.looping }
+                        // Drafts, or takes' upscaled versions where they have one. Render always uses those.
+                        Action {
+                            id: viewerUpscaledSwitch
+                            objectName: "viewerUpscaled"
+                            // Only once a take in the cut has an upscaled version.
+                            readonly property bool useful: (editor.plan.revision, editor.generator.cutToUpscale().length)
+                                                           < editor.plan.shots.filter(s => s.chosenTake !== undefined).length
+                            visible: editColumn.width >= 640 && useful
+                            text: editor.viewUpscaled ? "Upscaled" : "Draft"
+                            active: editor.viewUpscaled
+                            onClicked: editor.viewUpscaled = !editor.viewUpscaled
+                            ToolTip.text: editor.viewUpscaled ? "Playing takes' upscaled versions where they have one. Click for drafts (faster)."
+                                                              : "Playing drafts. Click to play takes' upscaled versions where they have one, as Render does."
+                        }
                         Action { visible: editColumn.width >= 1080; text: "−1 frame"; onClicked: editor.seek(editor.frame-1) }
                         Action { visible: editColumn.width >= 1080; text: "+1 frame"; onClicked: editor.seek(editor.frame+1) }
                         LabelText { text: win.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 18; color: win.mint; Layout.leftMargin: 8 }
-                        LabelText { visible: editColumn.width >= 700; text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
+                        // The switch takes this room when the column is narrow.
+                        LabelText { visible: editColumn.width >= (viewerUpscaledSwitch.visible ? 900 : 700); text: "/ " + win.tc(editor.length) + "  ·  " + Number(editor.fps.toFixed(3)) + " fps"; color: win.quiet; font.pixelSize: 12 }
                         Item { Layout.fillWidth: true }
                         Action {
                             objectName: "viewerPopOut"

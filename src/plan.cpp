@@ -566,6 +566,20 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     }
     if (op == "ref.add") return refAdd(c, by);
     if (op == "take.add") return takeAdd(c, by);
+    if (op == "take.upscale") return takeUpscale(c, by);
+    if (op == "take.unupscale") {
+        // Takes the upscaled version away (its file stays in Media/Takes, so undo brings it back).
+        const int id = c.value("id").toInt();
+        if (by != "user") return error("Upscaled versions are made and removed in Chorus Cut.");
+        if (!has("take", id) || !row("take", id).contains("upscaled")) return error("That take has no upscaled version.");
+        QJsonObject t = row("take", id);
+        t.remove("upscaled");
+        t["edited"] = ++clock;
+        write("take", id, t);
+        const int shot = t["shot"].toInt();
+        label(QString("Remove the upscaled version of take %1 of shot %2").arg(takeIds(shot).indexOf(id) + 1).arg(shotNumber(shot)));
+        Result done; done.id = id; return done;
+    }
     if (op == "ref.move") {
         const int id = c.value("id").toInt();
         if (!has("reference", id)) return error("There is no reference " + QString::number(id) + ".");
@@ -840,7 +854,7 @@ QVariantList Plan::takesFor(int shot) const {
     return out;
 }
 
-QVariantList Plan::timelineTakes(const QHash<int, int>& pick) const {
+QVariantList Plan::timelineTakes(const QHash<int, int>& pick, bool upscaled) const {
     // Each shot's chosen take, as the part of it the cut plays: [{track, start, end, file, in}].
     QVariantList out;
     if (!project) return out;
@@ -853,13 +867,64 @@ QVariantList Plan::timelineTakes(const QHash<int, int>& pick) const {
             if (usePick ? take != picked : !t["fields"].toObject()["approved"].toBool()) continue;
             const auto [from, to] = takeSpan(take);
             const int a = qMax(s["start"].toInt(), from), b = qMin(s["end"].toInt(), to);
-            const QString file = project->dir.filePath(t["file"].toString());
+            QString file = project->dir.filePath(t["file"].toString());
+            int width = t["width"].toInt(), height = t["height"].toInt();
+            // The upscaled version where there is one, when asked (Render; the viewer switched to it).
+            const auto up = t["upscaled"].toObject();
+            bool usedUp = false;
+            if (upscaled && !up.isEmpty() && QFileInfo::exists(project->dir.filePath(up["file"].toString()))) {
+                file = project->dir.filePath(up["file"].toString());
+                width = up["width"].toInt(); height = up["height"].toInt();
+                usedUp = true;
+            }
             if (a < b && QFileInfo::exists(file))
-                out.append(QVariantMap{{"track", s["track"].toInt()}, {"start", a}, {"end", b}, {"file", file}, {"in", a - from}, {"take", take}, {"shot", shot}});
+                out.append(QVariantMap{{"track", s["track"].toInt()}, {"start", a}, {"end", b}, {"file", file}, {"in", a - from}, {"take", take}, {"shot", shot},
+                                       {"width", width}, {"height", height}, {"upscaled", usedUp}});
             break;
         }
     }
     return out;
+}
+
+Plan::Result Plan::takeUpscale(const QVariantMap& c, const QString& by) {
+    Result r;
+    auto fail = [&](const QString& e) { r.ok = false; r.error = e; return r; };
+    // Upscaled versions come from the app's own jobs, never from an agent's command.
+    if (by != "user") return fail("Upscaled versions are made in Chorus Cut; an agent can't add them.");
+    const int id = c.value("id").toInt();
+    if (!has("take", id)) return fail("The take is gone.");
+    const QString source = c.value("path").toString();
+    QFile file(source);
+    if (!QFileInfo(source).isFile() || !file.open(QIODevice::ReadOnly)) return fail("Cannot read " + QFileInfo(source).fileName() + ".");
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    if (!hash.addData(&file)) return fail("Cannot read " + QFileInfo(source).fileName() + ".");
+    file.close();
+    const QString base = "Media/Takes/" + QString::fromLatin1(hash.result().toHex().left(20));
+    const QString relative = base + "." + QFileInfo(source).suffix().toLower();
+    if (!project->dir.mkpath("Media/Takes")) return fail("Cannot create Media/Takes in the project.");
+    auto copyIn = [&](const QString& from, const QString& to) {
+        const QString target = project->dir.filePath(to);
+        if (QFileInfo::exists(target)) return true;
+        QFile::remove(target + ".part");
+        if (QFile::copy(from, target + ".part") && QFile::rename(target + ".part", target)) return true;
+        QFile::remove(target + ".part");
+        return false;
+    };
+    if (!copyIn(source, relative)) return fail("Could not copy the upscaled take into the project.");
+    QString thumb;
+    if (const QString t = c.value("thumb").toString(); QFileInfo(t).isFile()) {
+        thumb = base + "." + QFileInfo(t).suffix().toLower();
+        if (!copyIn(t, thumb)) thumb.clear();
+    }
+    QJsonObject t = row("take", id);
+    t["upscaled"] = QJsonObject{{"file", relative}, {"thumb", thumb}, {"width", c.value("width").toInt()}, {"height", c.value("height").toInt()},
+                                {"frames", c.value("frames").toInt()}, {"generation", QJsonObject::fromVariantMap(c.value("generation").toMap())}};
+    t["edited"] = ++clock;
+    write("take", id, t);
+    const int shot = t["shot"].toInt();
+    if (pendingLabel.isEmpty()) pendingLabel = QString("Upscale take %1 of shot %2").arg(takeIds(shot).indexOf(id) + 1).arg(shotNumber(shot));
+    r.id = id;
+    return r;
 }
 
 QVariantList Plan::placeTakes(const QList<int>& takes) const {
@@ -1178,6 +1243,15 @@ QVariantMap Plan::exported(const QString& kind, int id) const {
         m["thumbUrl"] = r["thumb"].toString().isEmpty() ? QString() : QUrl::fromLocalFile(project->dir.filePath(r["thumb"].toString())).toString();
         m["chosen"] = r["fields"].toObject()["approved"].toBool();
         m["lipSync"] = r["locked"].toBool();
+        // An upscaled version; a take refined from one is already at that size.
+        const auto up = r["upscaled"].toObject();
+        if (!up.isEmpty()) {
+            m["upscaledUrl"] = QUrl::fromLocalFile(project->dir.filePath(up["file"].toString())).toString();
+            m["upscaledWidth"] = up["width"].toInt();
+            m["upscaledHeight"] = up["height"].toInt();
+            m["upscaledMissing"] = !QFileInfo::exists(project->dir.filePath(up["file"].toString()));
+        }
+        m["hd"] = !up.isEmpty() || r["generation"].toObject()["fromUpscaled"].toBool();
         m["facesUrl"] = r["faces"].toString().isEmpty() ? QString() : QUrl::fromLocalFile(project->dir.filePath(r["faces"].toString())).toString();
         // A face refine: whose face, and the take it was made from.
         const auto g = r["generation"].toObject();

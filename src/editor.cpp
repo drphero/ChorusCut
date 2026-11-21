@@ -102,12 +102,13 @@ Editor::Editor() {
         if (fresh.size() != before) { saveFresh(); emit newTakesChanged(); }
         if (auditionTakeId) {
             const auto t = planState->item("take", auditionTakeId);
-            if (t.isEmpty() || t["chosen"].toBool() || t["shot"].toInt() != auditionShot) {
+            // Ends when its take goes, moves, or becomes the chosen one (Use); watching the chosen take goes on.
+            if (t.isEmpty() || (t["chosen"].toBool() && !auditionWasChosen) || t["shot"].toInt() != auditionShot) {
                 auditionShot = auditionTakeId = 0;
                 emit auditionChanged();
             }
         }
-        const QString key = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes(auditionPick()))).toJson(QJsonDocument::Compact));
+        const QString key = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(planState->timelineTakes(auditionPick(), upscaledView))).toJson(QJsonDocument::Compact));
         if (key == takesKey) return;
         rebuildPlaying();
     });
@@ -346,15 +347,14 @@ void Editor::assemble(Mlt::Tractor& tractor, Mlt::Profile& p, const Cut& cut) {
     // transitions MLT shows the topmost track that has a picture, so V2 covers V1 and both
     // cover the base picture; gaps show what is below. A render puts a card where a shot has none.
     struct Clip { int start, end, in; QString file; bool card; QSize size; };
-    const auto takes = planState->timelineTakes(cut.pick);
+    const auto takes = planState->timelineTakes(cut.pick, cut.upscaled);
     for (int track : {1, 2}) {
         QList<Clip> list;
         if (!cut.hidden.contains(track == 1 ? "v1" : "v2")) {
             for (const auto& v : takes) {
                 const auto t = v.toMap();
                 if (t["track"].toInt() != track) continue;
-                const auto take = planState->item("take", t["take"].toInt());
-                list.append({t["start"].toInt(), t["end"].toInt(), t["in"].toInt(), t["file"].toString(), false, QSize(take["width"].toInt(), take["height"].toInt())});
+                list.append({t["start"].toInt(), t["end"].toInt(), t["in"].toInt(), t["file"].toString(), false, QSize(t["width"].toInt(), t["height"].toInt())});
             }
             for (auto it = cut.cards.begin(); it != cut.cards.end(); ++it) {
                 const auto s = planState->shot(it.key());
@@ -390,9 +390,9 @@ void Editor::build() {
     listener.reset();
     output.reset();
     timeline = std::make_unique<Mlt::Tractor>(*profile);
-    builtTakes = planState->timelineTakes(auditionPick());
+    builtTakes = planState->timelineTakes(auditionPick(), upscaledView);
     takesKey = QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(builtTakes)).toJson(QJsonDocument::Compact));
-    assemble(*timeline, *profile, Cut{hidden, QString(), {}, auditionPick()});
+    assemble(*timeline, *profile, Cut{hidden, QString(), {}, auditionPick(), upscaledView});
     timeline->set_in_and_out(0,length()-1);
     timeline->set_speed(0);
 }
@@ -477,9 +477,11 @@ void Editor::updateMonitorGain() {
 static const QStringList kTracks{"v1", "v2", "lyrics", "a1"};
 void Editor::loadTracks() {
     hidden.clear(); muted.clear();
+    upscaledView = false;
     QSqlQuery q(project->db);
     if (q.exec("SELECT value FROM view_state WHERE key='tracks'") && q.next()) {
         const auto o = QJsonDocument::fromJson(q.value(0).toString().toUtf8()).object();
+        upscaledView = o["upscaled"].toBool();
         for (const auto& v : o["hidden"].toArray()) if (kTracks.contains(v.toString()) && v.toString() != "a1") hidden << v.toString();
         for (const auto& v : o["muted"].toArray()) if (v.toString() == "a1") muted << v.toString();
     }
@@ -491,7 +493,8 @@ void Editor::saveTracks() {
     q.exec("CREATE TABLE IF NOT EXISTS view_state(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     q.prepare("INSERT OR REPLACE INTO view_state VALUES('tracks', ?)");
     q.addBindValue(QString::fromUtf8(QJsonDocument(QJsonObject{{"hidden", QJsonArray::fromStringList(hidden)},
-                                                               {"muted", QJsonArray::fromStringList(muted)}}).toJson(QJsonDocument::Compact)));
+                                                               {"muted", QJsonArray::fromStringList(muted)},
+                                                               {"upscaled", upscaledView}}).toJson(QJsonDocument::Compact)));
     if (!q.exec()) info("Could not keep the track switches: " + q.lastError().text());
 }
 void Editor::setTrackHidden(const QString& track, bool hide) {
@@ -500,6 +503,13 @@ void Editor::setTrackHidden(const QString& track, bool hide) {
     saveTracks();
     emit tracksChanged();
     if (track != "lyrics" && project && timeline) { const int at = cursor; build(); seek(at); }
+}
+void Editor::setViewUpscaled(bool on) {
+    if (on == upscaledView) return;
+    upscaledView = on;
+    saveTracks();
+    emit tracksChanged();
+    if (project && timeline) rebuildPlaying();
 }
 void Editor::setTrackMuted(const QString& track, bool mute) {
     if (track != "a1" || muted.contains(track) == mute) return;
@@ -582,6 +592,7 @@ void Editor::auditionTake(int take, bool play) {
     const bool changed = auditionTakeId != take;
     auditionShot = s["id"].toInt();
     auditionTakeId = take;
+    auditionWasChosen = t["chosen"].toBool();
     markTakeSeen(take);
     if (changed) emit auditionChanged();
     if (sameShot && running) {

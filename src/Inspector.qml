@@ -608,6 +608,13 @@ Rectangle {
                                             asynchronous: true; sourceSize: Qt.size(148, 88); opacity: takeTile.modelData.chosen || takeTile.watching || takeTile.fresh ? 1 : 0.6 }
                                     Text { visible: takeTile.modelData.missing; anchors.centerIn: parent; text: "missing"; color: "#f0a08f"; font.pixelSize: 9 }
                                 }
+                                // Upscaled, or made at the upscaled size.
+                                Rectangle {
+                                    objectName: "shotTakeHd" + takeTile.modelData.number
+                                    visible: !!takeTile.modelData.hd
+                                    x: 3; y: 3; width: hdText.implicitWidth + 6; height: 13; radius: 3; color: "#d0101820"; border.color: "#e7d08a"
+                                    Text { id: hdText; anchors.centerIn: parent; text: "HD"; color: "#e7d08a"; font.pixelSize: 8; font.weight: Font.Bold }
+                                }
                                 // Not watched yet.
                                 Rectangle {
                                     objectName: "shotTakeNew" + takeTile.modelData.number
@@ -637,6 +644,8 @@ Rectangle {
                                 ToolTip.text: "Take " + takeTile.modelData.number + " · " + takeTile.modelData.seconds.toFixed(2) + " s"
                                               + (takeTile.modelData.generation && takeTile.modelData.generation.seed !== undefined ? " · seed " + takeTile.modelData.generation.seed : "")
                                               + (takeTile.fresh ? " · new" : "")
+                                              + (takeTile.modelData.upscaledUrl ? "\nUpscaled to " + takeTile.modelData.upscaledWidth + " × " + takeTile.modelData.upscaledHeight
+                                                 : takeTile.modelData.hd ? "\nMade at " + takeTile.modelData.width + " × " + takeTile.modelData.height + " from an upscaled version" : "")
                                               + (takeTile.modelData.refined ? "\n" + takeTile.modelData.refined + "'s face refined, from take " + takeTile.modelData.refinedFromNumber : "")
                                               + (takeTile.modelData.chosen ? "\nPlays in the cut" : "\nClick to play this one in the cut; right-click to watch it first")
                                 Menu {
@@ -645,6 +654,9 @@ Rectangle {
                                     MenuItem { objectName: "takeChoose"; text: takeTile.modelData.chosen ? "Chosen for this shot" : "Choose for this shot"; enabled: !takeTile.modelData.chosen
                                                onTriggered: ins.plan.run({op: "set", kind: "take", id: takeTile.modelData.id, fields: {approved: true}}) }
                                     MenuItem { objectName: "takeRefine"; text: "Refine faces…"; onTriggered: ins.Window.window.openRefine(takeTile.modelData.id) }
+                                    MenuItem { objectName: "takeUpscale"; text: takeTile.modelData.upscaledUrl ? "Upscale again…" : "Upscale…"; onTriggered: ins.Window.window.openUpscale(takeTile.modelData.id) }
+                                    MenuItem { objectName: "takeUnupscale"; visible: !!takeTile.modelData.upscaledUrl; height: visible ? implicitHeight : 0; text: "Remove upscaled version"
+                                               onTriggered: ins.plan.run({op: "take.unupscale", id: takeTile.modelData.id}) }
                                     MenuItem { objectName: "takeAgain"; visible: !takeTile.modelData.refined; height: visible ? implicitHeight : 0; text: "Generate again with its seed…"
                                                onTriggered: ins.Window.window.openTake(ins.shot.id, {seed: takeTile.modelData.generation.seed, workflow: takeTile.modelData.generation.workflow,
                                                                                                      settings: Object.fromEntries((takeTile.modelData.generation.settings || []).map(x => [x.key, x.value]))}) }

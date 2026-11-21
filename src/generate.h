@@ -67,9 +67,22 @@ public:
     // theirs among what made the take, topped up with their chosen pictures, at most 3), available (every picture of theirs and their
     // look), prompt (their kept face-refine prompt), why}]}.
     Q_INVOKABLE QVariantMap refineOptions(int take, const QString& workflow = {}) const;
+    // What upscaling a take would be: {take, shot, number, lipSync, frames, width, height, upscaled
+    // (it has an upscaled version), hd, workflow, workflowName, workflows, prompt and pictures (those
+    // the take was made with; a refined take's from the take its chain started from: [{id, url,
+    // label}]), gone (pictures since removed), megapixels (the size setting's key and value), why,
+    // ready}.
+    Q_INVOKABLE QVariantMap upscaleOptions(int take, const QString& workflow = {}) const;
+    // Queues an upscale of each take (one job each). options: {workflow, seed, settings, keep}.
+    // "" when all are queued, else why the first that couldn't be.
+    Q_INVOKABLE QString upscale(const QVariantList& takes, const QVariantMap& options = {});
+    // The cut's chosen takes with no upscaled version yet, in song order:
+    // [{take, shot, shotNumber, number, frames, seconds}].
+    Q_INVOKABLE QVariantList cutToUpscale() const;
     // Queues one face-refine pass per entry of passes ({character, face, pictures: [reference ids],
     // prompt}), in order: the first refines the take, each next one the take the previous one makes.
-    // options: {workflow, seed, settings, keep}. "" when queued, else why not.
+    // options: {workflow, seed, settings, keep, fromUpscaled (work from the take's upscaled version)}.
+    // "" when queued, else why not.
     Q_INVOKABLE QString refineFaces(int take, const QVariantList& passes, const QVariantMap& options = {});
     // Keeps settings chosen in the Generate dialog with the workflow without generating. "" or why not.
     Q_INVOKABLE QString keepSettings(const QString& workflow, const QVariantMap& values);
@@ -114,6 +127,7 @@ private:
         // A face refine: the take it refines (0 while it waits for the pass before it, after), whose
         // face, the picture it is found by, the source's size, and the preview node added to the graph.
         int source = 0, after = 0, character = 0, face = 0, width = 0, height = 0;
+        bool fromUpscaled = false;  // works from the source's upscaled version
         QString what, previewNode;
         int misses = 0, waiting = 0;
         qint64 started = 0;  // when it was asked for, in ms since the epoch
@@ -131,7 +145,11 @@ private:
     // grid. 0 with why when it can't fit.
     int takeFrames(const QString& workflow, double seconds, double fps, double& handles, QString& why) const;
     void startTake(int id, const QStringList& pictures);
+    // A face refine or upscale: uploads the take (or its upscaled version), the face, the pictures
+    // and the sound, then queues it.
     void startRefine(int id);
+    // The take a refine chain started from (itself when it isn't a face refine).
+    int rootTake(int take) const;
     // Adds a take from a downloaded video (and, for a face refine, its picture of the faces found).
     void addTake(int id, const QString& path, const QString& faces);
     void collectTake(int id, const QJsonObject& outputs);

@@ -64,12 +64,14 @@ QVariantMap Renderer::options() const {
     Plan* plan = editor->plan();
     QSize native;
     QSet<int> covered;
-    for (const auto& v : plan->timelineTakes()) {
+    int upscaled = 0;
+    for (const auto& v : plan->timelineTakes({}, true)) {
         const auto t = v.toMap();
         covered.insert(t["shot"].toInt());
-        const auto take = plan->item("take", t["take"].toInt());
-        const QSize size(take["width"].toInt(), take["height"].toInt());
+        // Upscaled versions count: they are what renders.
+        const QSize size(t["width"].toInt(), t["height"].toInt());
         if (size.width() * size.height() > native.width() * native.height()) native = size;
+        if (t["upscaled"].toBool() || plan->item("take", t["take"].toInt())["hd"].toBool()) ++upscaled;
     }
     QString aspect = plan->concept()["fields"].toMap()["aspect"].toString();
     if (native.isEmpty()) native = editor->pictureSize();
@@ -98,7 +100,8 @@ QVariantMap Renderer::options() const {
         if (!covered.contains(s["id"].toInt())) missing.append(s["number"].toInt());
     }
     return {{"native", QVariantMap{{"width", native.width()}, {"height", native.height()}}}, {"aspect", aspect}, {"sizes", sizes},
-            {"missing", missing}, {"shots", shots}, {"name", editor->projectName()}, {"frames", editor->length()}};
+            {"missing", missing}, {"shots", shots}, {"name", editor->projectName()}, {"frames", editor->length()},
+            {"upscaled", upscaled}, {"withTakes", covered.size()}};
 }
 
 QString Renderer::defaultPath(const QString& part) const {
@@ -202,6 +205,7 @@ bool Renderer::start(const QVariantMap& r) {
     cardDir = std::make_unique<QTemporaryDir>();
     Editor::Cut cut;
     cut.fit = fit;
+    cut.upscaled = true;
     QSet<int> covered;
     for (const auto& v : editor->plan()->timelineTakes()) covered.insert(v.toMap()["shot"].toInt());
     for (const auto& v : editor->plan()->shots()) {

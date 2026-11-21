@@ -7,7 +7,8 @@ Implements the endpoints Chorus Cut uses (/system_stats, /object_info/<node>, /u
 every word shifted by the stub's current "shift" in milliseconds. Any other graph is a picture
 job: each SaveImage node outputs one PNG (PreviewImage a temporary one), served by /view. A face
 refine (H3FaceSelect) saves a video the size and length of the uploaded take it names, plus
-"faceExtra" frames (to test a refusal).
+"faceExtra" frames (to test a refusal). An upscale (an H3 latent upscaler) saves one of the uploaded
+take's length plus "upscaleExtra" frames, at the megapixels its graph asks for in steps of 32.
 Control endpoints:
   POST /_stub/mode  {"mode": "finish" | "hold" | "wait" | "error", "shift": ms}   (wait: pending in the queue)
   POST /_stub/release   finish held jobs
@@ -88,13 +89,25 @@ def video(name, frames, size="96x54"):
 def picture_outputs(prompt, number):
     outputs = {}
     face = next((s["inputs"].get("video") for s in prompt.values() if s.get("class_type") == "H3FaceSelect"), None)
+    upscaler = next((s for s in prompt.values() if "LatentUpscaler" in s.get("class_type", "")), None)
+    if upscaler is not None:
+        source = next(s["inputs"].get("video") for s in prompt.values() if s.get("class_type") == "VHS_LoadVideoFFmpeg")
+        mp = upscaler["inputs"].get("mode.megapixels")
+        if isinstance(mp, list):
+            mp = prompt[mp[0]]["inputs"]["value"]
     for node, spec in prompt.items():
         kind = spec.get("class_type", "")
         if kind == "SaveVideo":
             prefix = spec["inputs"].get("filename_prefix", "video/ComfyUI")
             folder, _, base = prefix.rpartition("/")
             name = f"{base}_{number:05}_.mp4"
-            if face is not None:
+            if upscaler is not None:
+                w, h, n = probe(UPLOADED[source])
+                # As the real upscaler did: the scale rounded to a tenth, each side up to a step of 32.
+                import math
+                k = round((mp * 1e6 / (w * h)) ** 0.5, 1)
+                VIDEOS[name] = video(name, n + state.get("upscaleExtra", 0), f"{math.ceil(w / 32 * k - 1e-6) * 32}x{math.ceil(h / 32 * k - 1e-6) * 32}")
+            elif face is not None:
                 w, h, n = probe(UPLOADED[face])
                 VIDEOS[name] = video(name, n + state.get("faceExtra", 0), f"{w}x{h}")
             else:

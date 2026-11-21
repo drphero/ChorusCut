@@ -428,7 +428,9 @@ QVariantMap Generator::refineOptions(int takeId, const QString& wanted) const {
     const int shotId = take["shot"].toInt();
     const auto shot = plan->item("shot", shotId);
     QVariantMap out{{"take", takeId}, {"shot", shotId}, {"lipSync", take["locked"].toBool()}, {"frames", take["frames"]},
-                    {"workflows", flows->ready("take-face")}};
+                    {"workflows", flows->ready("take-face")}, {"width", take["width"]}, {"height", take["height"]},
+                    {"upscaled", take.contains("upscaledUrl") && !take["upscaledMissing"].toBool()},
+                    {"upscaledWidth", take["upscaledWidth"]}, {"upscaledHeight", take["upscaledHeight"]}};
     const QString workflow = !wanted.isEmpty() && flows->serves(wanted, "take-face") ? wanted : flows->forUse("take-face");
     out["workflow"] = workflow;
     out["workflowName"] = workflow.isEmpty() ? QString() : flows->nameOf(workflow);
@@ -474,6 +476,134 @@ QVariantMap Generator::refineOptions(int takeId, const QString& wanted) const {
     out["why"] = why;
     out["ready"] = why.isEmpty();
     return out;
+}
+
+int Generator::rootTake(int take) const {
+    auto plan = editor->plan();
+    for (int guard = 0; guard < 64; ++guard) {
+        const auto g = plan->item("take", take)["generation"].toMap();
+        if (g["use"] != "take-face" || plan->item("take", g["source"].toInt()).isEmpty()) return take;
+        take = g["source"].toInt();
+    }
+    return take;
+}
+
+QVariantMap Generator::upscaleOptions(int takeId, const QString& wanted) const {
+    auto plan = editor->plan();
+    auto flows = editor->workflows();
+    const auto take = plan->item("take", takeId);
+    if (take.isEmpty()) return {{"ready", false}, {"why", "That take is gone."}, {"pictures", QVariantList{}}, {"workflows", QVariantList{}}};
+    const int shotId = take["shot"].toInt();
+    int number = 0;
+    for (const auto& t : plan->takesFor(shotId)) if (t.toMap()["id"].toInt() == takeId) number = t.toMap()["number"].toInt();
+    QVariantMap out{{"take", takeId}, {"shot", shotId}, {"number", number}, {"lipSync", take["locked"].toBool()}, {"frames", take["frames"]},
+                    {"width", take["width"]}, {"height", take["height"]}, {"upscaled", take.contains("upscaledUrl")}, {"hd", take["hd"]},
+                    {"workflows", flows->ready("take-upscale")}};
+    const QString workflow = !wanted.isEmpty() && flows->serves(wanted, "take-upscale") ? wanted : flows->forUse("take-upscale");
+    out["workflow"] = workflow;
+    out["workflowName"] = workflow.isEmpty() ? QString() : flows->nameOf(workflow);
+    // The prompt and pictures the take was made with: a refined take's are its chain's first take's.
+    const auto made = plan->item("take", rootTake(takeId))["generation"].toMap();
+    out["prompt"] = made["prompt"].toString();
+    QVariantList pictures;
+    int gone = 0;
+    for (const auto& v : made["inputs"].toList()) {
+        const auto ref = plan->item("reference", v.toInt());
+        if (ref.isEmpty() || ref["missing"].toBool()) { ++gone; continue; }
+        pictures.append(QVariantMap{{"id", ref["id"]}, {"url", ref["url"]}, {"viewName", ref["viewName"]}, {"whose", ref["whose"]},
+                                    {"width", ref["width"]}, {"height", ref["height"]},
+                                    {"label", workflow.isEmpty() ? QString("<Picture %1>").arg(pictures.size() + 1) : pictureLabel(workflow, pictures.size() + 1)}});
+    }
+    out["pictures"] = pictures;
+    out["gone"] = gone;
+    for (const auto& v : workflow.isEmpty() ? QVariantList{} : flows->settings(workflow))
+        if (v.toMap()["label"] == "Megapixels" || v.toMap()["input"].toString().contains("megapixels"))
+            out["megapixels"] = QVariantMap{{"key", v.toMap()["key"]}, {"value", v.toMap()["value"]}};
+    QString why;
+    if (workflow.isEmpty()) why = "Set up a workflow for upscaling takes (Workflows…): H3 Upscale, exported in the Export (API) format.";
+    else if (!QFileInfo::exists(editor->current()->dir.filePath(take["file"].toString()))) why = "This take's video file is missing.";
+    else if (out["prompt"].toString().trimmed().isEmpty()) why = "There is no prompt recorded for this take, so it can't be re-drawn as it was made.";
+    else if (pictures.size() > flows->pictureCount(workflow)) why = QString("%1 takes at most %2 pictures; this take was made with %3.").arg(flows->nameOf(workflow)).arg(flows->pictureCount(workflow)).arg(pictures.size());
+    out["why"] = why;
+    out["ready"] = why.isEmpty();
+    return out;
+}
+
+QVariantList Generator::cutToUpscale() const {
+    auto plan = editor->plan();
+    QVariantList out;
+    for (const auto& v : plan->timelineTakes()) {
+        const int take = v.toMap()["take"].toInt();
+        const auto t = plan->item("take", take);
+        if (t["hd"].toBool()) continue;
+        const int shot = t["shot"].toInt();
+        int number = 0;
+        for (const auto& x : plan->takesFor(shot)) if (x.toMap()["id"].toInt() == take) number = x.toMap()["number"].toInt();
+        out.append(QVariantMap{{"take", take}, {"shot", shot}, {"shotNumber", plan->shot(shot)["number"]}, {"number", number},
+                               {"frames", t["frames"]}, {"seconds", t["frames"].toDouble() / (t["fps"].toDouble() > 0 ? t["fps"].toDouble() : 24)}});
+    }
+    return out;
+}
+
+QString Generator::upscale(const QVariantList& takes, const QVariantMap& o) {
+    auto flows = editor->workflows();
+    if (takes.isEmpty()) return "Choose the takes to upscale.";
+    if (!ensureTable()) return "Could not record the job in the project.";
+    constexpr qint64 kMaxSeed = (qint64(1) << 53) - 1;
+    qint64 seed = -1;
+    const QString given = o.value("seed").toString().trimmed();
+    if (!given.isEmpty()) {
+        bool ok = false;
+        seed = given.toLongLong(&ok);
+        if (!ok || seed < 0 || seed > kMaxSeed) return "The seed must be a whole number from 0 to " + QString::number(kMaxSeed) + ".";
+    }
+    // Every take is checked before any is queued.
+    QList<QVariantMap> ready;
+    for (const auto& v : takes) {
+        const auto opts = upscaleOptions(v.toInt(), o.value("workflow").toString());
+        if (!opts["ready"].toBool()) {
+            const auto shot = editor->plan()->shot(opts["shot"].toInt());
+            return opts["shot"].toInt() ? QString("Shot %1, take %2: %3").arg(shot["number"].toInt()).arg(opts["number"].toInt()).arg(opts["why"].toString()) : opts["why"].toString();
+        }
+        ready << opts;
+    }
+    const QString workflow = ready.first()["workflow"].toString();
+    QString error;
+    const QJsonObject chosen = flows->checkValues(workflow, o.value("settings").toMap(), error);
+    if (!error.isEmpty()) return error;
+    if (o.contains("keep")) { error = keepSettings(workflow, o.value("keep").toMap()); if (!error.isEmpty()) return error; }
+    QJsonArray shown;
+    QJsonObject used;
+    for (const auto& v : flows->settings(workflow)) {
+        const auto st = v.toMap();
+        const QJsonValue value = chosen.contains(st["key"].toString()) ? chosen[st["key"].toString()] : QJsonValue::fromVariant(st["value"]);
+        used[st["key"].toString()] = value;
+        shown.append(QJsonObject{{"key", st["key"].toString()}, {"label", st["label"].toString()}, {"value", value}});
+    }
+    QList<int> made;
+    for (const auto& opts : ready) {
+        Job job;
+        job.id = ++serial;
+        job.owner = "shot";
+        job.ownerId = opts["shot"].toInt();
+        job.use = "take-upscale";
+        job.workflow = workflow;
+        job.workflowName = flows->nameOf(workflow);
+        job.prompt = opts["prompt"].toString();
+        for (const auto& p : opts["pictures"].toList()) job.inputs << p.toMap()["id"].toInt();
+        job.what = QString("Take %1").arg(opts["number"].toInt());
+        job.hasSeed = flows->hasSlot(workflow, "seed");
+        job.seed = seed >= 0 ? seed : qint64(QRandomGenerator::global()->bounded(quint64(1) << 48));
+        job.settings = used;
+        job.shown = shown;
+        job.aspectChosen = true;
+        job.source = opts["take"].toInt();
+        list.append(job);
+        say(list.last(), "uploading", "Preparing…");
+        made << job.id;
+    }
+    withInfo(workflow, [this, made] { for (int id : made) startRefine(id); });
+    return {};
 }
 
 QString Generator::refineFaces(int takeId, const QVariantList& passes, const QVariantMap& o) {
@@ -539,6 +669,7 @@ QString Generator::refineFaces(int takeId, const QVariantList& passes, const QVa
         job.aspectChosen = true;
         job.source = i == 0 ? takeId : 0;
         job.after = previous;
+        job.fromUpscaled = i == 0 && o.value("fromUpscaled").toBool() && opts["upscaled"].toBool();
         list.append(job);
         if (i == 0) { first = job.id; say(list.last(), "uploading", "Preparing…"); }
         else say(list.last(), "waiting", "Waits for " + people.value(passes[i - 1].toMap()["character"].toInt())["name"].toString() + "'s face, then refines that take");
@@ -555,19 +686,24 @@ void Generator::startRefine(int id) {
     auto project = editor->current();
     const auto take = plan->item("take", job->source);
     if (take.isEmpty()) { failJob(id, "The take to refine was removed."); return; }
-    const QString video = project->dir.filePath(take["file"].toString());
-    if (!QFileInfo::exists(video)) { failJob(id, "The take's video file is missing."); return; }
-    const auto face = plan->item("reference", job->face);
-    if (face.isEmpty()) { failJob(id, "The picture to find the face by was removed."); return; }
-    // The refined take lands where its source is, as long, and as locked to the song.
+    // The draft, or the take's upscaled version when the refine works from it.
+    const bool up = job->fromUpscaled && take.contains("upscaledUrl");
+    const QString video = up ? QUrl(take["upscaledUrl"].toString()).toLocalFile() : project->dir.filePath(take["file"].toString());
+    if (!QFileInfo::exists(video)) { failJob(id, up ? "The take's upscaled version is missing." : "The take's video file is missing."); return; }
+    // The result lands where its source is, as long, and as locked to the song.
     job->anchor = take["anchor"].toInt();
     job->frames = take["frames"].toInt();
     job->takeFps = take["fps"].toDouble() > 0 ? take["fps"].toDouble() : 24;
     job->locked = take["locked"].toBool();
-    job->width = take["width"].toInt();
-    job->height = take["height"].toInt();
+    job->width = up ? take["upscaledWidth"].toInt() : take["width"].toInt();
+    job->height = up ? take["upscaledHeight"].toInt() : take["height"].toInt();
     job->handles = take["generation"].toMap().value("handles", kDefaultHandles).toDouble();
-    QStringList files{video, project->dir.filePath(face["file"].toString())};
+    QStringList files{video};
+    if (job->use == "take-face") {
+        const auto face = plan->item("reference", job->face);
+        if (face.isEmpty()) { failJob(id, "The picture to find the face by was removed."); return; }
+        files << project->dir.filePath(face["file"].toString());
+    }
     for (int r : job->inputs) {
         const auto ref = plan->item("reference", r);
         if (ref.isEmpty()) { failJob(id, "A picture picked for this pass was removed."); return; }
@@ -576,7 +712,7 @@ void Generator::startRefine(int id) {
     // Takes carry no sound: a sung take gets the song under it, any other silence of its length.
     const QString folder = project->dir.filePath("Jobs");
     QDir().mkpath(folder);
-    job->excerpt = QDir(folder).filePath(QString("face-shot%1-take%2-%3.wav").arg(job->ownerId).arg(job->source).arg(job->id));
+    job->excerpt = QDir(folder).filePath(QString("%1-shot%2-take%3-%4.wav").arg(job->use == "take-face" ? "face" : "upscale").arg(job->ownerId).arg(job->source).arg(job->id));
     const double seconds = job->frames / job->takeFps;
     const QString problem = job->locked ? editor->writeExcerpt(job->anchor / editor->fps(), seconds, job->excerpt) : writeSilence(seconds, job->excerpt);
     if (!problem.isEmpty()) { failJob(id, problem); return; }
@@ -744,6 +880,34 @@ void Generator::addTake(int id, const QString& path, const QString& faces) {
     const auto probe = Editor::probeVideo(path, thumb);
     if (probe.isEmpty()) { failJob(id, "The take ComfyUI made can't be read."); return; }
     const bool face = job->use == "take-face";
+    if (job->use == "take-upscale") {
+        // An upscaled version must have every frame of its take, and its shape.
+        const double want = job->height ? double(job->width) / job->height : 0, got = probe["height"].toInt() ? probe["width"].toDouble() / probe["height"].toDouble() : 0;
+        // Its shape within 3%: the upscaler rounds each side up to a step of 32.
+        if (probe["frames"].toInt() != job->frames || want <= 0 || std::abs(got / want - 1) > 0.03) {
+            failJob(id, QString("The upscaled take is %1 × %2, %3 frames; the take is %4 × %5, %6 frames, so it would not replace it frame for frame. It is in the project's Jobs folder.")
+                            .arg(probe["width"].toInt()).arg(probe["height"].toInt()).arg(probe["frames"].toInt()).arg(job->width).arg(job->height).arg(job->frames));
+            return;
+        }
+        QVariantMap generation{{"workflow", job->workflow}, {"workflowName", job->workflowName}, {"use", job->use}, {"prompt", job->prompt}, {"promptId", job->promptId}};
+        if (job->hasSeed) generation["seed"] = double(job->seed);
+        if (!job->shown.isEmpty()) generation["settings"] = job->shown.toVariantList();
+        QVariantList inputs;
+        for (int i : job->inputs) inputs << i;
+        generation["inputs"] = inputs;
+        const auto r = plan->run({{"op", "take.upscale"}, {"id", job->source}, {"path", path}, {"thumb", thumb}, {"width", probe["width"]}, {"height", probe["height"]},
+                                  {"frames", probe["frames"]}, {"generation", generation}});
+        if (!r.value("ok").toBool()) { failJob(id, r.value("error").toString()); return; }
+        QFile::remove(path);
+        QFile::remove(thumb);
+        if (!job->excerpt.isEmpty()) QFile::remove(job->excerpt);
+        record(*job, "done");
+        const int ownerId = job->ownerId;
+        for (int i = 0; i < list.size(); ++i) if (list[i].id == id) { list.removeAt(i); break; }
+        emit changed();
+        emit finished("shot", ownerId, "take-upscale", true, {}, 1);
+        return;
+    }
     // A refined take must fit exactly where its source plays.
     if (face && (probe["frames"].toInt() != job->frames || probe["width"].toInt() != job->width || probe["height"].toInt() != job->height)) {
         failJob(id, QString("The refined take is %1 × %2, %3 frames; the take it came from is %4 × %5, %6 frames, so it would not fit in its place. It is in the project's Jobs folder.")
@@ -758,7 +922,11 @@ void Generator::addTake(int id, const QString& path, const QString& faces) {
     QVariantList inputs;
     for (int i : job->inputs) inputs << i;
     generation["inputs"] = inputs;
-    if (face) { generation["source"] = job->source; generation["character"] = job->character; generation["face"] = job->face; }
+    if (face) {
+        generation["source"] = job->source; generation["character"] = job->character; generation["face"] = job->face;
+        // Made at the upscaled size: from an upscaled version, or from a take that already was.
+        generation["fromUpscaled"] = job->fromUpscaled || plan->item("take", job->source)["generation"].toMap()["fromUpscaled"].toBool();
+    }
     const double rate = probe["fps"].toDouble() > 0 ? probe["fps"].toDouble() : job->takeFps;
     const auto r = plan->run({{"op", "take.add"}, {"shot", job->ownerId}, {"path", path}, {"thumb", thumb}, {"faces", faces},
                               {"frames", probe["frames"].toInt() > 0 ? probe["frames"].toInt() : job->frames}, {"fps", rate},
@@ -985,14 +1153,14 @@ void Generator::submit(int id, const QStringList& names) {
     v.settings = job->settings;
     v.optional = optionalFor(job->workflow);
     v.prefix = "ChorusCut/reference";
-    if (job->use == "take-face") {
-        // Uploaded as: the take, the face to find, the pictures, the sound.
+    if (job->use == "take-face" || job->use == "take-upscale") {
+        // Uploaded as: the take, the face to find (a refine), the pictures, the sound.
         QStringList rest = names;
         v.video = rest.takeFirst();
-        v.face = rest.takeFirst();
+        if (job->use == "take-face") v.face = rest.takeFirst();
         v.audio = rest.takeLast();
         v.pictures = rest;
-        v.prefix = "ChorusCut/face";
+        v.prefix = job->use == "take-face" ? "ChorusCut/face" : "ChorusCut/upscale";
     } else if (job->owner == "shot") {
         // The song excerpt goes up last, after the pictures.
         if (job->use == "take-sync" && !v.pictures.isEmpty()) v.audio = v.pictures.takeLast();
@@ -1003,7 +1171,7 @@ void Generator::submit(int id, const QStringList& names) {
     // Locations take the video's frame; people and looks a portrait; props a square. The workflow's own size
     // sets the scale its model prefers.
     const QSize base = flows->size(job->workflow);
-    if (base.width() > 0 && base.height() > 0 && job->use != "take-face") {
+    if (base.width() > 0 && base.height() > 0 && job->use != "take-face" && job->use != "take-upscale") {
         double ratio = job->owner == "prop" ? 1.0 : 3.0 / 4.0;
         if (job->owner == "location" || job->owner == "shot") {
             const QString aspect = editor->plan()->concept()["fields"].toMap()["aspect"].toString();
@@ -1060,7 +1228,8 @@ void Generator::submit(int id, const QStringList& names) {
                                  {"inputs", [&] { QJsonArray a; for (int i : job->inputs) a.append(i); return a; }()},
                                  {"frames", job->frames}, {"takeFps", job->takeFps}, {"anchor", job->anchor}, {"locked", job->locked},
                                  {"handles", job->handles}, {"source", job->source}, {"character", job->character}, {"face", job->face},
-                                 {"what", job->what}, {"width", job->width}, {"height", job->height}, {"previewNode", job->previewNode}};
+                                 {"what", job->what}, {"width", job->width}, {"height", job->height}, {"previewNode", job->previewNode},
+                                 {"fromUpscaled", job->fromUpscaled}};
         for (const QVariant& value : {QVariant(job->promptId), QVariant(job->owner == "shot" ? "take" : "reference"), QVariant(editor->comfy()->url()), QVariant(""), QVariant(""),
                                       QVariant(QDateTime::currentSecsSinceEpoch()), QVariant("queued"),
                                       QVariant(QString::fromUtf8(QJsonDocument(detail).toJson(QJsonDocument::Compact))), QVariant(clientId)})
@@ -1294,13 +1463,18 @@ void Generator::retry(int id) {
     for (const auto& v : job->shown) settings[v.toObject()["key"].toString()] = v.toObject()["value"].toVariant();
     QVariantList inputs;
     for (int i : job->inputs) inputs << i;
+    if (job->use == "take-upscale") {
+        const QString why = upscale({job->source}, {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}});
+        if (why.isEmpty()) dismiss(id); else say(*find(id), "failed", why);
+        return;
+    }
     if (job->use == "take-face") {
         // The same pass again, on the take it refined (or was to refine).
         const int source = job->source ? job->source : 0;
         QVariantList pictures;
         for (int i : job->inputs) pictures << i;
         const QString why = source ? refineFaces(source, {QVariantMap{{"character", job->character}, {"face", job->face}, {"pictures", pictures}, {"prompt", job->prompt}}},
-                                                 {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}})
+                                                 {{"workflow", job->workflow}, {"seed", QString::number(job->seed)}, {"settings", settings}, {"fromUpscaled", job->fromUpscaled}})
                                    : "The take this pass was to refine was never made.";
         if (why.isEmpty()) dismiss(id); else say(*find(id), "failed", why);
         return;
@@ -1359,6 +1533,7 @@ void Generator::resume() {
         job.width = d["width"].toInt();
         job.height = d["height"].toInt();
         job.previewNode = d["previewNode"].toString();
+        job.fromUpscaled = d["fromUpscaled"].toBool();
         if (q.value(1).toString() != editor->comfy()->url()) {
             job.state = "failed";
             job.text = "Started on " + q.value(1).toString() + ", which is not the current ComfyUI.";

@@ -125,6 +125,8 @@ void Notifier::openSystemSettings() {
 }
 
 void Notifier::dismissLatest() {
+    upscales = 0;
+    upscaleShots.clear();
     if (banner.isEmpty()) return;
     banner.clear();
     emit latestChanged();
@@ -151,7 +153,16 @@ void Notifier::jobFinished(const QString& owner, int ownerId, const QString& use
     }
     QString title, body, tag, about = owner;
     int aboutId = ownerId;
-    if (ok && take) {
+    if (ok && use == "take-upscale") {
+        // Upscales add up until the notice is dismissed: one notice, one macOS notification.
+        ++upscales;
+        upscaleShots.insert(ownerId);
+        tag = "chorus-upscale";
+        title = upscales > 1 ? QString("%1 takes upscaled").arg(upscales) : what + ": take upscaled";
+        body = upscales > 1 ? QString("In %1 shots. Render uses them; switch the viewer to Upscaled to watch them.").arg(upscaleShots.size())
+                            : "Render uses it; switch the viewer to Upscaled to watch it.";
+        if (upscaleShots.size() > 1) { about.clear(); aboutId = 0; }
+    } else if (ok && take) {
         // Several takes waiting (several shots generating while the user was away): one notice
         // that counts them all, and Show goes through them one at a time.
         const auto waiting = editor->newTakes();

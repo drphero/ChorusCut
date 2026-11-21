@@ -96,6 +96,14 @@ Rectangle {
             ToolTip.text: "Redraw a face on this take, for people far from the camera"
         }
         Tab {
+            objectName: "reviewUpscale"
+            visible: bar.auditioning && bar.take !== null
+            text: bar.take && bar.take.upscaledUrl ? "Upscaled ✓" : "Upscale…"
+            onClicked: bar.win.openUpscale(bar.take.id)
+            ToolTip.text: bar.take && bar.take.upscaledUrl ? "This take has an upscaled version (" + bar.take.upscaledWidth + " × " + bar.take.upscaledHeight + "). Click to make another."
+                                                           : "Make a larger version of this take; Render uses it"
+        }
+        Tab {
             objectName: "reviewNext"
             visible: bar.others.length > 0
             text: "Next new take ▸" + (bar.others.length > 1 ? " " + bar.others.length : "")
@@ -106,7 +114,8 @@ Rectangle {
             objectName: "reviewDone"
             visible: !bar.auditioning || (bar.take !== null && bar.take.chosen)
             text: "Done"
-            onClicked: { editor.endAudition(); bar.win.reviewing = false }
+            // The review ends first: ending the audition hides the bar under this button.
+            onClicked: { const w = bar.win; if (w) w.reviewing = false; editor.endAudition() }
         }
     }
 }

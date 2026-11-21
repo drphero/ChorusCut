@@ -91,6 +91,9 @@ class Editor : public QObject {
     // The take the viewer plays in its shot's place without choosing it: {shot, take}, or empty.
     // Only the viewer: renders and exports play the chosen takes.
     Q_PROPERTY(QVariantMap audition READ audition NOTIFY auditionChanged)
+    // The viewer plays takes' upscaled versions where they have one (else drafts). Kept with the
+    // project, like the track switches; renders use upscaled versions whatever it says.
+    Q_PROPERTY(bool viewUpscaled READ viewUpscaled WRITE setViewUpscaled NOTIFY tracksChanged)
 public:
     Editor();
     Lyrics* lyrics() { return &lyricState; }
@@ -156,6 +159,8 @@ public:
     QStringList mutedTracks() const { return muted; }
     Q_INVOKABLE void setTrackHidden(const QString& track, bool hide);
     Q_INVOKABLE void setTrackMuted(const QString& track, bool mute);
+    bool viewUpscaled() const { return upscaledView; }
+    void setViewUpscaled(bool on);
     QVariantList newTakes() const;
     QVariantMap audition() const;
     // Plays take in its shot's place in the viewer. With play, the shot plays and repeats until
@@ -182,6 +187,7 @@ public:
         QString fit;               // "" (playback), "fill", "fit" or "stretch"
         QHash<int, QString> cards; // shot id -> placeholder picture
         QHash<int, int> pick;      // shot id -> take auditioned in place of the chosen one (viewer only)
+        bool upscaled = false;     // takes' upscaled versions where they have one
     };
     void assemble(Mlt::Tractor& tractor, Mlt::Profile& profile, const Cut& cut);
     Renderer* renderer() { return render; }
@@ -212,6 +218,7 @@ signals:
 private:
     QList<int> fresh;                       // new take ids, as they arrived
     int auditionShot = 0, auditionTakeId = 0;
+    bool auditionWasChosen = false;   // the take was already the chosen one when watching began
     int watchTake = 0, watchFrames = 0;     // the new take playing in the cut, and for how long
     QVariantList builtTakes;                // what the take tracks were built from
     QHash<int, int> auditionPick() const;
@@ -222,6 +229,7 @@ private:
     // Rebuilds the cut where the playhead is, playing on if it was playing.
     void rebuildPlaying();
     QStringList hidden, muted;
+    bool upscaledView = false;
     QImage shown;
     void loadTracks();
     void saveTracks();

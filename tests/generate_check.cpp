@@ -309,9 +309,72 @@ static int liveFace(int argc, char** argv) {
     return 0;
 }
 
+// --live-upscale URL PROJECT_COPY WORKFLOW TAKES OUT_DIR: upscales takes (comma-separated plan ids)
+// through a real ComfyUI with the dialog's defaults (the prompt and pictures each was made with),
+// and copies each upscaled version to OUT_DIR. Uses its own workflow library.
+static int liveUpscale(int argc, char** argv) {
+    if (argc != 7) { qCritical() << "usage: ChorusCutGenerateCheck --live-upscale URL PROJECT_COPY WORKFLOW TAKES OUT_DIR"; return 1; }
+    QTemporaryDir scratch;
+    qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
+    qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
+    qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
+    QGuiApplication app(argc, argv);
+    app.setOrganizationName("Chorus Cut Tests");
+    app.setApplicationName("Generate Live");
+    Mlt::Factory::init();
+    Editor editor;
+    if (!editor.openProject(QUrl::fromLocalFile(QFileInfo(argv[3]).absoluteFilePath()))) return fail(2, editor.status());
+    editor.comfy()->configure(argv[2], {}, true);
+    auto flows = editor.workflows();
+    auto gen = editor.generator();
+    auto plan = editor.plan();
+    const QString workflow = flows->importFile(QUrl::fromLocalFile(QFileInfo(argv[4]).absoluteFilePath()))["id"].toString();
+    qInfo().noquote() << "imported" << workflow << flows->get(workflow)["use"].toString() << "ready" << flows->get(workflow)["ready"].toBool()
+                      << flows->get(workflow)["problems"].toStringList().join(" ");
+    if (!flows->get(workflow)["ready"].toBool()) return fail(230, "the workflow is not ready");
+    gen->fetchChoices(workflow);
+    QTest::qWait(3000);
+    QVariantList takes;
+    for (const QString& t : QString(argv[5]).split(',')) {
+        takes << t.toInt();
+        const auto o = gen->upscaleOptions(t.toInt());
+        qInfo().noquote() << "take" << t << o["width"].toInt() << "x" << o["height"].toInt() << o["frames"].toInt() << "frames, lip-sync" << o["lipSync"].toBool()
+                          << "pictures" << json(o["pictures"]).count("\"id\"") << "prompt" << o["prompt"].toString().left(80) << "why" << o["why"].toString();
+    }
+    QElapsedTimer clock;
+    clock.start();
+    if (const QString why = gen->upscale(takes); !why.isEmpty()) return fail(231, why);
+    QHash<int, QString> last;
+    while (clock.elapsed() < 120 * 60000) {
+        QTest::qWait(1000);
+        if (gen->jobs().isEmpty()) break;
+        for (const auto& j : gen->jobs()) {
+            const QString text = j.toMap()["what"].toString() + " " + j.toMap()["state"].toString() + ": " + j.toMap()["text"].toString();
+            const int id = j.toMap()["id"].toInt();
+            if (text != last.value(id)) { qInfo().noquote() << int(clock.elapsed() / 1000) << "s" << text; last[id] = text; }
+            if (j.toMap()["state"] == "failed") return fail(232, j.toMap()["text"].toString());
+        }
+    }
+    const QDir out(QFileInfo(argv[6]).absoluteFilePath());
+    QDir().mkpath(out.path());
+    for (const auto& v : takes) {
+        const auto t = plan->item("take", v.toInt());
+        if (t["upscaledUrl"].toString().isEmpty()) return fail(233, "take " + v.toString() + " has no upscaled version");
+        const QString from = QUrl(t["upscaledUrl"].toString()).toLocalFile();
+        const QString to = out.filePath(QString("take%1-upscaled.%2").arg(v.toInt()).arg(QFileInfo(from).suffix()));
+        QFile::remove(to);
+        QFile::copy(from, to);
+        qInfo().noquote() << "take" << v.toInt() << "upscaled to" << t["upscaledWidth"].toInt() << "x" << t["upscaledHeight"].toInt() << "->" << to;
+    }
+    qInfo().noquote() << "done after" << clock.elapsed() / 1000.0 << "s";
+    qInfo() << "PASS live upscale";
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && QString(argv[1]) == "--live") return live(argc, argv);
     if (argc > 1 && QString(argv[1]) == "--live-face") return liveFace(argc, argv);
+    if (argc > 1 && QString(argv[1]) == "--live-upscale") return liveUpscale(argc, argv);
     if (argc > 1 && QString(argv[1]) == "--live-take") return liveTake(argc, argv);
     if (argc != 4) { qCritical() << "usage: ChorusCutGenerateCheck PROJECT_COPY STUB_SCRIPT FIXTURES_DIR"; return 1; }
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -1704,7 +1767,11 @@ int main(int argc, char** argv) {
                 return fail(165, "the bar for a chosen take: " + textOf("reviewText"));
             click(find(window, "reviewDone"));
             QTest::qWait(150);
-            if (find(window, "takeReview") || !editor.audition().isEmpty() || window->property("reviewing").toBool()) return fail(165, "Done left the bar up");
+            if (find(window, "takeReview") || !editor.audition().isEmpty() || window->property("reviewing").toBool()) {
+                QStringList open;
+                for (const char* n : {"upscalePopup", "refinePopup", "takePopup"}) if (auto o = window->findChild<QObject*>(n)) if (o->property("opened").toBool()) open << n;
+                return fail(165, "Done left the bar up; open: " + open.join(",") + " audition " + json(editor.audition()) + " reviewing " + QString::number(window->property("reviewing").toBool()) + " new " + json(editor.newTakes()) + " bar " + textOf("reviewText"));
+            }
             if (editor.playing()) editor.togglePlay();
             // One take finishing: its own notice; Show plays it and Use chooses it.
             window->setProperty("selection", QVariant::fromValue(nullptr));
@@ -1899,10 +1966,136 @@ int main(int argc, char** argv) {
                     return fail(179, "a refined take of the wrong length was not refused: " + json(gen->jobs()));
                 call("/_stub/mode", {{"mode", "finish"}, {"faceExtra", 0}}, true);
                 gen->dismiss(gen->jobs()[0].toMap()["id"].toInt());
+            // ---- Upscale: an upscaled version kept with its take, re-drawn with the prompt and
+            // pictures the take was made with; Render and the switched viewer use it.
+                auto upImported = flows->importFile(QUrl::fromLocalFile(fixtures.filePath("take_upscale_api.json")));
+                const QString upId = upImported["id"].toString();
+                const auto upFlow = flows->get(upId);
+                QStringList upMapped;
+                for (const auto& v : upFlow["inputs"].toList()) {
+                    const auto m = v.toMap();
+                    if (!m["slot"].toString().isEmpty()) upMapped << m["key"].toString() + "=" + m["slot"].toString() + (m["slot"] == "picture" ? m["index"].toString() : "");
+                }
+                std::sort(upMapped.begin(), upMapped.end());
+                QStringList upWant = QString("14/prompt=prompt 16/image=picture0 17/image=picture1 18/image=picture2 19/image=picture3 20/image=picture4 21/image=picture5 "
+                                           "24/noise_seed=seed 25/sampler_name=setting 26/denoise=setting 26/scheduler=setting 26/steps=setting 29/filename_prefix=prefix "
+                                           "32/value=setting 33/audio=audio 5/video=video").split(' ');
+                std::sort(upWant.begin(), upWant.end());
+                QString sizeLabel;
+                for (const auto& v : flows->settings(upId)) if (v.toMap()["key"] == "32/value") sizeLabel = v.toMap()["label"].toString();
+                if (upFlow["use"] != "take-upscale" || !upFlow["ready"].toBool() || upMapped != upWant || sizeLabel != "Megapixels")
+                    return fail(180, "the upscale workflow: " + upFlow["use"].toString() + " " + upFlow["problems"].toStringList().join(" | ") + " :: " + upMapped.join(" ") + " :: " + sizeLabel);
+                gen->fetchChoices(upId);
+                // Shot 2's chosen take (take 3), by real input: its menu, Upscale….
+                int chosenNumber = 0, chosenId = 0;
+                for (const auto& t : plan->takesFor(other)) if (t.toMap()["chosen"].toBool()) { chosenNumber = t.toMap()["number"].toInt(); chosenId = t.toMap()["id"].toInt(); }
+                const auto draft = plan->item("take", chosenId);
+                window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", other}, {"start", laterLine["start"]}, {"end", laterLine["end"]}});
+                QTest::qWait(150);
+                auto tile = find(window, QString("shotTake%1").arg(chosenNumber));
+                if (!tile) return fail(181, "no tile for the chosen take");
+                scrollIntoView(tile);
+                QTest::mouseClick(window, Qt::RightButton, {}, center(tile));
+                clickMenuItem(tile, "takeUpscale");
+                auto upPopup = window->findChild<QObject*>("upscalePopup");
+                if (!upPopup || !waitFor([&] { return upPopup->property("opened").toBool(); }, 1500)) return fail(181, "Upscale… did not open the dialog");
+                QTest::qWait(200);
+                if (!textOf("upscaleSize").contains("96 × 54  →  about 1888 × 1088") || textOf("upscalePrompt") != draft["generation"].toMap()["prompt"].toString())
+                    return fail(181, "the upscale dialog: " + textOf("upscaleSize") + " | " + textOf("upscalePrompt").left(80));
+                capture("upscale-dialog");
+                mode("finish");
+                click(find(window, "upscaleGo"));
+                if (upPopup->property("opened").toBool()) return fail(182, "Upscale did not start: " + textOf("upscaleWhy"));
+                if (!waitFor([&] { return !plan->item("take", chosenId)["upscaledUrl"].toString().isEmpty() && gen->jobs().isEmpty(); }, 30000))
+                    return fail(182, "the upscaled version did not arrive: " + json(gen->jobs()));
+                const QJsonObject upGraph = stubLog()["prompts"].toArray().last().toObject();
+                const auto madeWith = draft["generation"].toMap()["inputs"].toList();
+                QJsonObject upSong;
+                for (const auto& u : stubLog()["uploads"].toArray()) if (u.toObject()["name"] == input(upGraph, "33", "audio").toString()) upSong = u.toObject();
+                if (input(upGraph, "5", "video") != uploadName(projectDir.filePath(draft["file"].toString())) || input(upGraph, "14", "prompt") != draft["generation"].toMap()["prompt"].toString()
+                    || input(upGraph, "16", "image") != uploadName(projectDir.filePath(plan->item("reference", madeWith.value(0).toInt())["file"].toString()))
+                    || upGraph.contains(QString::number(16 + madeWith.size())) || input(upGraph, "29", "filename_prefix") != "ChorusCut/upscale" || input(upGraph, "32", "value").toDouble() != 2
+                    || upSong["silent"].toBool() || upSong["wavBytes"].toInt() != 44 + int(std::llround(draft["frames"].toInt() / 24.0 * 48000)) * 4)
+                    return fail(183, "the upscale graph: " + QString::fromUtf8(QJsonDocument(upGraph).toJson(QJsonDocument::Compact)).left(1500));
+                const auto upTake = plan->item("take", chosenId);
+                if (upTake["upscaledWidth"].toInt() != 1888 || upTake["upscaledHeight"].toInt() != 1088 || !upTake["hd"].toBool() || !find(window, QString("shotTakeHd%1").arg(chosenNumber))
+                    || textOf("noticeTitle") != "Shot " + otherName + ": take upscaled" || plan->takesFor(other).size() != 6)
+                    return fail(184, "the upscaled version: " + json(upTake).left(600) + " | " + textOf("noticeTitle"));
+                editor.undo();
+                if (plan->item("take", chosenId).contains("upscaledUrl")) return fail(184, "undo did not take the upscaled version away");
+                editor.redo();
+                // The viewer plays drafts until switched; Render uses upscaled versions.
+                const int midOther = (plan->shot(other)["start"].toInt() + plan->shot(other)["end"].toInt()) / 2;
+                const QColor draftColour = colourAt(midOther);
+                click(find(window, "viewerUpscaled"));
+                const QColor upColour = colourAt(midOther);
+                if (!editor.viewUpscaled() || !upColour.isValid() || upColour == draftColour) return fail(185, "switching the viewer to Upscaled did not play the upscaled version");
+                click(find(window, "viewerUpscaled"));
+                if (editor.viewUpscaled() || colourAt(midOther) != draftColour) return fail(185, "switching back to Draft");
+                bool renders = false;
+                for (const auto& v : plan->timelineTakes({}, true)) renders |= v.toMap()["take"].toInt() == chosenId && v.toMap()["upscaled"].toBool() && v.toMap()["width"].toInt() == 1888;
+                if (!renders || editor.renderer()->options()["upscaled"].toInt() < 1) return fail(185, "Render does not use the upscaled version: " + json(editor.renderer()->options()));
+                // A refined take is upscaled with the prompt and pictures of the take its chain started from.
+                const int refinedId = plan->takesFor(other)[3].toMap()["id"].toInt();
+                const auto refinedOpts = gen->upscaleOptions(refinedId);
+                QVariantList refinedPictures;
+                for (const auto& p : refinedOpts["pictures"].toList()) refinedPictures << p.toMap()["id"];
+                if (refinedOpts["prompt"] != plan->item("take", sourceId)["generation"].toMap()["prompt"] || refinedPictures != plan->item("take", sourceId)["generation"].toMap()["inputs"].toList())
+                    return fail(186, "a refined take's upscale options: " + json(refinedOpts).left(600));
+                // Refine faces on the upscaled version: the dialog asks, Upscaled first.
+                window->setProperty("selection", QVariantMap{{"kind", "shot"}, {"id", other}, {"start", laterLine["start"]}, {"end", laterLine["end"]}});
+                QTest::qWait(150);
+                tile = find(window, QString("shotTake%1").arg(chosenNumber));
+                scrollIntoView(tile);
+                QTest::mouseClick(window, Qt::RightButton, {}, center(tile));
+                clickMenuItem(tile, "takeRefine");
+                refinePopup = window->findChild<QObject*>("refinePopup");
+                if (!refinePopup || !waitFor([&] { return refinePopup->property("opened").toBool(); }, 1500)) return fail(187, "Refine faces… did not open");
+                QTest::qWait(200);
+                if (!find(window, "refineFromUpscaled") || !find(window, "refineFromUpscaled")->property("active").toBool() || !textOf("refineFromUpscaled").contains("1888 × 1088"))
+                    return fail(187, "the dialog does not offer the upscaled version first");
+                capture("refine-from-upscaled");
+                click(find(window, QString("refinePerson_%1").arg(jo)));
+                click(find(window, "refineGo"));
+                if (!waitFor([&] { return plan->takesFor(other).size() == 7 && gen->jobs().isEmpty(); }, 30000)) return fail(187, "the refine from the upscaled version did not arrive: " + json(gen->jobs()));
+                const auto bigRefine = plan->takesFor(other)[6].toMap();
+                if (input(stubLog()["prompts"].toArray().last().toObject(), "2", "video") != uploadName(QUrl(upTake["upscaledUrl"].toString()).toLocalFile())
+                    || bigRefine["width"].toInt() != 1888 || !bigRefine["hd"].toBool() || bigRefine.contains("upscaledUrl"))
+                    return fail(187, "the refine from the upscaled version: " + json(bigRefine).left(600));
+                // Upscale the cut…, from the Render dialog: the chosen takes without an upscaled version.
+                window->setProperty("selection", QVariant::fromValue(nullptr));
+                QTest::qWait(100);
+                click(find(window, "renderButton"));
+                auto renderPopup = window->findChild<QObject*>("renderPopup");
+                if (!renderPopup || !waitFor([&] { return renderPopup->property("opened").toBool(); }, 1500)) return fail(188, "the Render dialog did not open");
+                if (!textOf("renderUpscaled").isEmpty() && !find(window, "renderUpscaleCut")) return fail(188, "Render offers no way to upscale the cut");
+                const auto toDo = gen->cutToUpscale();
+                click(find(window, "renderUpscaleCut"));
+                if (!waitFor([&] { return upPopup->property("opened").toBool(); }, 1500) || toDo.isEmpty()) return fail(188, "Upscale the cut… did not open: " + json(toDo));
+                QTest::qWait(200);
+                // Only the first; the rest unticked.
+                for (int i = 1; i < toDo.size(); ++i) click(find(window, QString("upscaleCutTake_%1").arg(toDo[i].toMap()["take"].toInt())));
+                if (textOf("upscaleGo") != "Upscale") return fail(188, "unticking the rest: " + textOf("upscaleGo"));
+                const int cutTake = toDo[0].toMap()["take"].toInt();
+                click(find(window, "upscaleGo"));
+                if (!waitFor([&] { return !plan->item("take", cutTake)["upscaledUrl"].toString().isEmpty() && gen->jobs().isEmpty(); }, 30000))
+                    return fail(188, "the cut's take was not upscaled: " + json(gen->jobs()));
+                if (gen->cutToUpscale().size() != toDo.size() - 1) return fail(188, "the cut's list did not shrink");
+                // A version that doesn't have every frame is refused.
+                call("/_stub/mode", {{"mode", "finish"}, {"upscaleExtra", 17}}, true);
+                if (const QString why = gen->upscale({sourceId}); !why.isEmpty()) return fail(189, why);
+                if (!waitFor([&] { return !gen->jobs().isEmpty() && gen->jobs()[0].toMap()["state"] == "failed"; }, 30000)
+                    || !gen->jobs()[0].toMap()["text"].toString().contains("frame for frame"))
+                    return fail(189, "an upscale of the wrong length was not refused: " + json(gen->jobs()));
+                call("/_stub/mode", {{"mode", "finish"}, {"upscaleExtra", 0}}, true);
+                gen->dismiss(gen->jobs()[0].toMap()["id"].toInt());
+                flows->remove(upId);
+                editor.notifier()->dismissLatest();
                 flows->remove(faceId);
                 window->setProperty("selection", QVariant::fromValue(nullptr));
                 editor.notifier()->dismissLatest();
             }
+
         }
         flows->remove(syncId);
         flows->remove(refId);

@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QVariantMap>
+#include <QSet>
 
 class Editor;
 
@@ -69,6 +70,8 @@ private:
     QString allowed = "notAsked";
     QString refusal;
     QVariantMap banner;
+    int upscales = 0;          // upscales finished since the notice was last dismissed
+    QSet<int> upscaleShots;
     QString logPath;
     void set(bool& field, bool on, const char* key);
     // tag: a later notification with the same tag replaces this one in Notification Center.

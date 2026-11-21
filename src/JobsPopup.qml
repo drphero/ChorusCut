@@ -37,7 +37,7 @@ Popup {
         const v = j.view ? editor.plan.item("view", j.view) : null
         return name + (v && v.fields && v.fields.name ? " · " + v.fields.name : "")
     }
-    function kindOf(j) { return j.use === "take-face" ? "Refine · " + (j.what || "face") : j.use === "take-sync" ? "Lip-sync take" : j.owner === "shot" ? "Take" : "Picture" }
+    function kindOf(j) { return j.use === "take-upscale" ? "Upscale · " + (j.what || "take") : j.use === "take-face" ? "Refine · " + (j.what || "face") : j.use === "take-sync" ? "Lip-sync take" : j.owner === "shot" ? "Take" : "Picture" }
 
     component Small: Button {
         id: sb

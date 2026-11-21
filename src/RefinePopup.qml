@@ -28,6 +28,8 @@ Popup {
     property bool fixedSeed: false
     property string seedText: ""
     property string note: ""
+    // Work from the take's upscaled version (when it has one) rather than its draft.
+    property bool fromUpscaled: true
     signal workflowsRequested()
 
     readonly property var ropts: (editor.plan.revision, editor.workflows.list, editor.generator.choices,
@@ -62,6 +64,7 @@ Popup {
         note = ""
         fixedSeed = false
         seedText = ""
+        fromUpscaled = true
         const opts = editor.generator.refineOptions(takeId, "")
         const list = Array.from(opts.workflows || [])
         const found = list.find(w => w.id === opts.workflow) || list.find(w => w.isDefault) || list[0]
@@ -114,7 +117,7 @@ Popup {
             if (c.promptTouched && c.prompt.trim() !== (p.prompt || "").trim())
                 editor.plan.run({op: "set", kind: "character", id: p.character, fields: {facePrompt: c.prompt.trim()}})
         }
-        const options = {workflow: workflow, settings: values, keep: values}
+        const options = {workflow: workflow, settings: values, keep: values, fromUpscaled: ropts.upscaled && fromUpscaled}
         if (hasSeed && fixedSeed) options.seed = seedText
         note = editor.generator.refineFaces(take, passes, options)
         if (!note) close()
@@ -172,6 +175,17 @@ Popup {
                         value: rp.workflow
                         onPicked: v => rp.workflow = v
                     }
+                }
+                // A take with an upscaled version: which one the faces are redrawn on.
+                RowLayout {
+                    objectName: "refineFrom"
+                    visible: !!rp.ropts.upscaled
+                    Layout.fillWidth: true; spacing: 8
+                    Label { text: "Work from" }
+                    Small { objectName: "refineFromUpscaled"; text: "Upscaled · " + rp.ropts.upscaledWidth + " × " + rp.ropts.upscaledHeight
+                            active: rp.fromUpscaled; onClicked: rp.fromUpscaled = true }
+                    Small { objectName: "refineFromDraft"; text: "Draft · " + rp.ropts.width + " × " + rp.ropts.height
+                            active: !rp.fromUpscaled; onClicked: rp.fromUpscaled = false }
                 }
                 Text {
                     Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#8fa0a4"; font.pixelSize: 12

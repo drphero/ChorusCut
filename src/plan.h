@@ -102,7 +102,9 @@ public:
     // What the cut plays: each shot's chosen take, [{track, start, end, file, in, take, shot}].
     // pick (shot -> take) plays another of a shot's takes in its place, for previewing a take
     // before choosing it; renders and exports never pass one.
-    QVariantList timelineTakes(const QHash<int, int>& pick = {}) const;
+    // upscaled: a take's upscaled version where it has one (Render, and the viewer when switched).
+    // Entries also carry the file's width and height, and whether it is the upscaled version.
+    QVariantList timelineTakes(const QHash<int, int>& pick = {}, bool upscaled = false) const;
     // Where these takes are, in song order (shots by start, then the order made), leaving out
     // takes that are gone: [{take, shot, shotNumber, number (the take's number on its shot)}].
     QVariantList placeTakes(const QList<int>& takes) const;
@@ -181,6 +183,8 @@ private:
     QList<int> takeIds(int shot) const;
     QPair<int, int> takeSpan(int take) const;
     Result takeAdd(const QVariantMap& c, const QString& by);
+    // take.upscale: {id, path, thumb, width, height, frames, generation}: the take's upscaled version.
+    Result takeUpscale(const QVariantMap& c, const QString& by);
     QVariantMap exported(const QString& kind, int id) const;
     QString checkField(const QString& kind, const QString& field, const QJsonValue& value) const;
     QString overlap(int track, int start, int end, int except) const;

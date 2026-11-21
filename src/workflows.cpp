@@ -19,6 +19,7 @@ const QList<Named>& useTable() {
         {"ref-any", "Reference picture, from a prompt or from pictures", "Both: a model that draws from text alone or edits from any number of pictures (its picture inputs must be optional)."},
         {"take-ref", "Shot take from reference pictures", "Reference to video: a shot's take from its prompt and the pictures picked for it (H3's <Picture n>)."},
         {"take-sync", "Shot take singing to the song", "Reference to video with the song locked in: a lip-sync shot's take from its prompt, its pictures and the song under it, through a Load Audio node."},
+        {"take-upscale", "Upscale a take", "Makes a larger version of a finished take (H3 latent upscaler, then a light re-draw with the take's own prompt and pictures). Its song comes through a Load Audio node (silence for takes not sung)."},
         {"take-face", "Refine faces on a take", "Redraws one person's face on a finished take (H3 Face Refine): finds them by a picture of their face, redraws it towards their pictures, and stitches it back. Its song comes through a Load Audio node (silence for takes not sung)."},
     };
     return table;
@@ -38,6 +39,7 @@ const QList<Named>& slotTable() {
 bool uploadedVideo(const QString& cls) {
     return cls == "H3FaceSelect" || cls == "VHS_LoadVideoFFmpeg" || cls == "VHS_LoadVideo" || cls == "LoadVideo";
 }
+bool isUpscaler(const QString& cls) { return cls.contains("LatentUpscaler") || cls.contains("VideoUpscaler"); }
 bool pathVideo(const QString& cls) { return cls == "VHS_LoadVideoFFmpegPath" || cls == "VHS_LoadVideoPath"; }
 bool isVideoSaver(const QString& cls) {
     return cls == "SaveVideo" || cls.contains("VideoCombine") || cls == "SaveWEBM" || cls == "SaveAnimatedWEBP";
@@ -316,10 +318,21 @@ QJsonObject Workflows::detect(const QJsonObject& graph) {
             break;
         }
     }
+    // An upscale's Resolution Selector makes a latent that isn't used: its shape isn't offered.
+    bool upscales = false;
+    for (const QString& node : order) upscales |= isUpscaler(classOf(graph, node));
     for (const QString& node : order) {
         const auto inputs = inputsOf(graph, node);
         for (auto it = inputs.begin(); it != inputs.end(); ++it)
-            if (usualSetting(classOf(graph, node), it.key(), it.value())) add("setting", node, it.key());
+            if (usualSetting(classOf(graph, node), it.key(), it.value()) && !(upscales && it.key() == "aspect_ratio")) add("setting", node, it.key());
+        // An upscaler's size: its own megapixels, or the number node that sets it.
+        if (isUpscaler(classOf(graph, node)))
+            for (auto it = inputs.begin(); it != inputs.end(); ++it) {
+                if (!it.key().contains("megapixels")) continue;
+                if (it.value().isDouble()) add("setting", node, it.key());
+                else if (isLink(it.value()) && inputsOf(graph, it.value().toArray()[0].toString())["value"].isDouble())
+                    add("setting", it.value().toArray()[0].toString(), "value");
+            }
     }
     if (outs.isEmpty() && !preview.isEmpty()) outs.append(preview);
     return {{"slots", mapping}, {"outputs", outs}};
@@ -341,9 +354,13 @@ QVariantMap Workflows::importFile(const QUrl& file, const QString& use) {
         audio |= s.toObject()["slot"] == "audio";
     }
     const QJsonObject nodes = doc.object();
-    for (auto it = nodes.begin(); it != nodes.end(); ++it) face |= it.value().toObject()["class_type"] == "H3FaceSelect";
+    bool upscale = false;
+    for (auto it = nodes.begin(); it != nodes.end(); ++it) {
+        face |= it.value().toObject()["class_type"] == "H3FaceSelect";
+        upscale |= isUpscaler(it.value().toObject()["class_type"].toString());
+    }
     for (const auto& o : adapter["outputs"].toArray()) video |= isVideoSaver(classOf(doc.object(), o.toString()));
-    const QString chosen = !use.isEmpty() ? use : face ? "take-face" : audio ? "take-sync" : video ? "take-ref" : pictures ? "ref-edit" : "ref-text";
+    const QString chosen = !use.isEmpty() ? use : face ? "take-face" : upscale ? "take-upscale" : audio ? "take-sync" : video ? "take-ref" : pictures ? "ref-edit" : "ref-text";
     const QString name = QFileInfo(path).completeBaseName();
     QString id = slug(name);
     for (int n = 2; root.exists(id); ++n) id = slug(name) + "-" + QString::number(n);
@@ -377,7 +394,7 @@ QStringList Workflows::problems(const QString& id) const {
         faces += s.toObject()["slot"] == "face";
     }
     if (!prompts) out << "Choose the input that takes the prompt.";
-    const bool take = use == "take-ref" || use == "take-sync" || use == "take-face";
+    const bool take = use == "take-ref" || use == "take-sync" || use == "take-face" || use == "take-upscale";
     if ((use == "take-ref" || use == "take-sync") && !length) out << "Choose the input that sets the video's length (in frames or seconds).";
     if (use == "take-face") {
         const auto graph = graphOf(id);
@@ -391,6 +408,18 @@ QStringList Workflows::problems(const QString& id) const {
         if (!videos) out << "Choose the input that takes the video (H3 Load Video + Face Select's video).";
         if (!faces) out << "Wire a Load Image into H3 Load Video + Face Select's identity_reference, and choose it as the face to find.";
         if (sync && !audio) out << "Add a Load Audio node feeding H3 Audio Sync's track, and choose it as the song excerpt: takes carry no sound of their own.";
+    }
+    if (use == "take-upscale") {
+        const auto graph = graphOf(id);
+        bool sound = false;
+        for (const QString& node : nodeOrder(graph)) {
+            const QString cls = classOf(graph, node);
+            sound |= cls.contains("AudioSync") || cls == "VAEEncodeAudio";
+            if (pathVideo(cls))
+                out << QString("Node %1 (%2) reads a path on the ComfyUI computer, which an uploaded take doesn't have: use Load Video FFmpeg (Upload) instead (it decodes the same way).").arg(node, cls);
+        }
+        if (!videos) out << "Choose the input that takes the video (a Load Video FFmpeg (Upload)).";
+        if (sound && !audio) out << "Add a Load Audio node where the take's sound goes in, and choose it as the song excerpt: takes carry no sound of their own.";
     }
     if (use == "take-sync" && !audio) out << "Add a Load Audio node for the song, and choose it as the song excerpt.";
     if (take && !adapter["outputs"].toArray().isEmpty()) {
@@ -569,7 +598,7 @@ int Workflows::declaredPictures(const QString& id) const {
 QPair<QString, QString> Workflows::growingInput(const QString& id) const {
     const auto adapter = adapterOf(id);
     const QString use = adapter["use"].toString();
-    if (use != "take-ref" && use != "take-sync" && use != "take-face") return {};
+    if (use != "take-ref" && use != "take-sync" && use != "take-face" && use != "take-upscale") return {};
     QString last;
     int top = -1;
     for (const auto& s : adapter["slots"].toArray())
@@ -624,7 +653,15 @@ QVariantList Workflows::settings(const QString& id) const {
         const QString type = original.isBool() ? "switch" : original.isDouble() ? "number" : "text";
         // Two samplers' steps are told apart by their node's title.
         QString label = pretty(input);
-        if (names[input] > 1) label += " · " + (graph[node].toObject()["_meta"].toObject()["title"].toString().isEmpty()
+        // A number node is named by what it feeds (the upscaler's megapixels: "Megapixels").
+        if (classOf(graph, node).startsWith("Primitive") && input == "value") {
+            for (const QString& other : graph.keys()) {
+                const auto ins = inputsOf(graph, other);
+                for (auto in = ins.begin(); in != ins.end(); ++in)
+                    if (isLink(in.value()) && in.value().toArray()[0].toString() == node && in.key().contains("megapixels")) label = "Megapixels";
+            }
+        }
+        if (names[input] > 1 && label != "Megapixels") label += " · " + (graph[node].toObject()["_meta"].toObject()["title"].toString().isEmpty()
                                                     ? classOf(graph, node) : graph[node].toObject()["_meta"].toObject()["title"].toString());
         out.append(QVariantMap{{"key", key}, {"node", node}, {"input", input}, {"classType", classOf(graph, node)}, {"label", label},
                                {"type", type}, {"value", (kept.contains(key) ? kept[key] : original).toVariant()},
