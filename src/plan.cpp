@@ -868,18 +868,20 @@ QVariantList Plan::timelineTakes(const QHash<int, int>& pick, bool upscaled) con
             const auto [from, to] = takeSpan(take);
             const int a = qMax(s["start"].toInt(), from), b = qMin(s["end"].toInt(), to);
             QString file = project->dir.filePath(t["file"].toString());
-            int width = t["width"].toInt(), height = t["height"].toInt();
+            int width = t["width"].toInt(), height = t["height"].toInt(), frames = t["frames"].toInt();
             // The upscaled version where there is one, when asked (Render; the viewer switched to it).
             const auto up = t["upscaled"].toObject();
             bool usedUp = false;
             if (upscaled && !up.isEmpty() && QFileInfo::exists(project->dir.filePath(up["file"].toString()))) {
                 file = project->dir.filePath(up["file"].toString());
                 width = up["width"].toInt(); height = up["height"].toInt();
+                if (up["frames"].toInt() > 0) frames = up["frames"].toInt();
                 usedUp = true;
             }
             if (a < b && QFileInfo::exists(file))
                 out.append(QVariantMap{{"track", s["track"].toInt()}, {"start", a}, {"end", b}, {"file", file}, {"in", a - from}, {"take", take}, {"shot", shot},
-                                       {"width", width}, {"height", height}, {"upscaled", usedUp}});
+                                       {"width", width}, {"height", height}, {"upscaled", usedUp}, {"length", to - from},
+                                       {"frames", frames}, {"fps", t["fps"].toDouble() > 0 ? t["fps"].toDouble() : 24.0}});
             break;
         }
     }

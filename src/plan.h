@@ -103,7 +103,8 @@ public:
     // pick (shot -> take) plays another of a shot's takes in its place, for previewing a take
     // before choosing it; renders and exports never pass one.
     // upscaled: a take's upscaled version where it has one (Render, and the viewer when switched).
-    // Entries also carry the file's width and height, and whether it is the upscaled version.
+    // Entries also carry the file's width and height, and whether it is the upscaled version;
+    // its length in project frames, and its own frames and fps (for the exported timeline).
     QVariantList timelineTakes(const QHash<int, int>& pick = {}, bool upscaled = false) const;
     // Where these takes are, in song order (shots by start, then the order made), leaving out
     // takes that are gone: [{take, shot, shotNumber, number (the take's number on its shot)}].

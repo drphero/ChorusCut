@@ -26,6 +26,8 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
+#include <QXmlStreamReader>
 #include <QDebug>
 #include <cmath>
 #include <functional>
@@ -78,6 +80,39 @@ static double meanLuma(const QImage& img, QRect r) {
         for (int x = r.left(); x <= r.right(); ++x) { s += qGray(img.pixel(x, y)); ++n; }
     return n ? s / n : 0;
 }
+// An XML file as a tree, for reading the exported timeline.
+struct Node {
+    QString name, text;
+    QXmlStreamAttributes attrs;
+    QList<Node> children;
+    const Node* child(const QString& n) const { for (const auto& c : children) if (c.name == n) return &c; return nullptr; }
+    QList<const Node*> all(const QString& n) const { QList<const Node*> out; for (const auto& c : children) if (c.name == n) out << &c; return out; }
+    QString at(const QString& path) const {
+        const Node* n = this;
+        for (const auto& part : path.split('/')) if (!(n = n->child(part))) return QString();
+        return n->text.trimmed();
+    }
+};
+static bool readNode(QXmlStreamReader& r, Node& node) {
+    node.name = r.name().toString(); node.attrs = r.attributes();
+    while (!r.atEnd()) {
+        r.readNext();
+        if (r.isStartElement()) { node.children.append(Node()); if (!readNode(r, node.children.last())) return false; }
+        else if (r.isCharacters()) node.text += r.text();
+        else if (r.isEndElement()) return true;
+    }
+    return false;
+}
+static Node readXml(const QString& path) {
+    QFile f(path);
+    Node root;
+    if (!f.open(QIODevice::ReadOnly)) return root;
+    QXmlStreamReader r(&f);
+    while (!r.atEnd() && !r.isStartElement()) r.readNext();
+    if (r.isStartElement() && (!readNode(r, root) || r.hasError())) return Node();
+    return root;
+}
+
 static bool isRed(QRgb c) { return qRed(c) > 150 && qGreen(c) < 90 && qBlue(c) < 90; }
 static bool isGreen(QRgb c) { return qGreen(c) > 150 && qRed(c) < 90 && qBlue(c) < 90; }
 static bool isBlack(QRgb c) { return qRed(c) < 24 && qGreen(c) < 24 && qBlue(c) < 24; }
@@ -281,8 +316,69 @@ int main(int argc, char** argv) {
     if (!waitFor([&] { return !renderer->busy(); }, 5000) || renderer->message() != "Render cancelled.") return fail(15, "Cancel did not stop the render");
     if (QFileInfo::exists(whole) || QFileInfo::exists(whole + ".part")) return fail(15, "a cancelled render left a file behind");
 
+    // 4. The exported timeline (FCP 7 XML): each chosen take on its track at its frames, the
+    // upscaled version where there is one, a file used twice described once, the song below.
+    // A V2 shot [100, 120) plays take A again from its first frame; take B gets an upscaled version.
+    const int s4 = plan->run({{"op", "shot.add"}, {"track", 2}, {"start", 100}, {"end", 120}})["id"].toInt();
+    if (!s4 || !addTake(s4, takeA, 90, 100, 1376, 768)) return fail(16, "could not plan the V2 shot with take A");
+    const QString takeBUp = scratch.filePath("takeB-up.mp4");
+    run("ffmpeg", {"-v", "error", "-y", "-i", takeB, "-vf", "scale=1728:960", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", takeBUp}, &ok);
+    if (!ok) return fail(16, "ffmpeg could not upscale take B");
+    int takeBId = 0;
+    for (const auto& v : plan->timelineTakes()) if (v.toMap()["shot"].toInt() == s2) takeBId = v.toMap()["take"].toInt();
+    if (!plan->run({{"op", "take.upscale"}, {"id", takeBId}, {"path", takeBUp}, {"width", 1728}, {"height", 960}, {"frames", 96}})["ok"].toBool())
+        return fail(16, "could not give take B an upscaled version");
+    const auto finalTakes = plan->timelineTakes({}, true);
+    if (finalTakes.size() != 3) return fail(16, "the cut does not play three takes");
+    QHash<int, QString> fileOf;
+    for (const auto& v : finalTakes) fileOf.insert(v.toMap()["shot"].toInt(), v.toMap()["file"].toString());
+    const QString xmlPath = scratch.filePath("export.xml");
+    if (!editor.exportTimeline(QUrl::fromLocalFile(xmlPath))) return fail(17, "export failed: " + editor.status());
+    {
+        const Node doc = readXml(xmlPath);
+        const Node* seq = doc.child("sequence");
+        if (doc.name != "xmeml" || !seq) return fail(17, "the export is not an xmeml sequence");
+        if (seq->at("duration").toInt() != editor.length() || seq->at("rate/timebase") != "24" || seq->at("rate/ntsc") != "FALSE")
+            return fail(17, "the sequence's length or rate is wrong");
+        if (seq->at("media/video/format/samplecharacteristics/width") != "1728" || seq->at("media/video/format/samplecharacteristics/height") != "960")
+            return fail(17, "the sequence frame is not the largest take's (the upscaled 1728 × 960)");
+        const auto tracks = seq->child("media")->child("video")->all("track");
+        if (tracks.size() != 2) return fail(17, QString("expected V1 and V2, got %1 video tracks").arg(tracks.size()));
+        QSet<QString> clipIds, defined;
+        struct Want { int track, shot, start, end, in; QString width; };
+        const QList<Want> wants{{0, s1, 24, 96, 6, "1376"}, {0, s2, 96, 168, 0, "1728"}, {1, s4, 100, 120, 0, QString()}};
+        QList<QList<const Node*>> clips{tracks[0]->all("clipitem"), tracks[1]->all("clipitem")};
+        if (clips[0].size() != 2 || clips[1].size() != 1) return fail(18, QString("expected 2 clips on V1 and 1 on V2, got %1 and %2").arg(clips[0].size()).arg(clips[1].size()));
+        QList<int> next{0, 0};
+        for (const Want& w : wants) {
+            const Node* c = clips[w.track][next[w.track]++];
+            const QString where = QString("shot %1's clip").arg(plan->shot(w.shot)["number"].toInt());
+            if (c->at("start").toInt() != w.start || c->at("end").toInt() != w.end || c->at("in").toInt() != w.in || c->at("out").toInt() != w.in + w.end - w.start)
+                return fail(18, where + QString(" is at %1–%2 from %3, not %4–%5 from %6").arg(c->at("start"), c->at("end"), c->at("in")).arg(w.start).arg(w.end).arg(w.in));
+            if (c->at("name") != QString("Shot %1, take 1").arg(plan->shot(w.shot)["number"].toInt())) return fail(18, where + " is named " + c->at("name"));
+            const Node* f = c->child("file");
+            if (!f) return fail(18, where + " has no file");
+            const QString id = f->attrs.value("id").toString();
+            if (clipIds.contains(c->attrs.value("id").toString())) return fail(18, where + " reuses a clip id");
+            clipIds << c->attrs.value("id").toString();
+            if (f->children.isEmpty()) {
+                if (!defined.contains(id)) return fail(18, where + " refers to a file not described before it");
+                continue;
+            }
+            defined << id;
+            const QString path = QUrl(f->at("pathurl")).toLocalFile();
+            if (path != fileOf[w.shot] || !QFileInfo::exists(path)) return fail(18, where + " points at " + path + ", not " + fileOf[w.shot]);
+            if (f->at("media/video/samplecharacteristics/width") != w.width) return fail(18, where + "'s file is " + f->at("media/video/samplecharacteristics/width") + " wide");
+        }
+        if (!clips[1][0]->child("file")->children.isEmpty()) return fail(18, "take A's file is described twice");
+        const auto audio = seq->child("media")->child("audio")->all("track");
+        if (audio.isEmpty() || audio[0]->at("clipitem/end").toInt() != editor.length() || !QFileInfo::exists(QUrl(audio[0]->at("clipitem/file/pathurl")).toLocalFile()))
+            return fail(19, "the song is not under the whole sequence");
+    }
+
     qInfo() << "PASS: render through the dialog: selection by I and O, native size, Fill, CRF; H.264/AAC, size, frames, audio length;"
                " the takes' right frames at each cut, smooth scaling, a card for the shot without a take; Fit, Stretch and Fill at a typed"
-               " custom size; CRF remembered; free names; progress in the top bar; Cancel leaves no file.";
+               " custom size; CRF remembered; free names; progress in the top bar; Cancel leaves no file; the exported XML has each"
+               " chosen take on V1 and V2 at its frames, the upscaled version, shared files described once, and the song.";
     return 0;
 }
