@@ -56,7 +56,7 @@ ScrollView {
         Text {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#8fa0a4"; font.pixelSize: 12
             text: "What you asked your agent (with “ask” on any field) and what it asked you. Requests are kept with the project. "
-                  + (editor.agent.liveClient ? "Claude Code is connected; started with Chorus Cut as a channel, it gets each request at once."
+                  + (editor.agent.liveClient ? "Claude Code is connected; started with ChorusCut as a channel, it gets each request at once."
                                              : "No Claude Code is connected: requests wait here until your agent checks them.")
                   + " To have requests arrive live, start Claude Code with: " + editor.agent.channelCommand
         }

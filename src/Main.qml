@@ -9,7 +9,7 @@ ApplicationWindow {
     id: win
     // Shown by restoreWindow(), at the size and place it had last time.
     visible: false
-    title: editor.ready ? editor.projectName + " — Chorus Cut" : "Chorus Cut"
+    title: editor.ready ? editor.projectName + " — ChorusCut" : "ChorusCut"
     width: 1280; height: 820; minimumWidth: 900; minimumHeight: 640
     color: "#162027"
     readonly property color ink: "#edf1ef"
@@ -325,7 +325,7 @@ ApplicationWindow {
         onAccepted: if (editor.lyrics.importAlignment(selectedFile)) lyricsEditor.close()
     }
 
-    // Where Chorus Cut runs its GPU jobs: ComfyUI on this computer or on a rented GPU.
+    // Where ChorusCut runs its GPU jobs: ComfyUI on this computer or on a rented GPU.
     Popup {
         id: comfySheet
         objectName: "comfySheet"
@@ -341,7 +341,7 @@ ApplicationWindow {
             LabelText { text: "ComfyUI"; font.pixelSize: 17; font.bold: true }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet
-                text: "Chorus Cut aligns lyrics and generates pictures through ComfyUI: on this computer, on another machine, or on a rented GPU. Install the Chorus Cut node pack there to align lyrics."
+                text: "ChorusCut aligns lyrics and generates pictures through ComfyUI: on this computer, on another machine, or on a rented GPU. Install the ChorusCut node pack there to align lyrics."
             }
             TextField { id: comfyUrl; objectName: "comfyUrl"; Layout.fillWidth: true; placeholderText: "http://127.0.0.1:8188"; selectByMouse: true
                         Keys.onReturnPressed: comfySheet.connectNow() }
@@ -400,7 +400,7 @@ ApplicationWindow {
     }
     function showRequests(thread) { workspace = "plan"; planWorkspace.showRequests(thread) }
 
-    // The ComfyUI workflows Chorus Cut generates with, and their adapters.
+    // The ComfyUI workflows ChorusCut generates with, and their adapters.
     WorkflowsSheet { id: workflowsSheet }
     function openWorkflows() { comfySheet.close(); workflowsSheet.open() }
     // A reference picture, large; and Generate with a seed, a count and the workflow's settings.
@@ -469,9 +469,9 @@ ApplicationWindow {
                     Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
                     color: antigravityRow.setup === "unreadable" ? "#e7b75f" : antigravityRow.setup === "added" ? win.mint : win.quiet
                     text: antigravityRow.setup === "added" ? "Added to " + editor.agent.antigravityConfig + ". If Antigravity was open, restart it to pick this up."
-                        : antigravityRow.setup === "other" ? "Antigravity points at another Chorus Cut build. Update it to use this one."
+                        : antigravityRow.setup === "other" ? "Antigravity points at another ChorusCut build. Update it to use this one."
                         : antigravityRow.setup === "unreadable" ? editor.agent.antigravityConfig + " is not valid JSON, so it was left alone. Fix or empty it, then add again."
-                        : "Adds Chorus Cut to " + editor.agent.antigravityConfig + ", keeping your other servers."
+                        : "Adds ChorusCut to " + editor.agent.antigravityConfig + ", keeping your other servers."
                 }
                 Action {
                     objectName: "antigravityAdd"
@@ -487,7 +487,7 @@ ApplicationWindow {
             CommandRow { objectName: "channelCommand"; label: "Live requests"; command: editor.agent.channelCommand }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
-                text: "Other MCP clients can run the same program over stdio: " + editor.agent.shimPath + "\n\nThen just ask your agent to plan the video in Chorus Cut. In Claude Code, /mcp__ChorusCut__plan starts it too."
+                text: "Other MCP clients can run the same program over stdio: " + editor.agent.shimPath + "\n\nThen just ask your agent to plan the video in ChorusCut. In Claude Code, /mcp__ChorusCut__plan starts it too."
             }
             Label {
                 objectName: "agentStatus"
@@ -583,7 +583,7 @@ ApplicationWindow {
 
         RowLayout {
             Layout.fillWidth: true
-            LabelText { text: "Chorus Cut"; font.pixelSize: 22; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
+            LabelText { text: "ChorusCut"; font.pixelSize: 22; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
             Action { objectName: "openManager"; text: "Projects"; onClicked: win.showManager(); ToolTip.text: "Project Manager (⌘O)" }
             Action { objectName: "openLyrics"; text: "Lyrics…"; enabled: editor.ready; onClicked: lyricsEditor.open() }
             Action {

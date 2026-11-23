@@ -172,7 +172,7 @@ std::unique_ptr<Project> Project::open(const QString& directory, QString& error)
     };
     if (!existing) {
         examplePaths();
-        if (!p->probe(error)) { error = "Choose a Chorus Cut project folder"; return {}; }
+        if (!p->probe(error)) { error = "Choose a ChorusCut project folder"; return {}; }
         p->trim = {72, 120, 24};
         if (p->master.frames < p->trim.end || p->cutaway.frames < p->trim.source + p->trim.end - p->trim.start) {
             error = "The files do not fit the example cut. Use New to import them."; return {};

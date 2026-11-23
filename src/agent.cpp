@@ -100,11 +100,11 @@ bool AgentBridge::start() {
     const QString name = AgentTools::socketName();
     server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!server.listen(name)) {
-        // A socket left by a crash, unless another Chorus Cut is answering on it.
+        // A socket left by a crash, unless another ChorusCut is answering on it.
         QLocalSocket probe;
         probe.connectToServer(name);
         if (probe.waitForConnected(300)) {
-            notice = "Another Chorus Cut window is already serving agents.";
+            notice = "Another ChorusCut window is already serving agents.";
             emit stateChanged();
             return false;
         }
@@ -195,7 +195,7 @@ QJsonObject AgentBridge::call(const QString& tool, const QJsonObject& arguments)
     if (tool == "get_guide")
         return {{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", AgentTools::guide()}}}}, {"isError", false}};
     if (tool == "get_project") return text(project());
-    if (!editor->ready()) return failure("No project is open in Chorus Cut. Ask the user to open one.");
+    if (!editor->ready()) return failure("No project is open in ChorusCut. Ask the user to open one.");
     if (tool == "get_song") return text(song(arguments.value("include_words").toBool()));
     if (tool == "get_plan") return text(planView());
     if (tool == "get_checks") return text(checks());
@@ -209,7 +209,7 @@ QJsonObject AgentBridge::call(const QString& tool, const QJsonObject& arguments)
 }
 
 QJsonObject AgentBridge::project() const {
-    if (!editor->ready()) return {{"open", false}, {"message", "No project is open in Chorus Cut. Ask the user to open or create one."}};
+    if (!editor->ready()) return {{"open", false}, {"message", "No project is open in ChorusCut. Ask the user to open or create one."}};
     Plan* plan = editor->plan();
     Lyrics* lyrics = editor->lyrics();
     const int lines = lyrics->lines().size();
@@ -498,7 +498,7 @@ QJsonObject AgentBridge::askTool(const QJsonObject& arguments) {
     const int id = editor->requests()->agentAsk(arguments.value("question").toString(), arguments.value("about").toObject(), options, error);
     if (!id) return failure(error);
     return text({{"asked", true}, {"request", id},
-                 {"note", "The question is shown in Chorus Cut. The answer arrives as a channel event if this session has Chorus Cut as a channel; otherwise read it later with get_requests. Don't wait for it: carry on or end your turn."}});
+                 {"note", "The question is shown in ChorusCut. The answer arrives as a channel event if this session has ChorusCut as a channel; otherwise read it later with get_requests. Don't wait for it: carry on or end your turn."}});
 }
 
 QJsonObject AgentBridge::reference(int id) const {

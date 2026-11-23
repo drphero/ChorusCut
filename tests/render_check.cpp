@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
     QTemporaryDir scratch;
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Render Check");
     QSettings().remove("render/crf");
     Mlt::Factory::init();

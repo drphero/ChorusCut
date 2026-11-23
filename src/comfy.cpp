@@ -136,17 +136,25 @@ void ComfyJobs::loadToken() {
     tokenWhere.clear();
     if (keychainMissing) { emit settingsChanged(); return; }
     tokenLoading = true;
-    auto job = new QKeychain::ReadPasswordJob(keychainService(), this);
+    readToken(keychainService(), ++tokenRead);
+}
+
+void ComfyJobs::readToken(const QString& service, int mine) {
+    auto job = new QKeychain::ReadPasswordJob(service, this);
     job->setAutoDelete(true);
     job->setKey("ComfyUI token " + server);
-    const int mine = ++tokenRead;
-    connect(job, &QKeychain::Job::finished, this, [this, job, mine](QKeychain::Job*) {
+    connect(job, &QKeychain::Job::finished, this, [this, job, mine, service](QKeychain::Job*) {
         // The address changed or a token was set or forgotten while reading: that one counts.
         if (mine != tokenRead) return;
+        // Builds before 2026-11-23 were "Chorus Cut", two words: a token saved by one is read
+        // from there and saved again under the app's name.
+        const QString oldName = "Chorus Cut";
+        if (job->error() == QKeychain::EntryNotFound && service == "ChorusCut") { readToken(oldName, mine); return; }
         tokenLoading = false;
         if (job->error() == QKeychain::NoError) {
             token = job->textData();
             tokenWhere = "Saved in the system keychain.";
+            if (service == oldName) storeToken(token);
         } else if (job->error() == QKeychain::NoBackendAvailable || job->error() == QKeychain::NotImplemented) {
             keychainMissing = true;
         }
@@ -158,7 +166,7 @@ void ComfyJobs::loadToken() {
 
 void ComfyJobs::storeToken(const QString& value) {
     if (keychainMissing) {
-        tokenWhere = value.isEmpty() ? QString() : "No system keychain was found, so the token is kept until Chorus Cut quits.";
+        tokenWhere = value.isEmpty() ? QString() : "No system keychain was found, so the token is kept until ChorusCut quits.";
         emit settingsChanged();
         return;
     }
@@ -177,7 +185,7 @@ void ComfyJobs::storeToken(const QString& value) {
         else {
             if (job->error() == QKeychain::NoBackendAvailable || job->error() == QKeychain::NotImplemented) keychainMissing = true;
             tokenWhere = "Could not save the token in the system keychain (" + job->errorString() +
-                         "), so it is kept until Chorus Cut quits.";
+                         "), so it is kept until ChorusCut quits.";
         }
         emit settingsChanged();
     });
@@ -228,8 +236,8 @@ void ComfyJobs::testConnection() {
             const auto info = QJsonDocument::fromJson(node->readAll()).object();
             const QString where = QString("ComfyUI %1 on %2").arg(version.isEmpty() ? "" : version, device.isEmpty() ? "an unknown device" : device).simplified();
             if (node->error() != QNetworkReply::NoError || !info.contains(kNode))
-                setConnection("missingNode", where + ". Install the Chorus Cut node pack there to align lyrics.");
-            else setConnection("ready", where + ", with the Chorus Cut nodes.");
+                setConnection("missingNode", where + ". Install the ChorusCut node pack there to align lyrics.");
+            else setConnection("ready", where + ", with the ChorusCut nodes.");
         });
     });
 }

@@ -296,7 +296,7 @@ bool Requests::agentReply(int thread, const QString& text, bool done, QString& e
 }
 
 int Requests::agentAsk(const QString& question, const QJsonObject& about, const QStringList& options, QString& error) {
-    if (!editor->current()) { error = "No project is open in Chorus Cut."; return 0; }
+    if (!editor->current()) { error = "No project is open in ChorusCut."; return 0; }
     if (question.trimmed().isEmpty()) { error = "Write the question."; return 0; }
     const QString kind = about["kind"].toString();
     if (!known(kind)) { error = "about.kind must be concept, character, look, location, prop, view, arc or shot."; return 0; }

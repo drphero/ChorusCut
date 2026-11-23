@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(argv[3]));
     QGuiApplication app(argc, argv);
     // Own settings, so remembered track heights never touch the real app's preferences.
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Timeline Check");
     Mlt::Factory::init();
     const QUrl project = QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath());

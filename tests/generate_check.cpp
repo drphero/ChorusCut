@@ -70,7 +70,7 @@ static int live(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Generate Live");
     Mlt::Factory::init();
     Editor editor;
@@ -156,7 +156,7 @@ static int liveTake(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Generate Live");
     Mlt::Factory::init();
     Editor editor;
@@ -261,7 +261,7 @@ static int liveFace(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Generate Live");
     Mlt::Factory::init();
     Editor editor;
@@ -342,7 +342,7 @@ static int liveUpscale(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Generate Live");
     Mlt::Factory::init();
     Editor editor;
@@ -411,7 +411,7 @@ int main(int argc, char** argv) {
     const QString notifyLog = scratch.filePath("notify.log");
     qputenv("CHORUS_NOTIFY_LOG", QFile::encodeName(notifyLog));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Generate Check");
     { QSettings s; s.clear(); }
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);

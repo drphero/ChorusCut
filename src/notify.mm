@@ -56,7 +56,7 @@ static void macRequest(std::function<void(QString, QString)> done) {
                             completionHandler:^(BOOL, NSError* error) {
         QString why;
         if (error) why = error.domain.length && [error.domain isEqualToString:UNErrorDomain] && error.code == UNErrorCodeNotificationsNotAllowed
-                ? QStringLiteral("macOS won't let this copy of Chorus Cut ask: it isn't signed as an app. Rebuild it (the build signs it), then try again.")
+                ? QStringLiteral("macOS won't let this copy of ChorusCut ask: it isn't signed as an app. Rebuild it (the build signs it), then try again.")
                 : QString::fromNSString(error.localizedDescription);
         macStatus([done, why](QString state) { done(state, why); });
     }];
@@ -196,7 +196,7 @@ void Notifier::jobFinished(const QString& owner, int ownerId, const QString& use
 }
 
 void Notifier::test() {
-    deliver("Chorus Cut notifications", "This is how a finished take will tell you.", {}, 0, true);
+    deliver("ChorusCut notifications", "This is how a finished take will tell you.", {}, 0, true);
 }
 
 void Notifier::deliver(const QString& title, const QString& body, const QString& owner, int ownerId, bool ok, const QString& tag) {

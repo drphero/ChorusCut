@@ -1,5 +1,5 @@
 // choruscut-mcp: the MCP server an agent (Claude Code, Codex or any MCP client) launches over
-// stdio. It answers the protocol itself and passes each tool call to the running Chorus Cut over
+// stdio. It answers the protocol itself and passes each tool call to the running ChorusCut over
 // a per-user local socket, so every change goes through the app's own commands and undo.
 // Nothing but protocol messages goes to stdout.
 //
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
     // Sends one tool call to the app and waits for its answer.
     auto call = [&](const QString& name, const QJsonObject& arguments) -> QJsonObject {
         if (!connected())
-            return toolError("Chorus Cut is not running. Ask the user to open Chorus Cut and their project, then try again.");
+            return toolError("ChorusCut is not running. Ask the user to open ChorusCut and their project, then try again.");
         const qint64 id = ++serial;
         socket.write(QJsonDocument(QJsonObject{{"id", id}, {"tool", name}, {"arguments", arguments}}).toJson(QJsonDocument::Compact) + '\n');
         socket.waitForBytesWritten(5000);
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
             while (!socket.canReadLine()) {
                 if (socket.state() != QLocalSocket::ConnectedState || !socket.waitForReadyRead(180000)) {
                     socket.abort();
-                    return toolError("Chorus Cut closed or stopped answering. Ask the user to check the app, then try again.");
+                    return toolError("ChorusCut closed or stopped answering. Ask the user to check the app, then try again.");
                 }
             }
             const auto answer = QJsonDocument::fromJson(socket.readLine()).object();
@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
             reply(id, {{"protocolVersion", kVersions.contains(asked) ? asked : kVersions.first()},
                        {"capabilities", QJsonObject{{"tools", QJsonObject{}}, {"prompts", QJsonObject{}},
                                                     {"experimental", QJsonObject{{"claude/channel", QJsonObject{}}}}}},
-                       {"serverInfo", QJsonObject{{"name", "chorus-cut"}, {"title", "Chorus Cut"}, {"version", "0.1"}}},
+                       {"serverInfo", QJsonObject{{"name", "chorus-cut"}, {"title", "ChorusCut"}, {"version", "0.1"}}},
                        {"instructions", AgentTools::instructions()}});
         } else if (method == "ping") {
             reply(id, {});

@@ -9,11 +9,52 @@
 #include <QFileInfo>
 #include <QDebug>
 #include <QQuickStyle>
+#include <QDir>
+#include <QDirIterator>
+#include <QSettings>
+#include <QStandardPaths>
+
+// Builds before 2026-11-23 were named "Chorus Cut", two words, and kept their settings and
+// workflow library under that name. The first launch as ChorusCut copies them across; the old
+// copies stay, so an older build still finds its own. A ComfyUI token is carried over by
+// ComfyJobs, which reads the old keychain entry when the new one is missing.
+static void carryOverTwoWordName() {
+    QSettings now;
+    QSettings before("Chorus Cut", "Chorus Cut");
+    // On macOS allKeys() also lists the system-wide fallbacks; count only the app's own.
+    now.setFallbacksEnabled(false);
+    before.setFallbacksEnabled(false);
+    if (now.allKeys().isEmpty() && !before.allKeys().isEmpty()) {
+        for (const QString& key : before.allKeys()) now.setValue(key, before.value(key));
+        // The default library moved with the name; keep the old folder only if it holds anything.
+        const QDir movies(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+        const QString oldDefault = movies.filePath("Chorus Cut"), newDefault = movies.filePath("ChorusCut");
+        QStringList libraries = now.value("projects/libraries").toStringList();
+        const int at = libraries.indexOf(oldDefault);
+        if (at >= 0 && !QFileInfo::exists(oldDefault)) {
+            if (libraries.contains(newDefault)) libraries.removeAt(at); else libraries[at] = newDefault;
+            now.setValue("projects/libraries", libraries);
+        }
+        now.sync();
+    }
+    const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString oldData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/Chorus Cut/Chorus Cut";
+    if (!QFileInfo::exists(data) && QFileInfo(oldData).isDir()) {
+        QDirIterator it(oldData, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories);
+        QDir().mkpath(data);
+        while (it.hasNext()) {
+            const QString from = it.next(), to = data + from.mid(oldData.size());
+            if (it.fileInfo().isDir()) QDir().mkpath(to);
+            else if (!QFile::copy(from, to)) qWarning().noquote() << "Could not copy" << from << "to" << to;
+        }
+    }
+}
 
 int main(int argc,char** argv) {
     QGuiApplication app(argc,argv);
-    app.setApplicationName("Chorus Cut");
-    app.setOrganizationName("Chorus Cut");  // QSettings: remembered track heights
+    app.setApplicationName("ChorusCut");
+    app.setOrganizationName("ChorusCut");  // QSettings: remembered track heights
+    carryOverTwoWordName();
     QQuickStyle::setStyle("Basic");
     QStringList args=app.arguments();
     if (args.contains("--check-playback")) {

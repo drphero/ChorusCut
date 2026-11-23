@@ -24,7 +24,7 @@ class AgentBridge : public QObject {
     Q_PROPERTY(QString antigravityConfig READ antigravityConfig CONSTANT)
     // "missing", "added" (this build's server), "other" (another build's), or "unreadable".
     Q_PROPERTY(QString antigravityState READ antigravityState NOTIFY antigravityChanged)
-    // Starts Claude Code with Chorus Cut as a channel, so requests from the app reach it live.
+    // Starts Claude Code with ChorusCut as a channel, so requests from the app reach it live.
     Q_PROPERTY(QString channelCommand READ channelCommand CONSTANT)
     // Whether an agent that can take channel events (Claude Code) is connected now.
     Q_PROPERTY(bool liveClient READ liveClient NOTIFY stateChanged)

@@ -11,8 +11,8 @@
 #include <QVariantMap>
 
 // The user's ComfyUI workflows, each with an adapter that says which node input takes which
-// value from Chorus Cut: the prompt, the reference pictures, the seed, the size and so on.
-// One library for all projects, in plain files (Application Support/Chorus Cut/Workflows, or
+// value from ChorusCut: the prompt, the reference pictures, the seed, the size and so on.
+// One library for all projects, in plain files (Application Support/ChorusCut/ChorusCut/Workflows, or
 // CHORUS_WORKFLOWS_DIR): a folder per workflow with workflow.json (ComfyUI's Export (API)
 // format) and adapter.json, plus library.json with the default workflow for each use. A job
 // stores the exact graph it queued in the project, so later edits here never change old takes.
@@ -33,7 +33,7 @@ public:
     QVariantList list() const;
     // What a workflow can be used for: [{value, label, hint}].
     QVariantList uses() const;
-    // The values Chorus Cut can put into a workflow: [{value, label, indexed}].
+    // The values ChorusCut can put into a workflow: [{value, label, indexed}].
     QVariantList slotTypes() const;
 
     // Copies an Export (API) workflow into the library and guesses its adapter.

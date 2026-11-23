@@ -80,7 +80,7 @@ void Generator::addLiveNode(Job& job, QJsonObject& graph) {
                                       {"inputs", QJsonObject{{"model", inputs["model"]}, {"max_resolution", kPreviewSide}, {"jpeg_quality", 80},
                                                              {"suppress_default_preview", true}, {"preview_frames", qBound(1, job.frames, 1024)},
                                                              {"preview_fps", comfy->previewFps()}, {"tiny_vae", comfy->previewVae()}}},
-                                      {"_meta", QJsonObject{{"title", "Chorus Cut: live preview"}}}};
+                                      {"_meta", QJsonObject{{"title", "ChorusCut: live preview"}}}};
     inputs["model"] = QJsonArray{job.liveNode, 0};
     guider["inputs"] = inputs;
     graph[guiders[0]] = guider;
@@ -1338,7 +1338,7 @@ void Generator::submit(int id, const QStringList& names) {
             if (graph[node].toObject()["class_type"] == "H3FaceSelect") {
                 job->previewNode = QString::number(next + 1);
                 graph[job->previewNode] = QJsonObject{{"class_type", "PreviewImage"}, {"inputs", QJsonObject{{"images", QJsonArray{node, 3}}}},
-                                                      {"_meta", QJsonObject{{"title", "Chorus Cut: faces found"}}}};
+                                                      {"_meta", QJsonObject{{"title", "ChorusCut: faces found"}}}};
                 break;
             }
     }

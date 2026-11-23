@@ -4,7 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 
 // The workflow library: the user's ComfyUI workflows and their adapters, shared by every
-// project. Import one exported with Workflow ▸ Export (API); Chorus Cut guesses which inputs
+// project. Import one exported with Workflow ▸ Export (API); ChorusCut guesses which inputs
 // take the prompt, pictures, seed and size, and each guess can be changed here.
 Popup {
     id: sheet
@@ -96,7 +96,7 @@ Popup {
             SheetButton { objectName: "workflowsDone"; text: "Done"; active: true; onClicked: sheet.close() }
         }
         Caption {
-            text: "Your ComfyUI workflows, and which input takes what from Chorus Cut. In ComfyUI, open a workflow and choose Workflow ▸ Export (API), then import that file. They are kept for every project in " + sheet.flows.folder + "."
+            text: "Your ComfyUI workflows, and which input takes what from ChorusCut. In ComfyUI, open a workflow and choose Workflow ▸ Export (API), then import that file. They are kept for every project in " + sheet.flows.folder + "."
         }
         Text {
             objectName: "workflowsNote"

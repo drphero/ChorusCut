@@ -570,7 +570,7 @@ Plan::Result Plan::dispatch(const QVariantMap& c, const QString& by, const QStri
     if (op == "take.unupscale") {
         // Takes the upscaled version away (its file stays in Media/Takes, so undo brings it back).
         const int id = c.value("id").toInt();
-        if (by != "user") return error("Upscaled versions are made and removed in Chorus Cut.");
+        if (by != "user") return error("Upscaled versions are made and removed in ChorusCut.");
         if (!has("take", id) || !row("take", id).contains("upscaled")) return error("That take has no upscaled version.");
         QJsonObject t = row("take", id);
         t.remove("upscaled");
@@ -892,7 +892,7 @@ Plan::Result Plan::takeUpscale(const QVariantMap& c, const QString& by) {
     Result r;
     auto fail = [&](const QString& e) { r.ok = false; r.error = e; return r; };
     // Upscaled versions come from the app's own jobs, never from an agent's command.
-    if (by != "user") return fail("Upscaled versions are made in Chorus Cut; an agent can't add them.");
+    if (by != "user") return fail("Upscaled versions are made in ChorusCut; an agent can't add them.");
     const int id = c.value("id").toInt();
     if (!has("take", id)) return fail("The take is gone.");
     const QString source = c.value("path").toString();
@@ -945,7 +945,7 @@ Plan::Result Plan::takeAdd(const QVariantMap& c, const QString& by) {
     Result r;
     auto fail = [&](const QString& e) { r.ok = false; r.error = e; return r; };
     // Takes come from the app's own generation jobs, never from an agent's command.
-    if (by != "user") return fail("Takes are generated in Chorus Cut; an agent can't add them.");
+    if (by != "user") return fail("Takes are generated in ChorusCut; an agent can't add them.");
     const int shot = c.value("shot").toInt();
     if (!has("shot", shot)) return fail("The shot is gone.");
     const QString source = c.value("path").toString();
@@ -1039,7 +1039,7 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     if (!QFileInfo(source).isFile() || !file.open(QIODevice::ReadOnly)) return fail("Cannot read " + QFileInfo(source).fileName() + ".");
     QImageReader reader(source);
     const QSize size = reader.size();
-    if (!reader.canRead() || size.isEmpty()) return fail(QFileInfo(source).fileName() + " is not an image Chorus Cut can read.");
+    if (!reader.canRead() || size.isEmpty()) return fail(QFileInfo(source).fileName() + " is not an image ChorusCut can read.");
     // Copied in under a name from its contents, so the project stays self-contained and the
     // same picture added twice is stored once.
     QCryptographicHash hash(QCryptographicHash::Sha1);
@@ -1083,7 +1083,7 @@ Plan::Result Plan::refAdd(const QVariantMap& c, const QString& by) {
     // Generated pictures come from the app's own jobs (never an agent's command) and keep how
     // they were made: the workflow, prompt and seed.
     const bool generated = by == "user" && c.value("source").toString() == "generated";
-    // A sheet Chorus Cut composed from the user's chosen pictures is chosen at once.
+    // A sheet ChorusCut composed from the user's chosen pictures is chosen at once.
     const bool composed = by == "user" && c.value("source").toString() == "composed";
     QJsonObject entry{{"owner", owner}, {"ownerId", ownerId}, {"view", view}, {"file", relative},
                       {"name", c.value("name").toString().isEmpty() ? QFileInfo(source).fileName() : c.value("name").toString()},

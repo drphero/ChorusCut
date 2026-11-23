@@ -489,7 +489,7 @@ Popup {
                                 Layout.fillWidth: true
                                 text: row.value === undefined ? "" : gp.shown(row.value)
                                 validator: row.modelData.type === "number" ? numberCheck : null
-                                // Numbers are kept as typed ("0." while typing 0.5); Chorus Cut reads them when generating.
+                                // Numbers are kept as typed ("0." while typing 0.5); ChorusCut reads them when generating.
                                 onTextEdited: gp.setValue(row.modelData.key, text)
                                 RegularExpressionValidator { id: numberCheck; regularExpression: /-?[0-9]*\.?[0-9]*/ }
                             }

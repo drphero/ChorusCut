@@ -2,7 +2,7 @@
 <!DOCTYPE xmeml>
 <xmeml version="5">
     <sequence id="chorus">
-        <name>Chorus Cut</name>
+        <name>ChorusCut</name>
         <duration>192</duration>
         <rate>
             <timebase>24</timebase>

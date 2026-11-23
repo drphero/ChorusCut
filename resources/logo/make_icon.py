@@ -1,4 +1,4 @@
-"""Chorus Cut identity, concept 2a "Sliced chorus".
+"""ChorusCut identity, concept 2a "Sliced chorus".
 
 Writes the logo SVGs beside this script and resources/icon/ChorusCut.icns (needs rsvg-convert
 and macOS's iconutil). Usage: python3 resources/logo/make_icon.py
@@ -117,7 +117,7 @@ def lockup(light=False):
     s, pad = 0.29, 12
     mark_g = f'<g transform="translate({pad - 191 * s:.1f},{pad + 8 - 147 * s:.1f}) scale({s})">{body}</g>'
     text_x = pad + (754 - 191) * s + 52
-    word_g, ww, _ = wordmark("Chorus Cut", ink, accent, x0=text_x, y0=pad - 4, scale=1.0)
+    word_g, ww, _ = wordmark("ChorusCut", ink, accent, x0=text_x, y0=pad - 4, scale=1.0)
     width, height = text_x + ww + pad, 2 * pad + 8 + (838 - 147) * s
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height}" width="{width:.0f}" height="{height}">
   <defs>{defs}</defs>

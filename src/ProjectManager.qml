@@ -298,7 +298,7 @@ FocusScope {
         MItem { text: "Remove from list"; enabled: library.libraries.length > 1; onTriggered: library.removeLibrary(libMenu.which) }
     }
     FolderDialog { id: addLibraryDialog; title: "Choose a folder to use as a project library"; onAccepted: library.addLibrary(selectedFolder) }
-    FolderDialog { id: otherProject; title: "Open a Chorus Cut project folder"; onAccepted: if (editor.openProject(selectedFolder)) pm.finished() }
+    FolderDialog { id: otherProject; title: "Open a ChorusCut project folder"; onAccepted: if (editor.openProject(selectedFolder)) pm.finished() }
 
     Sheet {
         id: rename

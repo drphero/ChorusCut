@@ -26,7 +26,7 @@ extern "C" {
 
 namespace {
 QString defaultLibrary() {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation)).filePath("Chorus Cut");
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation)).filePath("ChorusCut");
 }
 
 qint64 durationMs(const QString& file) {

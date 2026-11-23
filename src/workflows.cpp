@@ -34,7 +34,7 @@ const QList<Named>& slotTable() {
     };
     return table;
 }
-// Loaders that read a video from ComfyUI's input folder by name, where Chorus Cut uploads a take.
+// Loaders that read a video from ComfyUI's input folder by name, where ChorusCut uploads a take.
 // The Path variants need a path on the ComfyUI machine, which an upload doesn't give.
 bool uploadedVideo(const QString& cls) {
     return cls == "H3FaceSelect" || cls == "VHS_LoadVideoFFmpeg" || cls == "VHS_LoadVideo" || cls == "LoadVideo";
@@ -62,7 +62,7 @@ QStringList nodeOrder(const QJsonObject& graph) {
 QString classOf(const QJsonObject& graph, const QString& node) { return graph[node].toObject()["class_type"].toString(); }
 QJsonObject inputsOf(const QJsonObject& graph, const QString& node) { return graph[node].toObject()["inputs"].toObject(); }
 // The file a loader node reads. ComfyUI's Export (API) leaves it out when no file is chosen
-// (a Load Audio with nothing picked exports "inputs": {}), but Chorus Cut fills it anyway.
+// (a Load Audio with nothing picked exports "inputs": {}), but ChorusCut fills it anyway.
 QString fileInput(const QString& cls) {
     if (cls.contains("LoadAudio")) return "audio";
     if (uploadedVideo(cls)) return "video";
@@ -425,11 +425,11 @@ QStringList Workflows::problems(const QString& id) const {
     if (take && !adapter["outputs"].toArray().isEmpty()) {
         bool saves = false;
         for (const auto& o : adapter["outputs"].toArray()) saves |= isVideoSaver(classOf(graphOf(id), o.toString()));
-        if (!saves) out << "Add a Save Video node, so Chorus Cut can collect the video.";
+        if (!saves) out << "Add a Save Video node, so ChorusCut can collect the video.";
     }
     if ((use == "ref-edit" || use == "ref-any") && !pictures) out << "Choose the Load Image input that takes the first picture.";
     if (use == "ref-text" && pictures) out << "This workflow takes pictures: use it for “Reference picture from pictures”, or let its Load Image inputs keep their values.";
-    if (adapter["outputs"].toArray().isEmpty()) out << (take ? "Add a Save Video node, so Chorus Cut can collect the video." : "Add a Save Image node, so Chorus Cut can collect the result.");
+    if (adapter["outputs"].toArray().isEmpty()) out << (take ? "Add a Save Video node, so ChorusCut can collect the video." : "Add a Save Image node, so ChorusCut can collect the result.");
     const auto graph = graphOf(id);
     for (const auto& s : adapter["slots"].toArray()) {
         const auto o = s.toObject();
@@ -478,7 +478,7 @@ QVariantMap Workflows::get(const QString& id) const {
             const bool kept = s["slot"] == "setting" && keptValues.contains(key);
             QString value = shown(kept ? keptValues[key] : it.value());
             if (kept) value += "  (workflow: " + shown(it.value()) + ")";
-            if (it.key() == file && value.isEmpty()) value = "no file chosen (Chorus Cut fills it)";
+            if (it.key() == file && value.isEmpty()) value = "no file chosen (ChorusCut fills it)";
             inputs.append(QVariantMap{{"key", key}, {"node", node}, {"classType", n["class_type"].toString()},
                                       {"title", n["_meta"].toObject()["title"].toString()}, {"input", it.key()}, {"value", value},
                                       {"slot", s["slot"].toString()}, {"index", s["index"].toInt()}});

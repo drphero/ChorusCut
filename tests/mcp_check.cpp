@@ -109,14 +109,14 @@ int main(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     QTemporaryDir scratch;
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(scratch.filePath("capture.raw")));
-    // Our own socket, so a running Chorus Cut is never involved.
+    // Our own socket, so a running ChorusCut is never involved.
     const QByteArray socketName = "chorus-mcp-check-" + QByteArray::number(QCoreApplication::applicationPid());
     qputenv("CHORUS_AGENT_SOCKET", socketName);
     // Antigravity's config goes in scratch, so the user's own ~/.gemini is never touched.
     const QString antigravity = scratch.filePath("gemini/config/mcp_config.json");
     qputenv("CHORUS_ANTIGRAVITY_CONFIG", QFile::encodeName(antigravity));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("MCP Check");
     Mlt::Factory::init();
     const QString shim = QFileInfo(argv[3]).absoluteFilePath();
@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
         if (lone.request("initialize", {{"protocolVersion", "2025-06-18"}, {"capabilities", QJsonObject{}}, {"clientInfo", QJsonObject{{"name", "lone"}}}})
                 .value("result").toObject().value("protocolVersion") != "2025-06-18") return fail(2, "initialize failed without the app");
         const auto r = lone.call("get_project");
-        if (!r["isError"].toBool() || !textOf(r).contains("not running")) return fail(2, "a call without the app should say Chorus Cut is not running");
+        if (!r["isError"].toBool() || !textOf(r).contains("not running")) return fail(2, "a call without the app should say ChorusCut is not running");
         lone.process.closeWriteChannel();
         lone.process.waitForFinished(3000);
     }
@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
         click(find(window, "agentDone"));
         return waitFor([&] { return !window->findChild<QObject*>("agentSheet")->property("visible").toBool(); }, 1500);
     };
-    // Antigravity: with no config yet, Add creates it with only Chorus Cut.
+    // Antigravity: with no config yet, Add creates it with only ChorusCut.
     {
         auto add = find(window, "antigravityAdd");
         if (!add || add->property("text") != "Add" || !add->isEnabled()) return fail(30, "the Agent sheet has no Add button for Antigravity");

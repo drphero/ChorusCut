@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(work.filePath("audio.raw")));
     QGuiApplication app(argc, argv);
     // Own settings, so the test never changes the real app's library list.
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Projects Check");
     { QSettings s; s.clear(); s.setValue("projects/libraries", QStringList{lib}); s.setValue("projects/current", 0); }
     Mlt::Factory::init();

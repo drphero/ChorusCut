@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // "Ask the agent…": a request about one field or item (or the whole plan) for the user's agent.
-// It is kept in the project's requests and, when Claude Code is connected with Chorus Cut as a
+// It is kept in the project's requests and, when Claude Code is connected with ChorusCut as a
 // channel, reaches it at once. Suggestions for the field clicked fill the box (they never send
 // by themselves). Most are about what the reference pictures need to be for the video model
 // (H3), which keeps each referenced person, outfit or place the same from shot to shot: a
@@ -245,8 +245,8 @@ Popup {
             Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
             color: editor.agent.liveClient ? "#87dec7" : "#8fa0a4"
             text: editor.agent.liveClient
-                  ? "Claude Code is connected. If it was started with Chorus Cut as a channel, it gets this right away; otherwise it sees it next time it checks."
-                  : "No Claude Code is connected right now. The request waits in Plan ▸ Requests; ask your agent to check its Chorus Cut requests."
+                  ? "Claude Code is connected. If it was started with ChorusCut as a channel, it gets this right away; otherwise it sees it next time it checks."
+                  : "No Claude Code is connected right now. The request waits in Plan ▸ Requests; ask your agent to check its ChorusCut requests."
         }
         RowLayout {
             Layout.fillWidth: true

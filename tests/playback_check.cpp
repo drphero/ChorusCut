@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     qputenv("CHORUS_WORKFLOWS_DIR", QFile::encodeName(scratch.filePath("Workflows")));
     qputenv("CHORUS_NOTIFY_LOG", QFile::encodeName(scratch.filePath("notify.log")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Playback Check");
     Mlt::Factory::init();
     const int start = QString(argv[2]).toInt(), count = QString(argv[3]).toInt();

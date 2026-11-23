@@ -3,7 +3,7 @@
 #include <QJsonObject>
 #include <QString>
 
-// What an agent sees of Chorus Cut over MCP: the tool list, the server instructions and the
+// What an agent sees of ChorusCut over MCP: the tool list, the server instructions and the
 // planning prompt. Shared by the stdio program agents launch (choruscut-mcp) and the app,
 // which carries out the tool calls on its own command layer.
 namespace AgentTools {

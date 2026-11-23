@@ -11,7 +11,7 @@ class Editor;
 class QNetworkReply;
 class QWebSocket;
 
-// Runs Chorus Cut jobs on a ComfyUI server: the user's own machine or a rented GPU.
+// Runs ChorusCut jobs on a ComfyUI server: the user's own machine or a rented GPU.
 // Jobs are recorded in the project (table "jobs"), so closing the project or the app,
 // or losing the connection, does not lose them: reopening the project picks them up.
 // Today the only job is lyric alignment (the ChorusCutAlignLyrics node).
@@ -97,6 +97,7 @@ private:
     bool tokenLoading = false, testWaiting = false, keychainMissing = false;
     int tokenRead = 0;  // a keychain read answers only if no newer one, or a token set by hand, came after it
     QString keychainService() const;
+    void readToken(const QString& service, int mine);
     void loadToken();
     void storeToken(const QString& value);
     bool uploading = false;

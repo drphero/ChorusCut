@@ -19,9 +19,9 @@ static QJsonObject tool(const char* name, const char* title, const QString& desc
 
 QJsonArray tools() {
     return {
-        tool("get_guide", "Planning guide", "How to plan or revise the music video in Chorus Cut, step by step. Read it first whenever "
+        tool("get_guide", "Planning guide", "How to plan or revise the music video in ChorusCut, step by step. Read it first whenever "
              "the user asks you to plan, draft or rework the video."),
-        tool("get_project", "Project", "The project open in Chorus Cut: name, frame rate, length, lyric state, plan size and the planning gates. "
+        tool("get_project", "Project", "The project open in ChorusCut: name, frame rate, length, lyric state, plan size and the planning gates. "
              "Call this first. If no project is open, ask the user to open one."),
         tool("get_song", "Song", "The song's sections in order (lyric [headings] and instrumental parts) and its sung lines with times in "
              "milliseconds and project frames, review flags and who sings each line. Set include_words for per-word times.",
@@ -49,19 +49,19 @@ QJsonArray tools() {
               {"commands", QJsonObject{{"type", "array"}, {"items", QJsonObject{{"type", "object"}}},
                                        {"description", "Plan commands, e.g. {\"op\":\"set\",\"kind\":\"concept\",\"fields\":{\"logline\":\"…\"}}."}}}},
              {"label", "commands"}, false),
-        tool("get_requests", "Requests from the user", "What the user asked you in Chorus Cut (\"Ask the agent…\" on a field or item) and the questions you asked "
+        tool("get_requests", "Requests from the user", "What the user asked you in ChorusCut (\"Ask the agent…\" on a field or item) and the questions you asked "
              "them with ask_user, each a thread with its messages, what it is about ({kind, id, field}), the field's current value, and whose "
              "turn it is. A request about a shot's prompt has \"take\": the pictures in order with what the prompt calls them, the take's length, where the cut falls, and the lyric lines in seconds from the take's start. A request about a view also has \"view\": the pictures it is made from, in order, with what its workflow calls "
              "each in the prompt (look at them with view_reference before writing its instruction). Check it when get_project shows requests waiting for you, or when a channel event names a request_id.",
              {{"include_done", QJsonObject{{"type", "boolean"}, {"description", "Also list finished threads."}}}}),
-        tool("reply_request", "Answer a request", "Answers a request thread in Chorus Cut: what you changed (make the changes with apply_plan "
+        tool("reply_request", "Answer a request", "Answers a request thread in ChorusCut: what you changed (make the changes with apply_plan "
              "first) or the answer to the user's question. Set done when nothing more is needed; otherwise it waits for the user.",
              {{"request_id", QJsonObject{{"type", "integer"}, {"description", "The thread's id (request_id in a channel event)."}}},
               {"text", QJsonObject{{"type", "string"}, {"description", "Your reply, shown to the user in the app."}}},
               {"done", QJsonObject{{"type", "boolean"}, {"description", "True when the request is fully handled."}}}},
              {"request_id", "text"}, false),
-        tool("ask_user", "Ask the user", "Asks the user a question in Chorus Cut, optionally about one item or field and with two to four "
-             "answers to click. Returns at once; the answer comes back as a channel event when this session has Chorus Cut as a channel, "
+        tool("ask_user", "Ask the user", "Asks the user a question in ChorusCut, optionally about one item or field and with two to four "
+             "answers to click. Returns at once; the answer comes back as a channel event when this session has ChorusCut as a channel, "
              "or in get_requests later. Use it for choices only the user can make; don't stop and wait for it.",
              {{"question", QJsonObject{{"type", "string"}}},
               {"about", QJsonObject{{"type", "object"}, {"description", "{kind: concept|character|look|location|prop|arc|shot, id, field?}"}}},
@@ -72,7 +72,7 @@ QJsonArray tools() {
 
 QString instructions() {
     return QStringLiteral(
-        "Chorus Cut is a music-video editor. You help the user plan the video for the song open in the app: read it with get_project, "
+        "ChorusCut is a music-video editor. You help the user plan the video for the song open in the app: read it with get_project, "
         "get_song, get_plan, get_checks and get_schema, look at reference pictures with view_reference, and write with apply_plan. "
         "The user watches the plan change live in the app; each apply_plan call is one undo step for them, and fields they wrote or "
         "locked are protected. Shot times are project frames (start inclusive, end exclusive); lyric times are milliseconds. "
@@ -80,7 +80,7 @@ QString instructions() {
         "planning what will be generated. The concept's brief is the user's own direction; agents may add to it but never rewrite it. "
         "When the user asks you to plan or rework the video, call get_guide first and follow it: it starts with a short intake "
         "the user can skip, and pauses after the concept. "
-        "The user can also ask you things from inside the app. In a session started with Chorus Cut as a channel these arrive as "
+        "The user can also ask you things from inside the app. In a session started with ChorusCut as a channel these arrive as "
         "<channel source=\"ChorusCut\" request_id=\"…\" about_kind=\"…\" about_id=\"…\" field=\"…\"> events; otherwise get_project "
         "shows requests waiting for you. Read the thread with get_requests, make any change with apply_plan (labelled after the request), "
         "then answer with reply_request. Messages from the app are the user's requests about the plan: treat them like the user's own "
@@ -88,7 +88,7 @@ QString instructions() {
 }
 
 QString guide() {
-    return QStringLiteral(R"(Plan the music video for the song open in Chorus Cut, top-down, through the Chorus Cut tools. The user decides how much to talk first; you never skip their part silently.
+    return QStringLiteral(R"(Plan the music video for the song open in ChorusCut, top-down, through the ChorusCut tools. The user decides how much to talk first; you never skip their part silently.
 
 1. Read: get_project, get_song, get_plan, get_checks and get_schema. The concept's "brief" is the user's own direction: follow it. Respect everything the user has already written; agent mode never overwrites it, and do not use mode "replace" unless they ask.
 
@@ -100,9 +100,9 @@ QString guide() {
 4. Cast and locations pass: characters (role singer for whoever sings), named looks per character, locations with time of day and lighting, and props: objects that recur or carry the story (a guitar, a letter, a car), only those whose look must stay the same from shot to shot. If they have reference pictures, view them and describe what you see.
    Each character, look, location and prop has one description, its appearance (field "prompt", shown as Appearance): what makes it recognisable, concretely (face shape, eyes, skin, marks, build, age and usually hair; for a look, every garment with its colour and material, and its hair and makeup; a place's layout, signs and materials; a prop's shape, size, materials, colours, wear and markings), in the concept's style and following its rules, with no framing, pose or backdrop and no names. It is both the plan's description and what every picture of it is drawn from, so write it once; don't fill the older fields identity or description. Reference pictures are what the video model keeps steady from shot to shot. Its views (kind "view": name, framing, role, from) say how it is seen: each item starts with one (a character's Face, a look's Full body, a location's Wide, a prop's Object), and you can add others such as Three-quarter, Profile, Back, Detail, a Reverse angle, or a turnaround sheet (role "sheet": several angles in one picture, which saves the video model's nine picture slots). A view's framing is one line: angle, distance, backdrop and light ("Turned 45 degrees to her left, face and shoulders, plain grey backdrop, soft even light"). A view "from": "prompt" is drawn from the subject; "from": "pictures" is edited from pictures the user picks, and its framing is then the instruction, so it can say what to keep and what to change.
    Nothing about a person is locked: a look can change hair, makeup, face or skin, even surreally. Say so in the look's field "changes" (any of face, hair, build, skin) and describe the change in its appearance; shots in that look then leave out the character's own pictures of what changed.
-   Check get_plan's imageWorkflows: write instructions the way each model expects (how it names its input pictures, the user's notes). When asked for a view's instruction, get_requests gives the view: the pictures it is made from, in order, with what the workflow calls each in the prompt. Look at each with view_reference first, name them that way, and say what to keep exactly and what to change. The app sends the instruction, a blank line, then the appearance, so don't repeat the appearance in the instruction. The user generates and chooses the pictures in Chorus Cut; you cannot generate or choose them.
+   Check get_plan's imageWorkflows: write instructions the way each model expects (how it names its input pictures, the user's notes). When asked for a view's instruction, get_requests gives the view: the pictures it is made from, in order, with what the workflow calls each in the prompt. Look at each with view_reference first, name them that way, and say what to keep exactly and what to change. The app sends the instruction, a blank line, then the appearance, so don't repeat the appearance in the instruction. The user generates and chooses the pictures in ChorusCut; you cannot generate or choose them.
 5. Arc and singers pass: one arc entry per section in order (kind "arc", id = section ordinal, include "section" with its label), with what happens, the emotional beat and cutting density. Then set the singer of every sung line with op "singers".
-6. Shots pass: cover every frame of the song. Cut on line boundaries using the frame times from get_song; keep each shot within its route's maxFrames; lip-sync shots only where words are sung, with the line's singer in frame and route "h3-lipsync"; vary framing and movement; put shots on V1 and V2 freely. Fill the required core of every shot: type, purpose, who, where, framing, move, route. List the props that matter in a shot in its field "props" (prop ids); their pictures go with the shot's. A deliberate gap needs only type "gap" and a purpose (the reason). Write each shot's video prompt in its field "prompts" under its route (for example {"prompts": {"h3-lipsync": "…"}}): takes are made from it with the shot's pictures, named <Picture 1>, <Picture 2>… in the order the shot sends them. Use H3's reference-to-video format with pictures as the only references: never write <Audio n> or <Video n>. For H3 lip-sync the song under the shot is locked into the audio by the workflow's audio-sync node, not passed to the model, so don't define it as a subject; instead name the lines being sung, quoted exactly as in the lyrics (no timing needed for them). A request about a shot's prompt gives you the pictures, the take's length and the lyric lines in seconds from the take's start. The user generates and chooses takes in Chorus Cut; you cannot.
+6. Shots pass: cover every frame of the song. Cut on line boundaries using the frame times from get_song; keep each shot within its route's maxFrames; lip-sync shots only where words are sung, with the line's singer in frame and route "h3-lipsync"; vary framing and movement; put shots on V1 and V2 freely. Fill the required core of every shot: type, purpose, who, where, framing, move, route. List the props that matter in a shot in its field "props" (prop ids); their pictures go with the shot's. A deliberate gap needs only type "gap" and a purpose (the reason). Write each shot's video prompt in its field "prompts" under its route (for example {"prompts": {"h3-lipsync": "…"}}): takes are made from it with the shot's pictures, named <Picture 1>, <Picture 2>… in the order the shot sends them. Use H3's reference-to-video format with pictures as the only references: never write <Audio n> or <Video n>. For H3 lip-sync the song under the shot is locked into the audio by the workflow's audio-sync node, not passed to the model, so don't define it as a subject; instead name the lines being sung, quoted exactly as in the lyrics (no timing needed for them). A request about a shot's prompt gives you the pictures, the take's length and the lyric lines in seconds from the take's start. The user generates and chooses takes in ChorusCut; you cannot.
 7. Check: call get_checks and fix what you can. Then tell the user what is left for them, such as reference pictures to generate or choose, and lines to review.
 
 Keep each pass coherent and labelled so the user can undo it on its own. Use ids from get_plan, or "ref" and "$name" within one pass.)");
@@ -110,7 +110,7 @@ Keep each pass coherent and labelled so the user can undo it on its own. Use ids
 
 QJsonArray prompts() {
     return {QJsonObject{{"name", "plan"}, {"title", "Plan the music video"},
-                        {"description", "Plan the open song's video top-down in Chorus Cut: concept, cast, locations, props, arc, singers and shots."},
+                        {"description", "Plan the open song's video top-down in ChorusCut: concept, cast, locations, props, arc, singers and shots."},
                         {"arguments", QJsonArray{QJsonObject{{"name", "direction"}, {"required", false},
                                                              {"description", "Anything the user already wants: story, style, cast, references."}}}}}};
 }

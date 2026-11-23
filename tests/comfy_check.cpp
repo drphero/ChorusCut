@@ -54,7 +54,7 @@ static int fail(int code, const QString& why) { qCritical().noquote() << "FAIL" 
 // Real ComfyUI with the node pack: align the project's saved lyrics and import the result.
 static int live(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Comfy Live");
     Mlt::Factory::init();
     Editor editor;
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     qputenv("SDL_AUDIODRIVER", "disk"); qputenv("SDL_AUDIO_DRIVER", "disk");
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(QDir(argv[1]).filePath("../comfy-check.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Comfy Check");
     { QSettings s; s.clear(); }
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);

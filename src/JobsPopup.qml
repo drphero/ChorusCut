@@ -164,7 +164,7 @@ Popup {
             Layout.fillWidth: true; Layout.leftMargin: 24; wrapMode: Text.Wrap; font.pixelSize: 11
             color: "#e7b75f"
             text: jp.notifier.refusal ? jp.notifier.refusal
-                : jp.notifier.permission === "denied" ? "macOS has notifications turned off for Chorus Cut."
+                : jp.notifier.permission === "denied" ? "macOS has notifications turned off for ChorusCut."
                 : jp.notifier.permission === "unavailable" ? "This build can't post macOS notifications; the banner and Dock still work."
                 : "macOS will ask you once to allow them."
         }
@@ -176,7 +176,7 @@ Popup {
         }
         Toggle { objectName: "notifySound"; Layout.leftMargin: 24; text: "With a sound"; enabled: jp.notifier.system; checked: jp.notifier.sound; onToggled: jp.notifier.sound = !checked }
         Toggle { objectName: "notifyDock"; text: "Bounce the Dock icon"; checked: jp.notifier.dock; onToggled: jp.notifier.dock = !checked }
-        Toggle { objectName: "notifyBackground"; text: "Only while Chorus Cut is in the background"; checked: jp.notifier.onlyInBackground
+        Toggle { objectName: "notifyBackground"; text: "Only while ChorusCut is in the background"; checked: jp.notifier.onlyInBackground
                  onToggled: jp.notifier.onlyInBackground = !checked }
         Text {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#6f8085"; font.pixelSize: 11

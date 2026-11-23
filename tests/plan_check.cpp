@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
     QTemporaryDir audioDir;
     qputenv("SDL_AUDIO_DISK_OUTPUT_FILE", QFile::encodeName(audioDir.filePath("capture.raw")));
     QGuiApplication app(argc, argv);
-    app.setOrganizationName("Chorus Cut Tests");
+    app.setOrganizationName("ChorusCut Tests");
     app.setApplicationName("Plan Check");
     Mlt::Factory::init();
     const QUrl project = QUrl::fromLocalFile(QFileInfo(argv[1]).absoluteFilePath());

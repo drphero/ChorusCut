@@ -1,8 +1,8 @@
-"""A stand-in ComfyUI server for testing Chorus Cut's job handling without a GPU.
+"""A stand-in ComfyUI server for testing ChorusCut's job handling without a GPU.
 
 usage: comfy_stub.py PORT ALIGNMENT_JSON
 
-Implements the endpoints Chorus Cut uses (/system_stats, /object_info/<node>, /upload/image,
+Implements the endpoints ChorusCut uses (/system_stats, /object_info/<node>, /upload/image,
 /prompt, /history/<id>, /queue, /interrupt, /view). An alignment job answers with ALIGNMENT_JSON,
 every word shifted by the stub's current "shift" in milliseconds. Any other graph is a picture
 job: each SaveImage node outputs one PNG (PreviewImage a temporary one), served by /view. A face
