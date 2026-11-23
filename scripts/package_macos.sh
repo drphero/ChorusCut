@@ -141,6 +141,18 @@ PLIST="${APP}/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUNDLE_VERSION}" "$PLIST" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUNDLE_VERSION}" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright Copyright (C) 2026 drphero. Licensed under GPL-3.0-or-later." "$PLIST" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string Copyright (C) 2026 drphero. Licensed under GPL-3.0-or-later." "$PLIST"
+
+# Bundle GPL-3.0 license text and third-party library notices inside the app bundle.
+mkdir -p "${APP}/Contents/Resources"
+for doc in LICENSE THIRD_PARTY_LICENSES.txt; do
+    if [[ ! -f "${REPO_ROOT}/${doc}" ]]; then
+        echo "Error: required license file missing: ${REPO_ROOT}/${doc}" >&2
+        exit 1
+    fi
+    cp "${REPO_ROOT}/${doc}" "${APP}/Contents/Resources/${doc}"
+done
 
 echo "==> Running macdeployqt (${MACDEPLOYQT})"
 # Deploy core Qt frameworks and plugins without -qmldir: on Homebrew's monolithic Qt,
@@ -814,6 +826,8 @@ for p in sorted(contents.rglob("*")):
 required_paths = [
     "Contents/MacOS/ChorusCut",
     "Contents/MacOS/choruscut-mcp",
+    "Contents/Resources/LICENSE",
+    "Contents/Resources/THIRD_PARTY_LICENSES.txt",
     "Contents/Resources/qt.conf",
     "Contents/Resources/align.py",
     "Contents/Resources/mlt-7/profiles/atsc_720p_24",

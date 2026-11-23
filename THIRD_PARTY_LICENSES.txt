@@ -1,0 +1,92 @@
+ChorusCut — Third-Party Licenses & Notices
+==========================================
+
+ChorusCut
+Copyright (C) 2026 drphero
+License: GNU General Public License v3.0 or later (GPL-3.0-or-later)
+Source:  https://github.com/drphero/ChorusCut
+
+ChorusCut is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the accompanying LICENSE file for the full license text.
+
+Self-contained macOS release bundles (`ChorusCut.app` / `.dmg`) include the
+following third-party open-source libraries, built unmodified from Homebrew
+formulae and distributed together under GPL-3.0-or-later:
+
+Core Application & Media Frameworks
+-----------------------------------
+- Qt 6 (qtbase, qtdeclarative, qtsvg, qtmultimedia, qtwebsockets)
+  License: LGPL-3.0-only / GPL-3.0-only (with Qt-GPL-exception-1.0) / BSD-3-Clause
+  Source:  https://www.qt.io/  (https://code.qt.io/)
+
+- MLT Framework 7 (mlt / libmlt-7 / libmlt++-7)
+  License: LGPL-2.1-only
+  Source:  https://www.mltframework.org/  (https://github.com/mltframework/mlt)
+
+- FFmpeg (libavcodec, libavdevice, libavfilter, libavformat, libavutil,
+  libswresample, libswscale — built with --enable-gpl --enable-version3)
+  License: GPL-3.0-or-later
+  Source:  https://ffmpeg.org/
+
+- QtKeychain (qt6keychain)
+  License: BSD-2-Clause
+  Source:  https://github.com/frankosterfeld/qtkeychain
+
+- SDL2-compat & SDL3
+  License: Zlib
+  Source:  https://libsdl.org/  (https://github.com/libsdl-org/sdl2-compat)
+
+Bundled Transitive Libraries (macOS .dmg)
+-----------------------------------------
+- x264                GPL-2.0-or-later                    https://www.videolan.org/developers/x264.html
+- x265                GPL-2.0-or-later                    https://github.com/Multicorewareinc/x265
+- FFTW3               GPL-2.0-or-later AND BSD-2-Clause   https://fftw.org/
+- SVT-AV1             BSD-3-Clause                        https://gitlab.com/AOMediaCodec/SVT-AV1
+- dav1d               BSD-2-Clause                        https://code.videolan.org/videolan/dav1d
+- libvpx              BSD-3-Clause                        https://www.webmproject.org/code/
+- libvmaf             BSD-2-Clause-Patent                 https://github.com/Netflix/vmaf
+- WebP                BSD-3-Clause                        https://developers.google.com/speed/webp/
+- Opus                BSD-3-Clause                        https://www.opus-codec.org/
+- LAME                LGPL-2.0-or-later                   https://lame.sourceforge.io/
+- mpg123              LGPL-2.1-only                       https://www.mpg123.de/
+- libsamplerate       BSD-2-Clause                        https://github.com/libsndfile/libsamplerate
+- OpenSSL 3           Apache-2.0                          https://openssl-library.org/
+- GLib                LGPL-2.1-or-later                   https://docs.gtk.org/glib/
+- gettext (libintl)   LGPL-2.1-or-later / GPL-3.0-or-later https://www.gnu.org/software/gettext/
+- D-Bus               AFL-2.1 OR GPL-2.0-or-later         https://wiki.freedesktop.org/www/Software/dbus
+- FreeType            FTL                                 https://www.freetype.org/
+- HarfBuzz            MIT                                 https://github.com/harfbuzz/harfbuzz
+- Graphite2           MIT OR MPL-2.0 OR LGPL-2.1-or-later https://graphite.sil.org/
+- ICU (icu4c)         Unicode-3.0                         https://icu.unicode.org/home
+- PCRE2               BSD-3-Clause                        https://www.pcre.org/
+- libpng              libpng-2.0                          https://www.libpng.org/pub/png/libpng.html
+- libjpeg-turbo       IJG AND Zlib AND BSD-3-Clause       https://www.libjpeg-turbo.org/
+- LibTIFF             libtiff                             https://libtiff.gitlab.io/libtiff/
+- libexif             LGPL-2.1-or-later                   https://libexif.github.io/
+- Brotli              MIT                                 https://github.com/google/brotli
+- Zstandard (zstd)    BSD-3-Clause / MIT                  https://facebook.github.io/zstd/
+- XZ Utils (liblzma)  0BSD AND GPL-2.0-or-later           https://tukaani.org/xz/
+- libb2               CC0-1.0                             https://blake2.net/
+- double-conversion   BSD-3-Clause                        https://github.com/google/double-conversion
+- MD4C                MIT                                 https://github.com/mity/md4c
+
+Corresponding Source Offer (GPL-3.0 / LGPL)
+-------------------------------------------
+Complete source code for ChorusCut is available at:
+  https://github.com/drphero/ChorusCut
+
+All bundled third-party libraries in official macOS release binaries are built
+unmodified from the corresponding Homebrew core formulae
+(https://github.com/Homebrew/homebrew-core) and their upstream sources linked
+above.
+
+ComfyUI-ChorusCut Alignment Models (Downloaded at Runtime, Not Bundled)
+-----------------------------------------------------------------------
+The `ComfyUI-ChorusCut` node pack itself is licensed under GPL-3.0-or-later.
+Default model weights downloaded on first use carry commercial-friendly licenses:
+- KimberleyJSN/melbandroformer                                      MIT
+- nvidia/parakeet-ctc-0.6b                                          CC-BY-4.0
+- facebook/wav2vec2-large-960h-lv60-self                            Apache-2.0
+- jonatasgrosman/wav2vec2-large-xlsr-53-{english,french,german,spanish}  Apache-2.0

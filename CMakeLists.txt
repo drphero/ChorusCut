@@ -46,7 +46,8 @@ set_target_properties(ChorusCut PROPERTIES
                       MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.ChorusCut
                       MACOSX_BUNDLE_ICON_FILE ChorusCut.icns
                       MACOSX_BUNDLE_SHORT_VERSION_STRING "${_choruscut_short_version}"
-                      MACOSX_BUNDLE_BUNDLE_VERSION "${_choruscut_bundle_version}")
+                      MACOSX_BUNDLE_BUNDLE_VERSION "${_choruscut_bundle_version}"
+                      MACOSX_BUNDLE_COPYRIGHT "Copyright (C) 2026 drphero. Licensed under GPL-3.0-or-later.")
 # macOS refuses notification permission to a bundle carrying only the linker's signature, which
 # names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
 # build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.

@@ -425,12 +425,14 @@ jobs:
 
           APP="${SMOKE}/ChorusCut.app"
 
-          echo "=== Verify Info.plist metadata ==="
+          echo "=== Verify Info.plist metadata and bundled license files ==="
           BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Contents/Info.plist")"
           BUNDLE_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")"
           echo "CFBundleIdentifier=${BUNDLE_ID} CFBundleShortVersionString=${BUNDLE_VER}"
           [[ "$BUNDLE_ID" == "org.choruscut.ChorusCut" ]]
           [[ "$BUNDLE_VER" == "$VERSION" ]]
+          test -f "${APP}/Contents/Resources/LICENSE"
+          test -f "${APP}/Contents/Resources/THIRD_PARTY_LICENSES.txt"
 
           echo "=== Verify code signature ==="
           codesign --verify --deep --strict --verbose=2 "$APP"
@@ -479,6 +481,7 @@ jobs:
           unzip -q "$ZIP_PATH" -d "${SMOKE}/comfy"
           test -f "${SMOKE}/comfy/ComfyUI-ChorusCut/__init__.py"
           test -f "${SMOKE}/comfy/ComfyUI-ChorusCut/requirements.txt"
+          test -f "${SMOKE}/comfy/ComfyUI-ChorusCut/LICENSE"
           if find "${SMOKE}/comfy" \( -name "__pycache__" -o -name ".DS_Store" \) | grep -q .; then
             echo "::error::Unexpected cache or .DS_Store files inside ${ZIP_PATH}"
             exit 1
@@ -552,6 +555,10 @@ jobs:
             echo "\`\`\`"
             cat dist/SHA256SUMS.txt
             echo "\`\`\`"
+            echo ""
+            echo "### License"
+            echo ""
+            echo "Copyright © 2026 drphero. Licensed under **GNU GPL-3.0-or-later** (\`LICENSE\` and \`THIRD_PARTY_LICENSES.txt\` are included in the repository and inside \`ChorusCut.app/Contents/Resources/\`)."
           } > "$NOTES"
 
           gh release create "$TAG" \

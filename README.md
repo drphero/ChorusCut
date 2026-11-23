@@ -389,6 +389,8 @@ To regenerate the macOS app icon (`resources/icon/ChorusCut.icns`) after editing
 
 ## License
 
-ChorusCut is intended for open-source release, and its distribution license is **to be announced (TBD)** prior to the first public release.
+Copyright © 2026 drphero.
 
-All default alignment models downloaded by `comfyui/ComfyUI-ChorusCut` are licensed for commercial use (MIT, CC-BY-4.0, and Apache-2.0).
+ChorusCut — including the desktop application and the bundled [`comfyui/ComfyUI-ChorusCut`](comfyui/ComfyUI-ChorusCut) node pack — is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [`LICENSE`](LICENSE) for the full license text and [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) for notices and source links covering the libraries bundled in macOS releases (Qt 6, MLT 7, FFmpeg, x264, x265, FFTW3, OpenSSL 3, QtKeychain, SDL2/SDL3, and transitive dependencies).
+
+This license covers the ChorusCut software only — videos, XML timelines, and projects you create with ChorusCut are yours with no license restrictions. All default alignment models downloaded by `comfyui/ComfyUI-ChorusCut` are licensed for commercial use (MIT, CC-BY-4.0, and Apache-2.0).
