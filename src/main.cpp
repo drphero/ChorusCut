@@ -50,6 +50,22 @@ static void carryOverTwoWordName() {
     }
 }
 
+// Packaged .app bundles carry their own MLT plugins and data so they stay isolated
+// from any Homebrew MLT installation (or lack of one) on the user's Mac.
+static void configureBundledMlt() {
+    const QDir binDir(QCoreApplication::applicationDirPath());
+    const QString plugins = QDir::cleanPath(binDir.absoluteFilePath("../PlugIns/mlt-7"));
+    const QString data = QDir::cleanPath(binDir.absoluteFilePath("../Resources/mlt-7"));
+    if (QFileInfo(plugins).isDir()) qputenv("MLT_REPOSITORY", plugins.toUtf8());
+    if (QFileInfo(data).isDir()) {
+        qputenv("MLT_DATA", data.toUtf8());
+        const QString profiles = QDir(data).filePath("profiles");
+        if (QFileInfo(profiles).isDir()) qputenv("MLT_PROFILES_PATH", profiles.toUtf8());
+        const QString presets = QDir(data).filePath("presets");
+        if (QFileInfo(presets).isDir()) qputenv("MLT_PRESETS_PATH", presets.toUtf8());
+    }
+}
+
 int main(int argc,char** argv) {
     QGuiApplication app(argc,argv);
     app.setApplicationName("ChorusCut");
@@ -62,6 +78,7 @@ int main(int argc,char** argv) {
         qputenv("SDL_AUDIODRIVER", "disk");
         qputenv("SDL_AUDIO_DRIVER", "disk");
     }
+    configureBundledMlt();
     Mlt::Factory::init();
     // An interactive launch opens the Project Manager. Scripted checks open a project directly:
     // --project PATH, or the Example beside a development build.

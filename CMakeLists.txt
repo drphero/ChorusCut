@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
-project(ChorusCut VERSION 0.1 LANGUAGES CXX)
+project(ChorusCut VERSION 0.1.0 LANGUAGES CXX)
+set(CHORUSCUT_VERSION "${PROJECT_VERSION}" CACHE STRING "Bundle version stamped into Info.plist")
+string(REGEX REPLACE "^v" "" _choruscut_short_version "${CHORUSCUT_VERSION}")
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)*" _choruscut_bundle_version "${_choruscut_short_version}")
+if(NOT _choruscut_bundle_version)
+    set(_choruscut_bundle_version "${PROJECT_VERSION}")
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Gui Network Quick Qml QuickControls2 Sql Test WebSockets)
@@ -36,13 +42,16 @@ qt_add_executable(choruscut-mcp src/mcp_shim.cpp src/agent_tools.cpp)
 target_link_libraries(choruscut-mcp PRIVATE Qt6::Core Qt6::Network)
 set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
 add_dependencies(ChorusCut choruscut-mcp)
-set_target_properties(ChorusCut PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.prototype
-                      MACOSX_BUNDLE_ICON_FILE ChorusCut.icns)
+set_target_properties(ChorusCut PROPERTIES
+                      MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.ChorusCut
+                      MACOSX_BUNDLE_ICON_FILE ChorusCut.icns
+                      MACOSX_BUNDLE_SHORT_VERSION_STRING "${_choruscut_short_version}"
+                      MACOSX_BUNDLE_BUNDLE_VERSION "${_choruscut_bundle_version}")
 # macOS refuses notification permission to a bundle carrying only the linker's signature, which
 # names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
 # build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.
 add_custom_target(ChorusCutSign ALL
-    COMMAND codesign --force --sign - --identifier org.choruscut.prototype "$<TARGET_BUNDLE_DIR:ChorusCut>"
+    COMMAND codesign --force --sign - --identifier org.choruscut.ChorusCut "$<TARGET_BUNDLE_DIR:ChorusCut>"
     DEPENDS ChorusCut choruscut-mcp VERBATIM)
 
 # Uses the same editor commands as QML. Build explicitly for the import regression.

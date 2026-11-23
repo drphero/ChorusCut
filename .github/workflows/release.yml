@@ -1,0 +1,564 @@
+# ChorusCut macOS Release Workflow (Apple Silicon / arm64)
+#
+# Triggers:
+#   - Push of a version tag matching `v*` (e.g. `v0.1.0`) -> builds, tests, packages,
+#     smoke-tests the `.dmg`, uploads workflow artifacts, and creates a Draft GitHub Release.
+#   - Manual `workflow_dispatch` -> builds, tests, packages, smoke-tests, and uploads
+#     workflow artifacts. Creates a Draft GitHub Release only when `create_draft_release`
+#     is checked (defaults to false so manual test runs never pollute Releases).
+#
+# Optional GitHub Repository Secrets (Auto-Detected):
+#   Developer ID code signing (both required to enable; otherwise falls back to ad-hoc `-`):
+#     - APPLE_CERTIFICATE_P12       Base64-encoded Developer ID Application `.p12` certificate
+#                                   (e.g. `base64 -i DeveloperID.p12 | pbcopy`)
+#     - APPLE_CERTIFICATE_PASSWORD  Password protecting the `.p12` archive
+#     - APPLE_SIGNING_IDENTITY      Signing identity name
+#                                   (e.g. `Developer ID Application: Your Name (TEAMID)`)
+#
+#   Apple notarization (all three required; enabled automatically when Developer ID signing
+#   is active):
+#     - APPLE_ID                    Apple ID email for your Apple Developer account
+#     - APPLE_TEAM_ID               10-character Apple Developer Team ID
+#     - APPLE_APP_SPECIFIC_PASSWORD App-specific password from https://appleid.apple.com
+
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without leading v (e.g. 0.1.0-dev). Leave empty for 0.1.0-dev.<short-sha>."
+        required: false
+        type: string
+        default: ""
+      create_draft_release:
+        description: "Create a Draft GitHub Release (always true on v* tag pushes)."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos-arm64:
+    name: Build, Test & Package (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release version and mode
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CREATE_DRAFT: ${{ inputs.create_draft_release }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            TAG="$REF_NAME"
+            VERSION="${TAG#v}"
+            CREATE_DRAFT="true"
+          else
+            if [[ -n "$INPUT_VERSION" ]]; then
+              VERSION="${INPUT_VERSION#v}"
+            else
+              SHORT_SHA="$(git rev-parse --short HEAD)"
+              VERSION="0.1.0-dev.${SHORT_SHA}"
+            fi
+            TAG="v${VERSION}"
+            if [[ "$INPUT_CREATE_DRAFT" == "true" ]]; then
+              CREATE_DRAFT="true"
+            else
+              CREATE_DRAFT="false"
+            fi
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release version '${VERSION}'. Expected semver like 0.1.0 or 0.1.0-dev.abc1234."
+            exit 1
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "create_draft=${CREATE_DRAFT}"
+            echo "dmg_name=ChorusCut-${VERSION}-macos-arm64.dmg"
+            echo "zip_name=ComfyUI-ChorusCut-${VERSION}.zip"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Release tag: ${TAG} | version: ${VERSION} | create_draft: ${CREATE_DRAFT}"
+
+      - name: Detect Apple signing and notarization configuration
+        id: signing_mode
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SIGNED="false"
+          NOTARIZE="false"
+
+          if [[ -n "$APPLE_CERTIFICATE_P12" && -n "$APPLE_SIGNING_IDENTITY" ]]; then
+            SIGNED="true"
+            if [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+              NOTARIZE="true"
+            fi
+          fi
+
+          {
+            echo "signed=${SIGNED}"
+            echo "notarize=${NOTARIZE}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Developer ID signing: ${SIGNED} | Notarization: ${NOTARIZE}"
+
+      - name: Install Homebrew dependencies
+        id: brew
+        env:
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: |
+          set -euo pipefail
+          brew install qt qtkeychain mlt ffmpeg pkg-config cmake
+          BREW_PREFIX="$(brew --prefix)"
+          echo "${BREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "prefix=${BREW_PREFIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure and build ChorusCut and headless test targets
+        env:
+          BREW_PREFIX: ${{ steps.brew.outputs.prefix }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${BREW_PREFIX}" \
+            -DCHORUSCUT_VERSION="${VERSION}"
+
+          cmake --build build --parallel "$(sysctl -n hw.ncpu)" --target \
+            ChorusCut \
+            ChorusCutSign \
+            ChorusCutImportCheck \
+            ChorusCutPlaybackCheck \
+            ChorusCutProjectsCheck \
+            ChorusCutTimelineCheck \
+            ChorusCutPlanCheck \
+            ChorusCutMcpCheck \
+            ChorusCutRenderCheck \
+            ChorusCutComfyCheck
+
+      - name: Run headless test suite and disk-output audio regression
+        # Safety: every audio check routes strictly through SDL's disk driver and never
+        # touches physical audio hardware or mutates Example/ in-place.
+        #
+        # Omitted in Homebrew-only CI:
+        #   - ChorusCutGenerateCheck: tests/comfy_stub.py encodes animated WebP previews with
+        #     ffmpeg's `libwebp_anim`, which Homebrew's standard `ffmpeg` formula omits.
+        #   - ChorusCutLyricsCheck: requires local PyTorch/torchaudio and ~5.5 GB of alignment weights.
+        run: |
+          set -euo pipefail
+          export QT_QPA_PLATFORM=offscreen
+          export SDL_AUDIODRIVER=disk
+          export SDL_AUDIO_DRIVER=disk
+
+          WORK="$(mktemp -d "${RUNNER_TEMP}/choruscut-tests.XXXXXX")"
+          export CHORUS_TRASH_DIR="${WORK}/trash"
+          export CHORUS_AGENT_SOCKET="choruscut-ci-$$"
+          export CHORUS_WORKFLOWS_DIR="${WORK}/workflows"
+          export CHORUS_NOTIFY_LOG="${WORK}/notify.log"
+          mkdir -p "$CHORUS_TRASH_DIR" "$CHORUS_WORKFLOWS_DIR"
+
+          # Create an unlocked ephemeral keychain for QtKeychain (ChorusCutComfyCheck)
+          # so CI never hangs on a locked macOS login keychain.
+          ORIG_DEFAULT_KC="$(security default-keychain -d user | tr -d ' \"' || true)"
+          ORIG_SEARCH_KCS=()
+          while IFS= read -r kc; do
+            kc="$(echo "$kc" | tr -d ' \"')"
+            [[ -n "$kc" ]] && ORIG_SEARCH_KCS+=("$kc")
+          done < <(security list-keychains -d user || true)
+          TEST_KC="${WORK}/ci-test.keychain-db"
+
+          cleanup() {
+            if [[ -n "${ORIG_DEFAULT_KC:-}" ]]; then
+              security default-keychain -d user -s "$ORIG_DEFAULT_KC" || true
+            fi
+            if [[ "${#ORIG_SEARCH_KCS[@]}" -gt 0 ]]; then
+              security list-keychains -d user -s "${ORIG_SEARCH_KCS[@]}" || true
+            fi
+            security delete-keychain "$TEST_KC" 2>/dev/null || true
+            rm -rf "$WORK"
+          }
+          trap cleanup EXIT
+
+          security create-keychain -p "ci-test" "$TEST_KC"
+          security set-keychain-settings -lut 21600 "$TEST_KC"
+          security unlock-keychain -p "ci-test" "$TEST_KC"
+          security list-keychains -d user -s "$TEST_KC" "${ORIG_SEARCH_KCS[@]}"
+          security default-keychain -d user -s "$TEST_KC"
+
+          # 1. Core media, frame boundaries, trim, undo/redo, and XML export on temp Example copy
+          echo "=== [1/10] ChorusCut --check ==="
+          mkdir -p "${WORK}/example-check"
+          cp -R Example/Media "${WORK}/example-check/Media"
+          SDL_AUDIO_DISK_OUTPUT_FILE="${WORK}/check.raw" \
+            build/ChorusCut.app/Contents/MacOS/ChorusCut --project "${WORK}/example-check" --check
+
+          # 2. Disk-output playback audio regression (mute, launch default, -24 dB, unity)
+          echo "=== [2/10] tests/monitor_output.py ==="
+          python3 tests/monitor_output.py build/ChorusCut.app/Contents/MacOS/ChorusCut
+
+          # 3. Media import, relocation, XML export, disk monitor mix, and legacy migration
+          echo "=== [3/10] tests/import_project.py ==="
+          python3 tests/import_project.py --build build
+
+          # 4. Playback picture sharpness and frame-exact decode check on temp Example copy
+          echo "=== [4/10] ChorusCutPlaybackCheck (Example) ==="
+          mkdir -p "${WORK}/example-playback"
+          cp -R Example/Media "${WORK}/example-playback/Media"
+          build/ChorusCutPlaybackCheck "${WORK}/example-playback" 60 96
+
+          # 5. Project Manager real-input UI check
+          echo "=== [5/10] ChorusCutProjectsCheck ==="
+          mkdir -p "${WORK}/projects-check"
+          build/ChorusCutProjectsCheck "${WORK}/projects-check" \
+            Example/Media/Master.wav Example/Media/Performance.mp4 Example/Media/Cutaway.mp4
+
+          # Build synthetic song-only projects matching tests/fixtures/cherry_static_alignment.json
+          # (no untracked personal Projects/ directory is needed in CI).
+          ffmpeg -v error -f lavfi -i "sine=f=220:r=48000:d=205" -ac 2 -af "volume=0.05" \
+            "${WORK}/Song.wav"
+          ffmpeg -v error -f lavfi -i "sine=f=220:r=48000:d=205" -ac 2 -af "volume=0.05" \
+            -c:a libmp3lame -b:a 64k "${WORK}/Song.mp3"
+
+          make_synth_project() {
+            local dest="$1"
+            local song_file="$2"
+            local song_name
+            song_name="$(basename "$song_file")"
+            mkdir -p "${dest}/Media/Master"
+            cp "$song_file" "${dest}/Media/Master/${song_name}"
+            python3 - "${dest}/project.sqlite" tests/fixtures/cherry_static_alignment.json "Media/Master/${song_name}" <<'PY'
+          import json, sqlite3, sys
+          db_path, align_path, master_rel = sys.argv[1], sys.argv[2], sys.argv[3]
+          words = json.load(open(align_path, encoding="utf-8"))["words"]
+          by_line = {}
+          for w in words:
+              by_line.setdefault(w["line"], []).append(w["word"])
+          max_line = max(by_line)
+          draft_lines = []
+          sec = 0
+          for n in range(max_line + 1):
+              if n in by_line:
+                  draft_lines.append(" ".join(by_line[n]))
+              elif (n + 1) in by_line and (n == 0 or (n - 1) not in by_line):
+                  sec += 1
+                  draft_lines.append(f"[Section {sec}]")
+              else:
+                  draft_lines.append("")
+          draft = "\n".join(draft_lines)
+          con = sqlite3.connect(db_path)
+          con.execute("CREATE TABLE media(role TEXT PRIMARY KEY, path TEXT NOT NULL)")
+          con.execute("INSERT INTO media VALUES('master', ?)", (master_rel,))
+          con.execute("CREATE TABLE cutaway(id INTEGER PRIMARY KEY CHECK(id=1), start INTEGER NOT NULL, end INTEGER NOT NULL, source INTEGER NOT NULL)")
+          con.execute("INSERT INTO cutaway VALUES(1, 0, 0, 0)")
+          con.execute("CREATE TABLE lyrics(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, draft TEXT NOT NULL, aligned TEXT NOT NULL, words TEXT NOT NULL, sections TEXT NOT NULL DEFAULT '[]')")
+          con.execute("INSERT INTO lyrics VALUES(1, 0, ?, '', '[]', '[]')", (draft,))
+          con.execute("PRAGMA user_version=1")
+          con.commit()
+          con.close()
+          PY
+          }
+
+          # 6. Timeline editing with real input
+          echo "=== [6/10] ChorusCutTimelineCheck ==="
+          make_synth_project "${WORK}/p-timeline" "${WORK}/Song.wav"
+          build/ChorusCutTimelineCheck "${WORK}/p-timeline" \
+            tests/fixtures/cherry_static_alignment.json "${WORK}/timeline.raw"
+
+          # 7. Pre-production planning commands and UI with real input
+          echo "=== [7/10] ChorusCutPlanCheck ==="
+          make_synth_project "${WORK}/p-plan" "${WORK}/Song.wav"
+          build/ChorusCutPlanCheck "${WORK}/p-plan" tests/fixtures/cherry_static_alignment.json
+
+          # 8. End-to-end MCP agent bridge (choruscut-mcp over stdio)
+          echo "=== [8/10] ChorusCutMcpCheck ==="
+          make_synth_project "${WORK}/p-mcp" "${WORK}/Song.wav"
+          build/ChorusCutMcpCheck "${WORK}/p-mcp" \
+            tests/fixtures/cherry_static_alignment.json \
+            build/ChorusCut.app/Contents/MacOS/choruscut-mcp
+
+          # 9. Render dialog (H.264/AAC, Fit/Stretch/Fill, CRF, Cancel) & FCP7 XML export
+          echo "=== [9/10] ChorusCutRenderCheck ==="
+          make_synth_project "${WORK}/p-render" "${WORK}/Song.wav"
+          build/ChorusCutRenderCheck "${WORK}/p-render" tests/fixtures/cherry_static_alignment.json
+
+          # 10. ComfyUI alignment jobs against tests/comfy_stub.py (compact MP3 for fast upload)
+          echo "=== [10/10] ChorusCutComfyCheck ==="
+          make_synth_project "${WORK}/p-comfy" "${WORK}/Song.mp3"
+          build/ChorusCutComfyCheck "${WORK}/p-comfy" \
+            tests/fixtures/cherry_static_alignment.json tests/comfy_stub.py
+
+      - name: Import Developer ID certificate into temporary keychain
+        id: import_cert
+        if: steps.signing_mode.outputs.signed == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${RUNNER_TEMP}/choruscut-signing.keychain-db"
+          CERT_PATH="${RUNNER_TEMP}/certificate.p12"
+          KEYCHAIN_PASS="$(openssl rand -base64 24)"
+
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          EXISTING_KCS=()
+          while IFS= read -r kc; do
+            kc="$(echo "$kc" | tr -d ' \"')"
+            [[ -n "$kc" ]] && EXISTING_KCS+=("$kc")
+          done < <(security list-keychains -d user || true)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${EXISTING_KCS[@]}"
+
+          rm -f "$CERT_PATH"
+          echo "keychain=${KEYCHAIN_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Package self-contained macOS .dmg and ComfyUI node pack
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SIGNED: ${{ steps.signing_mode.outputs.signed }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PATH: ${{ steps.import_cert.outputs.keychain }}
+        run: |
+          set -euo pipefail
+          if [[ "$SIGNED" == "true" ]]; then
+            scripts/package_macos.sh \
+              --app build/ChorusCut.app \
+              --version "$VERSION" \
+              --out dist \
+              --arch arm64 \
+              --sign-identity "$APPLE_SIGNING_IDENTITY" \
+              --keychain "$KEYCHAIN_PATH"
+          else
+            scripts/package_macos.sh \
+              --app build/ChorusCut.app \
+              --version "$VERSION" \
+              --out dist \
+              --arch arm64
+          fi
+          ls -lh dist/
+          cat dist/SHA256SUMS.txt
+
+      - name: Notarize and staple .dmg
+        if: steps.signing_mode.outputs.notarize == 'true'
+        env:
+          DMG_PATH: dist/${{ steps.meta.outputs.dmg_name }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          # Stapling modifies the .dmg; refresh SHA256SUMS.txt to match the final artifact.
+          scripts/package_macos.sh --checksums-only --out dist
+          cat dist/SHA256SUMS.txt
+
+      - name: Smoke-test packaged .dmg, bundle isolation, audio output, and MCP shim
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DMG_PATH: dist/${{ steps.meta.outputs.dmg_name }}
+          ZIP_PATH: dist/${{ steps.meta.outputs.zip_name }}
+          NOTARIZED: ${{ steps.signing_mode.outputs.notarize }}
+        run: |
+          set -euo pipefail
+          export QT_QPA_PLATFORM=offscreen
+          export SDL_AUDIODRIVER=disk
+          export SDL_AUDIO_DRIVER=disk
+
+          SMOKE="$(mktemp -d "${RUNNER_TEMP}/choruscut-smoke.XXXXXX")"
+          MOUNT_DIR="${SMOKE}/mnt"
+          mkdir -p "$MOUNT_DIR" "${SMOKE}/trash" "${SMOKE}/workflows"
+          export CHORUS_TRASH_DIR="${SMOKE}/trash"
+          export CHORUS_AGENT_SOCKET="choruscut-ci-smoke-$$"
+          export CHORUS_WORKFLOWS_DIR="${SMOKE}/workflows"
+          export CHORUS_NOTIFY_LOG="${SMOKE}/notify.log"
+
+          cleanup() {
+            hdiutil detach "$MOUNT_DIR" -force >/dev/null 2>&1 || true
+            rm -rf "$SMOKE"
+          }
+          trap cleanup EXIT
+
+          echo "=== Verify SHA256SUMS.txt ==="
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+
+          echo "=== Mount .dmg and copy ChorusCut.app ==="
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+          test -d "${MOUNT_DIR}/ChorusCut.app"
+          test -L "${MOUNT_DIR}/Applications"
+          ditto "${MOUNT_DIR}/ChorusCut.app" "${SMOKE}/ChorusCut.app"
+          hdiutil detach "$MOUNT_DIR"
+
+          APP="${SMOKE}/ChorusCut.app"
+
+          echo "=== Verify Info.plist metadata ==="
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Contents/Info.plist")"
+          BUNDLE_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")"
+          echo "CFBundleIdentifier=${BUNDLE_ID} CFBundleShortVersionString=${BUNDLE_VER}"
+          [[ "$BUNDLE_ID" == "org.choruscut.ChorusCut" ]]
+          [[ "$BUNDLE_VER" == "$VERSION" ]]
+
+          echo "=== Verify code signature ==="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          if [[ "$NOTARIZED" == "true" ]]; then
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
+            spctl --assess --type execute --verbose=4 "$APP"
+          fi
+
+          echo "=== Verify zero /opt/homebrew or /usr/local Mach-O references ==="
+          BAD_REFS=0
+          while IFS= read -r -d '' bin; do
+            if file -b "$bin" | grep -q "Mach-O"; then
+              if otool -L "$bin" | tail -n +2 | grep -E "(/opt/homebrew|/usr/local)"; then
+                echo "::error::External library reference in ${bin}"
+                BAD_REFS=$((BAD_REFS + 1))
+              fi
+            fi
+          done < <(find "$APP" -type f -print0)
+          [[ "$BAD_REFS" -eq 0 ]]
+
+          echo "=== Smoke-test packaged ChorusCut --check and --check-playback ==="
+          mkdir -p "${SMOKE}/Example"
+          cp -R Example/Media "${SMOKE}/Example/Media"
+          SDL_AUDIO_DISK_OUTPUT_FILE="${SMOKE}/check.raw" \
+            "${APP}/Contents/MacOS/ChorusCut" --project "${SMOKE}/Example" --check
+          SDL_AUDIO_DISK_OUTPUT_FILE="${SMOKE}/playback.raw" \
+            "${APP}/Contents/MacOS/ChorusCut" --project "${SMOKE}/Example" --check-playback
+          python3 tests/monitor_output.py "${APP}/Contents/MacOS/ChorusCut"
+
+          echo "=== Smoke-test packaged choruscut-mcp initialize handshake ==="
+          MCP_REPLY="$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"1.0"}}}' \
+            | "${APP}/Contents/MacOS/choruscut-mcp")"
+          echo "MCP reply: ${MCP_REPLY}"
+          python3 - "$MCP_REPLY" <<'PY'
+          import json, sys
+          msg = json.loads(sys.argv[1].splitlines()[0])
+          res = msg["result"]
+          assert res["protocolVersion"] == "2025-06-18", res
+          assert res["serverInfo"]["title"] == "ChorusCut", res
+          assert "tools" in res["capabilities"], res
+          PY
+
+          echo "=== Smoke-test ComfyUI node pack zip ==="
+          mkdir -p "${SMOKE}/comfy"
+          unzip -q "$ZIP_PATH" -d "${SMOKE}/comfy"
+          test -f "${SMOKE}/comfy/ComfyUI-ChorusCut/__init__.py"
+          test -f "${SMOKE}/comfy/ComfyUI-ChorusCut/requirements.txt"
+          if find "${SMOKE}/comfy" \( -name "__pycache__" -o -name ".DS_Store" \) | grep -q .; then
+            echo "::error::Unexpected cache or .DS_Store files inside ${ZIP_PATH}"
+            exit 1
+          fi
+
+      - name: Clean up temporary signing keychain
+        if: always() && steps.signing_mode.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/certificate.p12"
+          if [[ -f "${RUNNER_TEMP}/choruscut-signing.keychain-db" ]]; then
+            security delete-keychain "${RUNNER_TEMP}/choruscut-signing.keychain-db" || true
+          fi
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: choruscut-${{ steps.meta.outputs.version }}-macos-arm64
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create Draft GitHub Release
+        if: steps.meta.outputs.create_draft == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          DMG_NAME: ${{ steps.meta.outputs.dmg_name }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+          SIGNED: ${{ steps.signing_mode.outputs.signed }}
+          NOTARIZED: ${{ steps.signing_mode.outputs.notarize }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="${RUNNER_TEMP}/release-notes.md"
+
+          {
+            echo "## ChorusCut ${VERSION}"
+            echo ""
+            echo "### Downloads"
+            echo ""
+            echo "| Artifact | Platform / Purpose |"
+            echo "|---|---|"
+            echo "| \`${DMG_NAME}\` | Self-contained macOS app (Apple Silicon \`arm64\`) — no Homebrew required |"
+            echo "| \`${ZIP_NAME}\` | \`ComfyUI-ChorusCut\` GPU lyric alignment node pack |"
+            echo "| \`SHA256SUMS.txt\` | SHA-256 checksums for all release files |"
+            echo ""
+            echo "### Install ChorusCut on macOS (Apple Silicon)"
+            echo ""
+            echo "1. Download \`${DMG_NAME}\`, open it, and drag **ChorusCut.app** into **Applications**."
+            if [[ "$NOTARIZED" == "true" ]]; then
+              echo "2. Launch **ChorusCut** from Applications (signed with Apple Developer ID and notarized)."
+            elif [[ "$SIGNED" == "true" ]]; then
+              echo "2. **First-launch note (un-notarized build):** If macOS Gatekeeper blocks the first launch, open **System Settings ▸ Privacy & Security** and click **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/ChorusCut.app\`."
+            else
+              echo "2. **First-launch note (ad-hoc signed build):** If macOS Gatekeeper blocks the first launch, open **System Settings ▸ Privacy & Security** and click **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/ChorusCut.app\`."
+            fi
+            echo ""
+            echo "### Install the ComfyUI Alignment Node Pack"
+            echo ""
+            echo "1. Unzip \`${ZIP_NAME}\` into your ComfyUI \`custom_nodes/\` folder so it creates \`custom_nodes/ComfyUI-ChorusCut/\`."
+            echo "2. Install its Python requirement in ComfyUI's environment:"
+            echo "   \`\`\`sh"
+            echo "   pip install -r /path/to/ComfyUI/custom_nodes/ComfyUI-ChorusCut/requirements.txt"
+            echo "   \`\`\`"
+            echo "3. Restart ComfyUI and connect to your server URL in ChorusCut's **ComfyUI** sheet."
+            echo ""
+            echo "### SHA-256 Checksums"
+            echo ""
+            echo "\`\`\`"
+            cat dist/SHA256SUMS.txt
+            echo "\`\`\`"
+          } > "$NOTES"
+
+          gh release create "$TAG" \
+            --draft \
+            --target "$COMMIT_SHA" \
+            --title "ChorusCut ${VERSION}" \
+            --notes-file "$NOTES" \
+            "dist/${DMG_NAME}" \
+            "dist/${ZIP_NAME}" \
+            "dist/SHA256SUMS.txt"
