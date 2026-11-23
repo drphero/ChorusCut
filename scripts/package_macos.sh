@@ -222,11 +222,11 @@ for rel in modules:
 print(f"    Deployed {len(modules)} QML modules: {', '.join(modules)}")
 PYEOF
 
-# Ensure qt.conf points Qt to Contents/PlugIns and Contents/Resources/qml
-# (On macOS bundles, relative paths in Contents/Resources/qt.conf resolve against Prefix.)
+# Ensure qt.conf points Qt to Contents/PlugIns and Contents/Resources/qml.
+# On macOS app bundles, Qt already sets the default prefix for Contents/Resources/qt.conf
+# to Contents/, so omit Prefix (setting Prefix = .. shifts lookup up to ChorusCut.app/).
 cat > "${APP}/Contents/Resources/qt.conf" <<'EOF'
 [Paths]
-Prefix = ..
 Plugins = PlugIns
 Imports = Resources/qml
 QmlImports = Resources/qml
