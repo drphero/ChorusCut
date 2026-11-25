@@ -488,7 +488,12 @@ ApplicationWindow {
             CommandRow { objectName: "channelCommand"; label: "Live requests"; command: editor.agent.channelCommand }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
-                text: "Other MCP clients can run the same program over stdio: " + editor.agent.shimPath + "\n\nThen just ask your agent to plan the video in ChorusCut. In Claude Code, /mcp__ChorusCut__plan starts it too."
+                text: "Every other MCP client takes the same JSON — paste this entry inside the mcpServers object of its config (Cursor, VS Code, Zed, and friends all use it). It runs the same program over stdio: " + editor.agent.shimPath
+            }
+            CommandRow { objectName: "mcpJsonCommand"; label: "Any client"; command: editor.agent.mcpJson }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: win.quiet; font.pixelSize: 12
+                text: "Then just ask your agent to plan the video in ChorusCut. In Claude Code, /mcp__ChorusCut__plan starts it too."
             }
             Label {
                 objectName: "agentStatus"

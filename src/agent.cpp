@@ -138,6 +138,11 @@ QString AgentBridge::shimPath() const {
 }
 QString AgentBridge::claudeCommand() const { return "claude mcp add --scope user ChorusCut -- " + quoted(shimPath()); }
 QString AgentBridge::codexCommand() const { return "codex mcp add ChorusCut -- " + quoted(shimPath()); }
+QString AgentBridge::mcpJson() const {
+    // The one-line entry a client merges into its config's mcpServers object —
+    // the same shape addToAntigravity() writes.
+    return QStringLiteral("\"ChorusCut\": { \"command\": \"%1\" }").arg(shimPath());
+}
 QString AgentBridge::antigravityConfig() const {
     const QString custom = qEnvironmentVariable("CHORUS_ANTIGRAVITY_CONFIG");
     return custom.isEmpty() ? QDir::home().filePath(".gemini/config/mcp_config.json") : custom;
