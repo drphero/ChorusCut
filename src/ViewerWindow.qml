@@ -2,7 +2,7 @@ import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import "keys.js" as Keys
+import "keys.js" as Kbd
 
 // The viewer in a window of its own, for a second screen or full screen. It follows the same
 // playhead as the Edit page. Space plays, ← → step a frame, F (or double-click) toggles full
@@ -97,7 +97,7 @@ Window {
             Text { text: vw.tc(editor.frame); font.family: "Menlo"; font.pixelSize: 15; color: "#87dec7"; Layout.leftMargin: 6; Layout.rightMargin: 6 }
             Action { objectName: "viewerWindowFull"; text: vw.visibility === Window.FullScreen ? "Exit full screen" : "Full screen"; onClicked: vw.toggleFullScreen()
                      ToolTip.text: "F, or double-click the picture" }
-            Action { objectName: "viewerWindowBack"; text: "Back to Edit"; onClicked: vw.close(); ToolTip.text: "Put the viewer back on the Edit page (" + Keys.mod() + "W)" }
+            Action { objectName: "viewerWindowBack"; text: "Back to Edit"; onClicked: vw.close(); ToolTip.text: "Put the viewer back on the Edit page (" + Kbd.mod() + "W)" }
         }
     }
     Shortcut { sequence: "Space"; onActivated: editor.togglePlay() }

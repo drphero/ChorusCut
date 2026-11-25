@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import "keys.js" as Keys
+import "keys.js" as Kbd
 
 // A large editor for one long prompt (a character's, look's, location's or prop's picture prompt), with
 // what it should follow beside it: the item's own description and the concept's look and rules.
@@ -135,7 +135,7 @@ Popup {
                 }
                 Text {
                     objectName: "promptEditorCount"
-                    text: pe.words + (pe.words === 1 ? " word" : " words") + "  ·  " + area.length + " characters  ·  " + Keys.mod() + "Return saves, Esc cancels"
+                    text: pe.words + (pe.words === 1 ? " word" : " words") + "  ·  " + area.length + " characters  ·  " + Kbd.mod() + "Return saves, Esc cancels"
                     color: "#6f8085"; font.pixelSize: 11
                 }
             }

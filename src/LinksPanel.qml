@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import "keys.js" as Keys
+import "keys.js" as Kbd
 
 // How the thing picked on a Plan page connects to the rest of the plan: a section's shots, cast,
 // locations and lines; where a character or location appears across the song; or, with nothing
@@ -59,7 +59,7 @@ Rectangle {
                 contentItem: Text { text: "‹"; color: "#edf1ef"; font.pixelSize: 18; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 background: Rectangle { radius: 4; color: parent.hovered ? "#3b4b52" : "#2b383f" }
                 onClicked: lp.ws.linkBack()
-                ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Back (" + Keys.mod() + "[)"
+                ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Back (" + Kbd.mod() + "[)"
             }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 1

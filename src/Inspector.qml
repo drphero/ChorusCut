@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import "keys.js" as Keys
+import "keys.js" as Kbd
 
 // Details and precise controls for whatever is selected on the timeline.
 Rectangle {
@@ -145,7 +145,7 @@ Rectangle {
                 Caption {
                     Layout.fillWidth: true; Layout.topMargin: 10; wrapMode: Text.Wrap; lineHeight: 1.25
                     text: ("Click a lyric to select it. Drag it to move; drag an edge to trim. Zoom in (pinch, ⌘-scroll or ⌘=) to edit single words.\n\n"
-                          + "Space play · Return play selection · L loop · ↑↓ previous/next line · ⌘Z undo").replace(/⌘/g, Keys.mod())
+                          + "Space play · Return play selection · L loop · ↑↓ previous/next line · ⌘Z undo").replace(/⌘/g, Kbd.mod())
                 }
             }
 
