@@ -56,13 +56,13 @@ static void carryOverTwoWordName() {
 
 // Packaged builds carry their own MLT plugins and data so they stay isolated from any
 // system MLT installation (or lack of one) on the user's machine: PlugIns/Resources in the
-// macOS bundle, mlt-7/ and share/mlt-7/ beside the exe on Windows.
+// macOS bundle, lib/mlt and share/mlt one level up from the exe on Windows.
 static void configureBundledMlt() {
     const QDir binDir(QCoreApplication::applicationDirPath());
     QString plugins, data;
-    for (const char* rel : {"mlt-7", "../PlugIns/mlt-7"})
+    for (const char* rel : {"mlt", "mlt-7", "../lib/mlt", "../lib/mlt-7", "../PlugIns/mlt-7"})
         if (QFileInfo(binDir.absoluteFilePath(rel)).isDir()) { plugins = binDir.absoluteFilePath(rel); break; }
-    for (const char* rel : {"share/mlt-7", "../Resources/mlt-7"})
+    for (const char* rel : {"share/mlt", "share/mlt-7", "../share/mlt", "../share/mlt-7", "../Resources/mlt-7"})
         if (QFileInfo(binDir.absoluteFilePath(rel)).isDir()) { data = binDir.absoluteFilePath(rel); break; }
     if (!plugins.isEmpty()) qputenv("MLT_REPOSITORY", plugins.toUtf8());
     if (!data.isEmpty()) {
