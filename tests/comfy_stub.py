@@ -54,11 +54,16 @@ def probe(data):
     """Width, height and frame count of an uploaded video, by ffprobe."""
     import subprocess
     import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+    import os
+    # Windows won't let ffprobe open the file while it is still held open here.
+    f = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    try:
         f.write(data)
-        f.flush()
+        f.close()
         out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
                               "stream=width,height,nb_read_frames", "-of", "csv=p=0", f.name], capture_output=True, text=True).stdout
+    finally:
+        os.unlink(f.name)
     w, h, n = (int(x) for x in out.strip().split(",")[:3])
     return w, h, n
 

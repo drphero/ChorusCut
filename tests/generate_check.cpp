@@ -865,9 +865,12 @@ int main(int argc, char** argv) {
             return fail(46, "Generate again… did not open the dialog");
         if (!dialog->property("fixedSeed").toBool() || dialog->property("seedText").toString() != QString::number(qint64(seedOf)))
             return fail(46, "Generate again… did not keep the seed: " + dialog->property("seedText").toString());
-        // Reset puts a setting back to the workflow's own value.
+        // Reset puts a setting back to the workflow's own value. The label's right half
+        // sits under the pane's scroll bar, so click its left half.
         steps = find(window, "genSetting_3_steps");
-        click(findItem(steps, "genSettingReset"));
+        auto reset = findItem(steps, "genSettingReset");
+        QTest::mouseClick(window, Qt::LeftButton, {}, reset->mapToScene(QPointF(4, reset->height() / 2)).toPoint());
+        QTest::qWait(150);
         if (findItem(steps, "genSettingField")->property("text") != "20") return fail(47, "Reset did not put Steps back to 20");
         QTest::keyClick(window, Qt::Key_Escape);
         if (!waitFor([&] { return !dialog->property("visible").toBool(); }, 1500)) return fail(47, "Esc did not close the dialog");
@@ -1508,7 +1511,7 @@ int main(int argc, char** argv) {
             click(find(window, "takePrompt"));
             QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
             QTest::keyClick(window, Qt::Key_Backspace);
-            for (int line = 0; line < 45; ++line) {
+            for (int line = 0; line < 60; ++line) {
                 for (const QChar ch : QString("Second %1: the camera holds on Picture 1 as she sings, light from the left.").arg(line)) QTest::keyClick(window, ch.toLatin1());
                 QTest::keyClick(window, Qt::Key_Return);
             }
@@ -1526,7 +1529,7 @@ int main(int argc, char** argv) {
                                      QInputDevice::Capability::Position | QInputDevice::Capability::PixelScroll, 1, 3);
             double last = 0;
             bool steady = true;
-            for (int k = 0; k < 30; ++k) {
+            for (int k = 0; k < 60; ++k) {
                 const auto phase = k == 0 ? Qt::ScrollBegin : Qt::ScrollUpdate;
                 QWheelEvent e(over, window->mapToGlobal(over), QPoint(0, -30), QPoint(0, -90), Qt::NoButton, Qt::NoModifier, phase, false, Qt::MouseEventNotSynthesized, &trackpad);
                 QGuiApplication::sendEvent(window, &e);

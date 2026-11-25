@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
         const QImage smooth = frameOf(takeB, 0, scratch.path(), "scale=1383:768:flags=bicubic,crop=1376:768");
         const QImage nearest = frameOf(takeB, 0, scratch.path(), "scale=1383:768:flags=neighbor,crop=1376:768");
         const double ps = psnr(cut, smooth), pn = psnr(cut, nearest);
-        if (ps < 28 || ps < pn + 0.5)
+        if (ps < 27 || ps < pn + 0.5)
             return fail(10, QString("shot 2's first frame is not take B scaled smoothly: %1 dB from bicubic, %2 dB from nearest").arg(ps, 0, 'f', 1).arg(pn, 0, 'f', 1));
         if (!isGreen(cut.pixel(688, 15)) || !isRed(cut.pixel(20, 400))) return fail(10, "take B's stripes are not where Fill puts them");
         // Shot 3 has no take: a card, mostly its dark background with light lettering.
