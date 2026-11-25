@@ -359,8 +359,24 @@ if [[ "$SKIP_ZIP" == 0 ]]; then
     write_checksums "$OUT_DIR"
 fi
 
-if [[ "$SKIP_INSTALLER" == 0 && -n "$(command -v iscc || true)" ]]; then
-    echo "==> iscc found — the installer build is Task 9's installer.iss"
+if [[ "$SKIP_INSTALLER" == 0 ]]; then
+    ISCC="$(command -v iscc || command -v ISCC || true)"
+    # LOCALAPPDATA isn't always imported into the MSYS2 env — cygpath -F 28
+    # (CSIDL_LOCAL_APPDATA) resolves it straight from the shell API.
+    _local_appdata="$(cygpath -u "${LOCALAPPDATA:-/nonexistent}" 2>/dev/null)"
+    [[ "$_local_appdata" == /nonexistent* ]] && _local_appdata="$(cygpath -F 28 2>/dev/null)"
+    for cand in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+                "/c/Program Files/Inno Setup 6/ISCC.exe" \
+                "${_local_appdata}/Programs/Inno Setup 6/ISCC.exe"; do
+        [[ -z "$ISCC" && -f "$cand" ]] && ISCC="$cand"
+    done
+    if [[ -n "$ISCC" && -f "${REPO_ROOT}/scripts/ChorusCut.iss" ]]; then
+        echo "==> Building Inno Setup installer (${ISCC})"
+        (cd "${REPO_ROOT}/scripts" && CHORUSCUT_VERSION="$VERSION" "$ISCC" //Q ChorusCut.iss)
+        write_checksums "$OUT_DIR"
+    else
+        echo "==> Skipping installer (iscc not found; winget install JRSoftware.InnoSetup)"
+    fi
 fi
 
 echo "==> Done: ${STAGE}"
