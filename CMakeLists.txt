@@ -17,12 +17,25 @@ add_library(chorus_editor STATIC src/lyrics.cpp src/editor.cpp src/editor.h src/
             src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h
             src/agent.cpp src/agent.h src/agent_tools.cpp src/agent_tools.h
             src/workflows.cpp src/workflows.h src/generate.cpp src/generate.h src/requests.cpp src/requests.h
-            src/notify.mm src/notify.h src/render.cpp src/render.h)
-# The notifier talks to macOS's notification center; compiled as Objective-C++ by the C++ compiler.
-set_source_files_properties(src/notify.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
+            src/notify.cpp src/notify.h src/notify_platform.h src/render.cpp src/render.h)
+# The Notifier in notify.cpp is shared; each OS gets one backend for posting to its
+# notification surface (macOS: UNUserNotificationCenter, compiled as Objective-C++;
+# Windows: a notification-area icon; elsewhere: unavailable for now).
+if(APPLE)
+    target_sources(chorus_editor PRIVATE src/notify_mac.mm)
+    set_source_files_properties(src/notify_mac.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
+elseif(WIN32)
+    target_sources(chorus_editor PRIVATE src/notify_win.cpp)
+else()
+    target_sources(chorus_editor PRIVATE src/notify_stub.cpp)
+endif()
 target_include_directories(chorus_editor PUBLIC src)
-target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain
-                      "-framework Foundation" "-framework UserNotifications")
+target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain)
+if(APPLE)
+    target_link_libraries(chorus_editor PRIVATE "-framework Foundation" "-framework UserNotifications")
+elseif(WIN32)
+    target_link_libraries(chorus_editor PRIVATE Qt6::Widgets)
+endif()
 set(CHORUS_ALIGNMENT_PYTHON "python3" CACHE STRING "Python with torch and torchaudio for local lyric alignment")
 target_compile_definitions(chorus_editor PRIVATE CHORUS_ALIGNMENT_PYTHON="${CHORUS_ALIGNMENT_PYTHON}")
 set_source_files_properties(alignment/align.py PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
