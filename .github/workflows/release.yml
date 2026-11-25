@@ -586,6 +586,15 @@ jobs:
             mlt:p
             ffmpeg:p
             sdl2:p
+            fftw:p
+            libebur128:p
+            lilv:p
+            rnnoise:p
+            rtaudio:p
+            rubberband:p
+            libsamplerate:p
+            sox:p
+            vid.stab:p
 
       - name: Configure and build ChorusCut and headless test targets
         shell: msys2 {0}
