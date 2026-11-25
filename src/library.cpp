@@ -38,6 +38,14 @@ qint64 durationMs(const QString& file) {
     return ms;
 }
 
+QString trashName() {
+#ifdef Q_OS_WIN
+    return "the Recycle Bin";
+#else
+    return "the Trash";
+#endif
+}
+
 QString when(const QDateTime& time) {
     const QLocale locale;
     const QDate day = time.date(), today = QDate::currentDate();
@@ -217,6 +225,16 @@ QString ProjectLibrary::checkName(const QString& raw, const QString& except) con
     if (name.isEmpty()) return "Enter a project name";
     if (name.startsWith('.') || name.contains('/') || name.contains(':')) return "Use a name without “/”, “:” or a leading dot";
     if (name.size() > 120) return "Use a shorter name";
+#ifdef Q_OS_WIN
+    // Windows forbids these outright (raw is trimmed already, so no trailing space).
+    static const QSet<QString> reserved{"con","prn","aux","nul","com1","com2","com3","com4","com5","com6","com7","com8","com9",
+                                        "lpt1","lpt2","lpt3","lpt4","lpt5","lpt6","lpt7","lpt8","lpt9"};
+    for (const QChar c : QStringLiteral("\\*?\"<>|"))
+        if (name.contains(c)) return "Use a name without “\\”, “*”, “?”, “\"”, “<”, “>” or “|”";
+    if (name.endsWith('.')) return "Use a name without a trailing dot";
+    if (reserved.contains(name.toLower()) || reserved.contains(name.section('.', 0, 0).toLower()))
+        return "That name is reserved by Windows";
+#endif
     const QDir dir(folders.value(index));
     if (name.compare(except, Qt::CaseInsensitive) != 0 && QFileInfo::exists(dir.filePath(name)))
         return "A project or folder with that name is already in this library";
@@ -289,7 +307,7 @@ bool ProjectLibrary::moveToTrash(const QString& path) {
     const QString testTrash = qEnvironmentVariable("CHORUS_TRASH_DIR");
     if (!testTrash.isEmpty()) ok = QDir().rename(path, QDir(testTrash).filePath(name + "-" + QUuid::createUuid().toString(QUuid::Id128)));
     else ok = QFile::moveToTrash(path);
-    say(ok ? QString("Moved “%1” to the Trash.").arg(name) : QString("Could not move “%1” to the Trash.").arg(name));
+    say(ok ? QString("Moved “%1” to %2.").arg(name, trashName()) : QString("Could not move “%1” to %2.").arg(name, trashName()));
     refresh();
     return ok;
 }
