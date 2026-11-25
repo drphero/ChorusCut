@@ -372,7 +372,10 @@ if [[ "$SKIP_INSTALLER" == 0 ]]; then
     done
     if [[ -n "$ISCC" && -f "${REPO_ROOT}/scripts/ChorusCut.iss" ]]; then
         echo "==> Building Inno Setup installer (${ISCC})"
-        (cd "${REPO_ROOT}/scripts" && CHORUSCUT_VERSION="$VERSION" "$ISCC" //Q ChorusCut.iss)
+        # //O overrides the .iss OutputDir and CHORUSCUT_STAGE its Source dir,
+        # so the installer follows --out/--build-dir like everything else.
+        (cd "${REPO_ROOT}/scripts" && CHORUSCUT_VERSION="$VERSION" CHORUSCUT_STAGE="$(cygpath -w "${STAGE}")" \
+            "$ISCC" //Q "//O$(cygpath -w "${OUT_DIR}")" ChorusCut.iss)
         write_checksums "$OUT_DIR"
     else
         echo "==> Skipping installer (iscc not found; winget install JRSoftware.InnoSetup)"

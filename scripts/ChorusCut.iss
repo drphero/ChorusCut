@@ -2,6 +2,9 @@
 ; dist/stage/ChorusCut first, then invokes this; CHORUSCUT_VERSION carries the
 ; release version (default keeps local builds obviously non-release).
 #define AppVersion GetEnv('CHORUSCUT_VERSION') != '' ? GetEnv('CHORUSCUT_VERSION') : '0.1.0'
+; package_windows.sh exports CHORUSCUT_STAGE so the installer follows --out;
+; the default matches the standard dist/stage layout.
+#define StageDir GetEnv('CHORUSCUT_STAGE') != '' ? GetEnv('CHORUSCUT_STAGE') : '..\dist\stage\ChorusCut'
 
 [Setup]
 AppId={{081B6C28-D4E6-419C-A19F-7B8E4FC5D4F0}
@@ -21,7 +24,7 @@ UninstallDisplayIcon={app}\bin\ChorusCut.exe
 PrivilegesRequired=admin
 
 [Files]
-Source: "..\dist\stage\ChorusCut\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
