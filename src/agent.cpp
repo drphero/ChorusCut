@@ -128,7 +128,14 @@ void AgentBridge::stop() {
 
 QStringList AgentBridge::clients() const { return peers.values(); }
 
-QString AgentBridge::shimPath() const { return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("choruscut-mcp"); }
+QString AgentBridge::shimPath() const {
+#ifdef Q_OS_WIN
+    const QString exe = QStringLiteral(".exe");
+#else
+    const QString exe;
+#endif
+    return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("choruscut-mcp") + exe);
+}
 QString AgentBridge::claudeCommand() const { return "claude mcp add --scope user ChorusCut -- " + quoted(shimPath()); }
 QString AgentBridge::codexCommand() const { return "codex mcp add ChorusCut -- " + quoted(shimPath()); }
 QString AgentBridge::antigravityConfig() const {
