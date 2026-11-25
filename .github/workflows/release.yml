@@ -74,7 +74,7 @@ jobs:
             if [[ -n "$INPUT_VERSION" ]]; then
               VERSION="${INPUT_VERSION#v}"
             else
-              SHORT_SHA="$(git rev-parse --short HEAD)"
+              SHORT_SHA="${GITHUB_SHA:0:7}"
               VERSION="0.1.0-dev.${SHORT_SHA}"
             fi
             TAG="v${VERSION}"
@@ -531,7 +531,7 @@ jobs:
             if [[ -n "$INPUT_VERSION" ]]; then
               VERSION="${INPUT_VERSION#v}"
             else
-              SHORT_SHA="$(git rev-parse --short HEAD)"
+              SHORT_SHA="${GITHUB_SHA:0:7}"
               VERSION="0.1.0-dev.${SHORT_SHA}"
             fi
             TAG="v${VERSION}"
@@ -835,7 +835,7 @@ jobs:
             if [[ -n "$INPUT_VERSION" ]]; then
               VERSION="${INPUT_VERSION#v}"
             else
-              SHORT_SHA="$(git rev-parse --short HEAD)"
+              SHORT_SHA="${GITHUB_SHA:0:7}"
               VERSION="0.1.0-dev.${SHORT_SHA}"
             fi
             TAG="v${VERSION}"
