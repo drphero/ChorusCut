@@ -22,6 +22,21 @@ QString headingLabel(const QString& line) {
 }
 constexpr int kMinWordMs = 20;
 
+// Where align.py lives: beside the exe on Windows, in Resources on macOS, in the source
+// tree beside a development build.
+QString alignScript() {
+    const QString custom = qEnvironmentVariable("CHORUS_ALIGNMENT_SCRIPT");
+    if (!custom.isEmpty()) return custom;
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    for (const char* rel : {"align.py", "../Resources/align.py", "../alignment/align.py",
+                            "../../alignment/align.py", "../../../alignment/align.py",
+                            "../../../../alignment/align.py"}) {
+        const QString path = appDir.absoluteFilePath(rel);
+        if (QFileInfo::exists(path)) return path;
+    }
+    return appDir.absoluteFilePath("align.py");
+}
+
 // One undoable change to a contiguous run of words.
 class WordsCommand : public QUndoCommand {
 public:
@@ -269,7 +284,7 @@ void Lyrics::align() {
     if (busy() || !project) return;
     if (draft.trimmed().isEmpty()) { say("Paste the lyrics first."); emit finished(false); return; }
     QString python=qEnvironmentVariable("CHORUS_ALIGNMENT_PYTHON",CHORUS_ALIGNMENT_PYTHON);
-    QString script=QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../Resources/align.py");
+    QString script=alignScript();
     auto worker = new QProcess(this);
     process = worker;
     auto finish = [this,worker](bool normal) {
