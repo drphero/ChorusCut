@@ -152,6 +152,12 @@ echo "==> Running windeployqt (${WINDEPLOYQT})"
 "$WINDEPLOYQT" --release --qmldir "${REPO_ROOT}/src" "$STAGE/bin/ChorusCut.exe"
 "$WINDEPLOYQT" --release "$STAGE/bin/choruscut-mcp.exe"
 
+# windeployqt deploys bin/qml next to the exe, but Qt computes its import prefix
+# from Qt6Core.dll's location — the parent of bin/ — so without a qt.conf the
+# packaged app can't find qtquickcontrols2plugin. Prefix=. anchors imports,
+# translations and plugins to bin/.
+printf '[Paths]\nPrefix = .\n' > "$STAGE/bin/qt.conf"
+
 # ChorusCut uses Qt's Basic style throughout; drop the other bundled Quick styles
 # and the unused SQL drivers (only SQLite is used).
 for style in FluentWinUI3 Fusion Imagine Material Universal Windows; do
