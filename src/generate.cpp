@@ -53,11 +53,18 @@ void Generator::watch(int id) {
 }
 
 void Generator::sweepLive() {
+    bool again = false;
     for (auto it = liveFiles.begin(); it != liveFiles.end();) {
         if (find(it.key())) { ++it; continue; }
-        for (const QString& f : it.value()) QFile::remove(f);
-        it = liveFiles.erase(it);
+        auto& files = it.value();
+        for (auto f = files.begin(); f != files.end();)
+            if (QFile::exists(*f) && !QFile::remove(*f)) { again = true; ++f; }
+            else f = files.erase(f);
+        if (files.isEmpty()) it = liveFiles.erase(it); else ++it;
     }
+    // The viewer may still be reading the last clip, and Windows cannot unlink an open
+    // file; sweep once more when it has let go.
+    if (again) QTimer::singleShot(300, this, [this] { sweepLive(); });
     if (watched && !find(watched)) { watched = 0; emit watchingChanged(); }
 }
 

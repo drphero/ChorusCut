@@ -3,6 +3,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUuid>
 #include <cmath>
 #include <QSize>
@@ -243,8 +244,14 @@ bool Project::create(const QString& directory, const QString& song, const QStrin
         p.trim = duration ? Trim{start,start+duration,0} : Trim{0,0,0};
         if (!p.connect(error) || !p.writeSchema(false,error)) return false;
     }
-    if (!parent.rename(stage.path(), target.absoluteFilePath()))
-        return fail(error,"Could not create project folder; check its name and permissions");
+    // Windows search indexers and antivirus briefly hold fresh media files open, which
+    // blocks renaming the folder above them; give them a moment to let go.
+    bool moved = false;
+    for (int tries = 0; tries < 20 && !moved; ++tries) {
+        moved = parent.rename(stage.path(), target.absoluteFilePath());
+        if (!moved) QThread::msleep(100);
+    }
+    if (!moved) return fail(error,"Could not create project folder; check its name and permissions");
     stage.setAutoRemove(false);
     return true;
 }
