@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "keys.js" as Keys
 
 // "Ask the agent…": a request about one field or item (or the whole plan) for the user's agent.
 // It is kept in the project's requests and, when Claude Code is connected with ChorusCut as a
@@ -250,7 +251,7 @@ Popup {
         }
         RowLayout {
             Layout.fillWidth: true
-            Text { text: "⌘Return sends, Esc cancels"; color: "#6f8085"; font.pixelSize: 11; Layout.fillWidth: true }
+            Text { text: Keys.mod() + "Return sends, Esc cancels"; color: "#6f8085"; font.pixelSize: 11; Layout.fillWidth: true }
             Button {
                 id: cancelButton
                 focusPolicy: Qt.NoFocus

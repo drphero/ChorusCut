@@ -4,6 +4,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import Chorus
+import "keys.js" as Keys
 
 ApplicationWindow {
     id: win
@@ -584,7 +585,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             LabelText { text: "ChorusCut"; font.pixelSize: 22; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
-            Action { objectName: "openManager"; text: "Projects"; onClicked: win.showManager(); ToolTip.text: "Project Manager (⌘O)" }
+            Action { objectName: "openManager"; text: "Projects"; onClicked: win.showManager(); ToolTip.text: "Project Manager (" + Keys.mod() + "O)" }
             Action { objectName: "openLyrics"; text: "Lyrics…"; enabled: editor.ready; onClicked: lyricsEditor.open() }
             Action {
                 objectName: "comfyButton"
@@ -645,9 +646,9 @@ ApplicationWindow {
                 Layout.leftMargin: 18
                 spacing: 2
                 Tab { objectName: "workspaceEdit"; text: "Edit"; active: win.workspace === "edit"; enabled: editor.ready; onClicked: win.workspace = "edit"
-                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Timeline, shots and lyrics (⌘1)" }
+                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Timeline, shots and lyrics (" + Keys.mod() + "1)" }
                 Tab { objectName: "workspacePlan"; text: "Plan"; active: win.workspace === "plan"; enabled: editor.ready; onClicked: win.workspace = "plan"
-                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Concept, look, cast, locations, props and arc (⌘2)" }
+                      ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "Concept, look, cast, locations, props and arc (" + Keys.mod() + "2)" }
             }
             Item { Layout.fillWidth: true }
             Action { text: "Undo"; enabled: editor.canUndo; onClicked: editor.undo(); ToolTip.text: editor.undoText ? "Undo " + editor.undoText.toLowerCase() : "" }
@@ -752,9 +753,9 @@ ApplicationWindow {
                             onClicked: win.viewerPopped ? viewerWindow.close() : win.popOutViewer()
                             ToolTip.text: win.viewerPopped ? "Put the viewer back on this page" : "Show the viewer in its own window, for a second screen or full screen"
                         }
-                        Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (⌘−)" }
-                        Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (⌘0)" }
-                        Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (⌘=)" }
+                        Action { text: "−"; onClicked: timeline.zoomAround(1 / 1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom out (" + Keys.mod() + "−)" }
+                        Action { text: "Fit"; onClicked: timeline.fit(); ToolTip.text: "Show the whole song (" + Keys.mod() + "0)" }
+                        Action { text: "+"; onClicked: timeline.zoomAround(1.5, timeline.px(timeline.playheadSeconds)); ToolTip.text: "Zoom in (" + Keys.mod() + "=)" }
                         Action { visible: editColumn.width >= 620; text: editor.monitorMuted ? "Unmute" : "Mute"; Layout.leftMargin: 10; onClicked: editor.monitorMuted = !editor.monitorMuted }
                         Slider {
                             visible: editColumn.width >= 620
@@ -828,7 +829,7 @@ ApplicationWindow {
         LabelText {
             Layout.fillWidth: true; elide: Text.ElideMiddle; color: win.quiet; font.pixelSize: 12
             text: editor.status || (editor.comfy.busy ? editor.comfy.jobText : "") || editor.plan.message || editor.lyrics.message ||
-                  "Drag lyrics and shots to move them, drag edges to trim. Double-click V1 or V2 to plan a shot. Pinch or ⌘-scroll to zoom."
+                  "Drag lyrics and shots to move them, drag edges to trim. Double-click V1 or V2 to plan a shot. Pinch or " + Keys.mod() + "-scroll to zoom."
         }
     }
 

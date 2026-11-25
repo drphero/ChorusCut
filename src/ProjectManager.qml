@@ -18,6 +18,7 @@ FocusScope {
     signal finished()
     property string selectedPath: ""
     property string sortBy: "modified"
+    readonly property string trashName: Qt.platform.os === "osx" ? "Trash" : "Recycle Bin"
     readonly property var selectedCard: {
         for (const p of library.projects) if (p.path === selectedPath) return p
         return null
@@ -289,7 +290,7 @@ FocusScope {
         MItem { objectName: "menuDuplicate"; text: "Duplicate"; enabled: !library.busy; onTriggered: library.duplicate(cardMenu.card.path) }
         MItem { text: library.revealLabel; onTriggered: library.reveal(cardMenu.card.path) }
         MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: pm.line } }
-        MItem { objectName: "menuTrash"; text: "Move to Trash…"; danger: true; onTriggered: pm.askTrash(cardMenu.card) }
+        MItem { objectName: "menuTrash"; text: "Move to " + pm.trashName + "…"; danger: true; onTriggered: pm.askTrash(cardMenu.card) }
     }
     DarkMenu {
         id: libMenu
@@ -334,14 +335,14 @@ FocusScope {
         onClosed: grid.forceActiveFocus()
         contentItem: ColumnLayout {
             spacing: 10
-            Text { text: "Move “" + (trash.card ? trash.card.name : "") + "” to the Trash?"; color: pm.ink; font.pixelSize: 16; font.weight: Font.DemiBold
+            Text { text: "Move “" + (trash.card ? trash.card.name : "") + "” to the " + pm.trashName + "?"; color: pm.ink; font.pixelSize: 16; font.weight: Font.DemiBold
                    Layout.fillWidth: true; wrapMode: Text.Wrap }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: pm.quiet; font.pixelSize: 13
-                   text: "The whole project folder goes, including its copies of the media. You can restore it from the Trash." }
+                   text: "The whole project folder goes, including its copies of the media. You can restore it from the " + pm.trashName + "." }
             RowLayout {
                 Item { Layout.fillWidth: true }
                 Action { objectName: "trashCancel"; text: "Cancel"; onClicked: trash.close() }
-                Action { objectName: "trashAccept"; text: "Move to Trash"
+                Action { objectName: "trashAccept"; text: "Move to " + pm.trashName
                          background: Rectangle { color: parent.hovered ? "#b35a48" : "#9a4a3b"; radius: 5 }
                          onClicked: { library.moveToTrash(trash.card.path); pm.selectedPath = ""; trash.close() } }
             }
