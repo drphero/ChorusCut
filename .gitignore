@@ -1,6 +1,8 @@
 # Build outputs
 /build/
 /ChorusCut.app/
+/dist/
+/logs/
 
 # Python
 .venv/
