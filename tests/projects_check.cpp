@@ -152,6 +152,13 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_Escape);
     if (!waitFor([&] { return !popupOpen("renameSheet"); }, 2000)) return fail(8, "Esc did not close the sheet");
 
+#ifdef Q_OS_WIN
+    // Windows-reserved names and characters are refused up front.
+    for (const QString& bad : {"CON", "con.txt", "NUL", "com3", "lpt9", "what?", "a|b", "dot."})
+        if (library.checkName(bad).isEmpty()) return fail(8, "Windows-invalid name accepted: " + bad);
+    if (!library.checkName("Ordinary Name 2").isEmpty()) return fail(8, "ordinary name refused");
+#endif
+
     // Duplicate copies the whole folder under a free name.
     click(find(window, "projectCard_Beta"), Qt::RightButton);
     if (!clickNamed("menuDuplicate")) return fail(9, "no Duplicate");

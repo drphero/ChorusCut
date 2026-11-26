@@ -1,12 +1,14 @@
 """ChorusCut identity, concept 2a "Sliced chorus".
 
-Writes the logo SVGs beside this script and resources/icon/ChorusCut.icns (needs rsvg-convert
-and macOS's iconutil). Usage: python3 resources/logo/make_icon.py
+Writes the logo SVGs beside this script, resources/icon/ChorusCut.icns (needs macOS's
+iconutil) and resources/icon/ChorusCut.ico (needs Pillow). SVG rasterizing needs
+rsvg-convert or cairosvg. Usage: python3 resources/logo/make_icon.py
 """
-import math, os, subprocess, tempfile
+import math, os, shutil, subprocess, tempfile
 
 LOGO = os.path.dirname(os.path.abspath(__file__))
 ICNS = os.path.join(LOGO, "..", "icon", "ChorusCut.icns")
+ICO = os.path.join(LOGO, "..", "icon", "ChorusCut.ico")
 ICONSET = os.path.join(tempfile.mkdtemp(), "ChorusCut.iconset")
 os.makedirs(ICONSET)
 
@@ -149,14 +151,41 @@ write(os.path.join(LOGO, "mark-light.svg"), mark_only(light=True))
 write(os.path.join(LOGO, "lockup-dark.svg"), lockup())
 write(os.path.join(LOGO, "lockup-light.svg"), lockup(light=True))
 
-# macOS icon set: the simplified mark below 64 px, the full one above.
-for pts in (16, 32, 128, 256, 512):
-    for scale in (1, 2):
-        px = pts * scale
-        src = "icon-small.svg" if px <= 32 else "icon.svg"
-        name = f"icon_{pts}x{pts}{'@2x' if scale == 2 else ''}.png"
-        subprocess.run(["rsvg-convert", "-w", str(px), "-h", str(px), os.path.join(LOGO, src),
-                        "-o", os.path.join(ICONSET, name)], check=True)
-os.makedirs(os.path.dirname(ICNS), exist_ok=True)
-subprocess.run(["iconutil", "-c", "icns", ICONSET, "-o", ICNS], check=True)
-print("wrote", os.path.normpath(ICNS))
+# The rendered PNGs feed both icon containers below. The simplified mark is used below
+# 64 px, the full one above.
+def render(svg, px, out):
+    if shutil.which("rsvg-convert"):
+        subprocess.run(["rsvg-convert", "-w", str(px), "-h", str(px), svg, "-o", out], check=True)
+    else:
+        import cairosvg
+        cairosvg.svg2png(url=svg, write_to=out, output_width=px, output_height=px)
+
+def png_for(px):
+    src = os.path.join(LOGO, "icon-small.svg" if px <= 32 else "icon.svg")
+    out = os.path.join(ICONSET, f"icon-{px}.png")
+    render(src, px, out)
+    return out
+
+# macOS icon set.
+if shutil.which("iconutil"):
+    for pts in (16, 32, 128, 256, 512):
+        for scale in (1, 2):
+            px = pts * scale
+            name = f"icon_{pts}x{pts}{'@2x' if scale == 2 else ''}.png"
+            os.replace(png_for(px), os.path.join(ICONSET, name))
+    os.makedirs(os.path.dirname(ICNS), exist_ok=True)
+    subprocess.run(["iconutil", "-c", "icns", ICONSET, "-o", ICNS], check=True)
+    print("wrote", os.path.normpath(ICNS))
+else:
+    print("no iconutil; skipped", os.path.normpath(ICNS))
+
+# Windows .ico: one frame per size, packed by Pillow.
+try:
+    from PIL import Image
+    sizes = [16, 24, 32, 48, 64, 256]
+    frames = [Image.open(png_for(px)) for px in sizes]
+    os.makedirs(os.path.dirname(ICO), exist_ok=True)
+    frames[-1].save(ICO, format="ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
+    print("wrote", os.path.normpath(ICO))
+except ImportError:
+    print("no Pillow; skipped", os.path.normpath(ICO), "(pip install pillow)")

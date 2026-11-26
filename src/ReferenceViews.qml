@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "keys.js" as Kbd
 
 // A character's, look's or location's pictures, one tile per view (Face, Three-quarter, Full
 // body, Wide, a turnaround sheet…): the view's chosen picture, its name and a word on where it
@@ -211,7 +212,7 @@ ColumnLayout {
                     MouseArea { id: rmMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: editor.plan.run({op: "remove", kind: "view", id: panel.view.id}) }
                     ToolTip.visible: rmMouse.containsMouse; ToolTip.delay: 400
-                    ToolTip.text: panel.view.pictures.length ? "Removes it and its " + panel.view.pictures.length + " pictures (⌘Z brings them back)" : "Remove this view"
+                    ToolTip.text: panel.view.pictures.length ? "Removes it and its " + panel.view.pictures.length + " pictures (" + Kbd.mod() + "Z brings them back)" : "Remove this view"
                 }
             }
             // The framing (or instruction), read as a sentence; "edit" opens it.

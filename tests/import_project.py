@@ -8,7 +8,8 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from xml.etree import ElementTree as ET
 
 root = Path(__file__).resolve().parents[1]
@@ -16,9 +17,21 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--build", type=Path, default=root / "build")
 parser.add_argument("--keep", type=Path, help="create a new folder and keep the NLE fixture there")
 args = parser.parse_args()
-app = args.build.resolve() / "ChorusCut.app/Contents/MacOS/ChorusCut"
-check = args.build.resolve() / "ChorusCutImportCheck"
-env = dict(os.environ, QT_QPA_PLATFORM="offscreen", SDL_AUDIODRIVER="disk", SDL_AUDIO_DRIVER="disk")
+
+
+def find_binary(build_dir, name):
+    candidates = (build_dir / "ChorusCut.app/Contents/MacOS" / name,
+                  build_dir / "bin" / (name + ".exe"), build_dir / (name + ".exe"), build_dir / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(f"{name} not found under {build_dir}")
+
+
+app = find_binary(args.build.resolve(), "ChorusCut")
+check = find_binary(args.build.resolve(), "ChorusCutImportCheck")
+env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1",
+           SDL_AUDIODRIVER="disk", SDL_AUDIO_DRIVER="disk")
 
 
 def run(*cmd):
@@ -48,7 +61,7 @@ def verify(work):
     for clip, expected, relpath in zip(clips, [(0,270,0,270,270), (100,168,12,80,90), (0,300,0,300,300)],
                                        ["Performance/take.mp4", "Cutaway/take.mp4", "Master/Song & voice.wav"]):
         assert tuple(int(clip.findtext(key)) for key in ("start","end","in","out","file/duration")) == expected
-        path = Path(unquote(urlparse(clip.findtext("file/pathurl")).path))
+        path = Path(url2pathname(urlparse(clip.findtext("file/pathurl")).path))
         assert path == project / "Media" / relpath and path.is_file()
     assert clips[0].findtext("file/media/video/samplecharacteristics/width") == "384"
     assert clips[1].findtext("file/media/video/samplecharacteristics/width") == "320"
@@ -66,9 +79,11 @@ def verify(work):
     legacy = work / "Legacy copy"
     shutil.copytree(root / "Example/Media", legacy / "Media")
     # A legacy user's saved placement, distinct from the default fixture trim.
-    with sqlite3.connect(legacy / "project.sqlite") as db:
+    db = sqlite3.connect(legacy / "project.sqlite")
+    with db:
         db.execute("CREATE TABLE cutaway(id INTEGER PRIMARY KEY, start INTEGER, end INTEGER, source INTEGER)")
         db.execute("INSERT INTO cutaway VALUES(1,83,133,41)")
+    db.close()  # the with-block commits but leaves the file open — Windows can't delete it below
     run(app, "--project", legacy, "--export")
     cut = ET.parse(legacy / "Chorus.xml").findall(".//video/track/clipitem")[1]
     assert tuple(map(int, (cut.findtext("start"), cut.findtext("end"), cut.findtext("in")))) == (83,133,41)

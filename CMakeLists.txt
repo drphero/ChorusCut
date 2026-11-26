@@ -8,52 +8,134 @@ if(NOT _choruscut_bundle_version)
 endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
-find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Gui Network Quick Qml QuickControls2 Sql Test WebSockets)
-find_package(Qt6Keychain REQUIRED)  # ComfyUI access tokens in the system keychain
+find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Gui Network Quick Qml QuickControls2 Sql Test WebSockets Multimedia)
+if(WIN32)
+    # Notification-area icons live in Widgets.
+    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+endif()
+find_package(Qt6Keychain REQUIRED)  # ComfyUI access tokens in the system credential store
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MLT REQUIRED IMPORTED_TARGET mlt++-7)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavutil)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
+if(WIN32)
+    # MLT on Windows resolves <exedir>/../{lib,share}/mlt itself (MLT_REPOSITORY is ignored),
+    # so every exe lands in bin/ and the toolchain's MLT dirs appear in the build root — the
+    # same layout the packaged app ships.
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    execute_process(COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=prefix mlt++-7
+                    OUTPUT_VARIABLE _mlt_prefix OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_mlt_prefix)
+        # share/mlt is data only — a directory junction keeps it in step with the toolchain.
+        if(NOT EXISTS "${CMAKE_BINARY_DIR}/share/mlt" AND EXISTS "${_mlt_prefix}/share/mlt")
+            file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/share")
+            file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/share/mlt" _link)
+            file(TO_NATIVE_PATH "${_mlt_prefix}/share/mlt" _target)
+            execute_process(COMMAND cmd /c mklink /J "${_link}" "${_target}"
+                            RESULT_VARIABLE _mklink_rc OUTPUT_QUIET ERROR_QUIET)
+            if(_mklink_rc)
+                execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory "${_mlt_prefix}/share/mlt" "${CMAKE_BINARY_DIR}/share/mlt")
+            endif()
+        endif()
+        # lib/mlt is copied, not junctioned: libmltopenfx is dropped so its init-time scan of
+        # the shared OFX directory — where a crashing third-party .ofx would take the whole
+        # process down — never runs. No ChorusCut feature uses OFX services.
+        if(IS_SYMLINK "${CMAKE_BINARY_DIR}/lib/mlt")
+            file(REMOVE "${CMAKE_BINARY_DIR}/lib/mlt")
+        endif()
+        if(EXISTS "${_mlt_prefix}/lib/mlt")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory "${_mlt_prefix}/lib/mlt" "${CMAKE_BINARY_DIR}/lib/mlt")
+            file(GLOB _ofx "${CMAKE_BINARY_DIR}/lib/mlt/*openfx*")
+            if(_ofx)
+                file(REMOVE ${_ofx})
+            endif()
+        endif()
+    endif()
+endif()
 add_library(chorus_editor STATIC src/lyrics.cpp src/editor.cpp src/editor.h src/xml.cpp src/project.cpp
             src/waveform.cpp src/waveform.h src/library.cpp src/library.h src/comfy.cpp src/comfy.h src/plan.cpp src/plan.h
             src/agent.cpp src/agent.h src/agent_tools.cpp src/agent_tools.h
             src/workflows.cpp src/workflows.h src/generate.cpp src/generate.h src/requests.cpp src/requests.h
-            src/notify.mm src/notify.h src/render.cpp src/render.h)
-# The notifier talks to macOS's notification center; compiled as Objective-C++ by the C++ compiler.
-set_source_files_properties(src/notify.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
+            src/notify.cpp src/notify.h src/notify_platform.h src/render.cpp src/render.h)
+# The Notifier in notify.cpp is shared; each OS gets one backend for posting to its
+# notification surface (macOS: UNUserNotificationCenter, compiled as Objective-C++;
+# Windows: a notification-area icon; elsewhere: unavailable for now).
+if(APPLE)
+    target_sources(chorus_editor PRIVATE src/notify_mac.mm)
+    set_source_files_properties(src/notify_mac.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
+elseif(WIN32)
+    target_sources(chorus_editor PRIVATE src/notify_win.cpp)
+else()
+    target_sources(chorus_editor PRIVATE src/notify_stub.cpp)
+endif()
 target_include_directories(chorus_editor PUBLIC src)
-target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain
-                      "-framework Foundation" "-framework UserNotifications")
-set(CHORUS_ALIGNMENT_PYTHON "python3" CACHE STRING "Python with torch and torchaudio for local lyric alignment")
+target_link_libraries(chorus_editor PUBLIC Qt6::Quick Qt6::Sql Qt6::Network Qt6::WebSockets PkgConfig::MLT PRIVATE Qt6::Concurrent PkgConfig::FFMPEG qt6keychain)
+if(APPLE)
+    target_link_libraries(chorus_editor PRIVATE "-framework Foundation" "-framework UserNotifications")
+elseif(WIN32)
+    target_link_libraries(chorus_editor PRIVATE Qt6::Widgets)
+endif()
+if(WIN32)
+    set(_chorus_py_default "python")
+else()
+    set(_chorus_py_default "python3")
+endif()
+set(CHORUS_ALIGNMENT_PYTHON "${_chorus_py_default}" CACHE STRING "Python with torch and torchaudio for local lyric alignment")
 target_compile_definitions(chorus_editor PRIVATE CHORUS_ALIGNMENT_PYTHON="${CHORUS_ALIGNMENT_PYTHON}")
-set_source_files_properties(alignment/align.py PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+if(APPLE)
+    set_source_files_properties(alignment/align.py PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
 set(CHORUS_QML src/Main.qml src/Timeline.qml src/Inspector.qml src/ProjectManager.qml src/PlanWorkspace.qml
                src/PlanField.qml src/PlanText.qml src/PlanCombo.qml src/Checks.qml src/ReferenceStrip.qml
                src/LinksPanel.qml src/LinkChip.qml src/WorkflowsSheet.qml src/PromptEditor.qml src/AskPopup.qml src/RequestsPage.qml
                src/ReferenceViewer.qml src/GeneratePopup.qml src/ReferenceViews.qml src/TakePopup.qml
-               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml src/RenderPopup.qml src/TakeReview.qml src/LivePreview.qml src/LiveBar.qml src/RefinePopup.qml src/UpscalePopup.qml)
-# App icon, generated from resources/logo/icon.svg and icon-small.svg (16 and 32 px).
-set_source_files_properties(resources/icon/ChorusCut.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py resources/icon/ChorusCut.icns)
+               src/MonitorView.qml src/ViewerWindow.qml src/JobsPopup.qml src/PictureTile.qml src/PicturePeek.qml src/RenderPopup.qml src/TakeReview.qml src/LivePreview.qml src/LiveBar.qml src/RefinePopup.qml src/UpscalePopup.qml
+               src/keys.js)
+# App icon, generated from resources/logo/icon.svg and icon-small.svg (16 and 32 px): .icns in the
+# macOS bundle, .ico through the Windows resource file.
+if(APPLE)
+    set_source_files_properties(resources/icon/ChorusCut.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    qt_add_executable(ChorusCut MACOSX_BUNDLE src/main.cpp alignment/align.py resources/icon/ChorusCut.icns)
+elseif(WIN32)
+    qt_add_executable(ChorusCut src/main.cpp resources/icon/ChorusCut.rc)
+    # GUI subsystem: no console window. qDebug/qCritical reach OutputDebugString, so scripted
+    # checks pipe them back to stderr with QT_FORCE_STDERR_LOGGING=1.
+    set_target_properties(ChorusCut PROPERTIES WIN32_EXECUTABLE TRUE)
+    qt_add_resources(ChorusCut icon PREFIX "/" FILES resources/icon/ChorusCut.ico)
+    # align.py sits beside the exe; lyrics.cpp also finds it in ../alignment in a dev tree.
+    add_custom_command(TARGET ChorusCut POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/alignment/align.py" "$<TARGET_FILE_DIR:ChorusCut>/align.py")
+else()
+    qt_add_executable(ChorusCut src/main.cpp)
+endif()
 qt_add_resources(ChorusCut ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCut PRIVATE chorus_editor Qt6::QuickControls2)
+if(WIN32)
+    target_link_libraries(ChorusCut PRIVATE Qt6::Widgets)  # QApplication for the tray icon
+endif()
 
-# The stdio MCP server agents launch; it lives inside the app bundle beside the app.
+# The stdio MCP server agents launch; it lives inside the app bundle on macOS, beside the exe
+# elsewhere.
 qt_add_executable(choruscut-mcp src/mcp_shim.cpp src/agent_tools.cpp)
 target_link_libraries(choruscut-mcp PRIVATE Qt6::Core Qt6::Network)
-set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
+if(APPLE)
+    set_target_properties(choruscut-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/ChorusCut.app/Contents/MacOS")
+endif()
 add_dependencies(ChorusCut choruscut-mcp)
-set_target_properties(ChorusCut PROPERTIES
-                      MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.ChorusCut
-                      MACOSX_BUNDLE_ICON_FILE ChorusCut.icns
-                      MACOSX_BUNDLE_SHORT_VERSION_STRING "${_choruscut_short_version}"
-                      MACOSX_BUNDLE_BUNDLE_VERSION "${_choruscut_bundle_version}"
-                      MACOSX_BUNDLE_COPYRIGHT "Copyright (C) 2026 drphero. Licensed under GPL-3.0-or-later.")
-# macOS refuses notification permission to a bundle carrying only the linker's signature, which
-# names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
-# build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.
-add_custom_target(ChorusCutSign ALL
-    COMMAND codesign --force --sign - --identifier org.choruscut.ChorusCut "$<TARGET_BUNDLE_DIR:ChorusCut>"
-    DEPENDS ChorusCut choruscut-mcp VERBATIM)
+if(APPLE)
+    set_target_properties(ChorusCut PROPERTIES
+                          MACOSX_BUNDLE_GUI_IDENTIFIER org.choruscut.ChorusCut
+                          MACOSX_BUNDLE_ICON_FILE ChorusCut.icns
+                          MACOSX_BUNDLE_SHORT_VERSION_STRING "${_choruscut_short_version}"
+                          MACOSX_BUNDLE_BUNDLE_VERSION "${_choruscut_bundle_version}"
+                          MACOSX_BUNDLE_COPYRIGHT "Copyright (C) 2026 drphero. Licensed under GPL-3.0-or-later.")
+    # macOS refuses notification permission to a bundle carrying only the linker's signature, which
+    # names neither the bundle identifier nor its Info.plist. Sign the whole bundle ad hoc after every
+    # build (it is cheap), so a rebuilt choruscut-mcp inside it never leaves the seal broken.
+    add_custom_target(ChorusCutSign ALL
+        COMMAND codesign --force --sign - --identifier org.choruscut.ChorusCut "$<TARGET_BUNDLE_DIR:ChorusCut>"
+        DEPENDS ChorusCut choruscut-mcp VERBATIM)
+endif()
 
 # Uses the same editor commands as QML. Build explicitly for the import regression.
 qt_add_executable(ChorusCutImportCheck EXCLUDE_FROM_ALL tests/import_check.cpp)
@@ -63,7 +145,11 @@ target_link_libraries(ChorusCutImportCheck PRIVATE chorus_editor)
 qt_add_executable(ChorusCutPlaybackCheck EXCLUDE_FROM_ALL tests/playback_check.cpp)
 target_link_libraries(ChorusCutPlaybackCheck PRIVATE chorus_editor Qt6::Test)
 
-qt_add_executable(ChorusCutLyricsCheck MACOSX_BUNDLE EXCLUDE_FROM_ALL tests/lyrics_check.cpp alignment/align.py)
+if(APPLE)
+    qt_add_executable(ChorusCutLyricsCheck MACOSX_BUNDLE EXCLUDE_FROM_ALL tests/lyrics_check.cpp alignment/align.py)
+else()
+    qt_add_executable(ChorusCutLyricsCheck EXCLUDE_FROM_ALL tests/lyrics_check.cpp)
+endif()
 qt_add_resources(ChorusCutLyricsCheck lyrics_ui PREFIX "/" FILES ${CHORUS_QML})
 target_link_libraries(ChorusCutLyricsCheck PRIVATE chorus_editor Qt6::QuickControls2 Qt6::Test)
 

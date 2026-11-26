@@ -10,9 +10,18 @@ import tempfile
 import wave
 
 project = Path(__file__).resolve().parents[1]
-binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else (
-    project / "ChorusCut.app/Contents/MacOS/ChorusCut"
-)
+
+
+def find_binary(build_dir, name):
+    candidates = (build_dir / "ChorusCut.app/Contents/MacOS" / name,
+                  build_dir / "bin" / (name + ".exe"), build_dir / (name + ".exe"), build_dir / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(f"{name} not found under {build_dir}")
+
+
+binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else find_binary(project / "build", "ChorusCut")
 
 with tempfile.TemporaryDirectory() as tmp:
     work = Path(tmp)
@@ -28,8 +37,8 @@ with tempfile.TemporaryDirectory() as tmp:
     # Launch plays at unity (0 dB). Mute and gain are explicit choices.
     for name, gain in (("muted", "mute"), ("default launch", None), ("-24 dB", -24), ("unity", 0)):
         capture = work / (name + ".raw")
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", SDL_AUDIODRIVER="disk",
-                   SDL_AUDIO_DRIVER="disk", SDL_AUDIO_DISK_OUTPUT_FILE=str(capture))
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1",
+                   SDL_AUDIODRIVER="disk", SDL_AUDIO_DRIVER="disk", SDL_AUDIO_DISK_OUTPUT_FILE=str(capture))
         args = [str(binary), "--project", str(example), "--check-playback"]
         if gain == "mute":
             args.append("--check-mute")

@@ -272,7 +272,7 @@ Popup {
             Small {
                 objectName: "renderReveal"
                 visible: !editor.renderer.busy && editor.renderer.file !== "" && editor.renderer.message.startsWith("Saved")
-                text: "Show in Finder"; onClicked: editor.renderer.reveal()
+                text: library.revealLabel; onClicked: editor.renderer.reveal()
             }
             Item { Layout.fillWidth: true }
             Small { objectName: "renderCancel"; visible: editor.renderer.busy; text: "Cancel render"; onClicked: editor.renderer.cancel() }

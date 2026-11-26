@@ -20,6 +20,8 @@ class AgentBridge : public QObject {
     Q_PROPERTY(QString shimPath READ shimPath CONSTANT)
     Q_PROPERTY(QString claudeCommand READ claudeCommand CONSTANT)
     Q_PROPERTY(QString codexCommand READ codexCommand CONSTANT)
+    // The mcpServers JSON entry every other client (Cursor, VS Code, Zed, …) takes.
+    Q_PROPERTY(QString mcpJson READ mcpJson CONSTANT)
     // Antigravity has no add command: its MCP servers live in a JSON file this app merges into.
     Q_PROPERTY(QString antigravityConfig READ antigravityConfig CONSTANT)
     // "missing", "added" (this build's server), "other" (another build's), or "unreadable".
@@ -41,6 +43,7 @@ public:
     QString shimPath() const;
     QString claudeCommand() const;
     QString codexCommand() const;
+    QString mcpJson() const;
     // ~/.gemini/config/mcp_config.json, or CHORUS_ANTIGRAVITY_CONFIG (tests).
     QString antigravityConfig() const;
     QString antigravityState() const;

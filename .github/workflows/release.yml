@@ -1,8 +1,8 @@
-# ChorusCut macOS Release Workflow (Apple Silicon / arm64)
+# ChorusCut Release Workflow (macOS arm64 + Windows x64)
 #
 # Triggers:
 #   - Push of a version tag matching `v*` (e.g. `v0.1.0`) -> builds, tests, packages,
-#     smoke-tests the `.dmg`, uploads workflow artifacts, and creates a Draft GitHub Release.
+#     smoke-tests the `.dmg`/`.zip`, uploads workflow artifacts, and creates a Draft GitHub Release.
 #   - Manual `workflow_dispatch` -> builds, tests, packages, smoke-tests, and uploads
 #     workflow artifacts. Creates a Draft GitHub Release only when `create_draft_release`
 #     is checked (defaults to false so manual test runs never pollute Releases).
@@ -21,7 +21,7 @@
 #     - APPLE_TEAM_ID               10-character Apple Developer Team ID
 #     - APPLE_APP_SPECIFIC_PASSWORD App-specific password from https://appleid.apple.com
 
-name: Release macOS
+name: Release
 
 on:
   push:
@@ -74,7 +74,7 @@ jobs:
             if [[ -n "$INPUT_VERSION" ]]; then
               VERSION="${INPUT_VERSION#v}"
             else
-              SHORT_SHA="$(git rev-parse --short HEAD)"
+              SHORT_SHA="${GITHUB_SHA:0:7}"
               VERSION="0.1.0-dev.${SHORT_SHA}"
             fi
             TAG="v${VERSION}"
@@ -504,20 +504,393 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  release-windows-x64:
+    name: Build, Test & Package (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release version and mode
+        id: meta
+        shell: bash   # Git Bash — MSYS2 isn't installed until the next step
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CREATE_DRAFT: ${{ inputs.create_draft_release }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            TAG="$REF_NAME"
+            VERSION="${TAG#v}"
+            CREATE_DRAFT="true"
+          else
+            if [[ -n "$INPUT_VERSION" ]]; then
+              VERSION="${INPUT_VERSION#v}"
+            else
+              SHORT_SHA="${GITHUB_SHA:0:7}"
+              VERSION="0.1.0-dev.${SHORT_SHA}"
+            fi
+            TAG="v${VERSION}"
+            if [[ "$INPUT_CREATE_DRAFT" == "true" ]]; then
+              CREATE_DRAFT="true"
+            else
+              CREATE_DRAFT="false"
+            fi
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release version '${VERSION}'. Expected semver like 0.1.0 or 0.1.0-dev.abc1234."
+            exit 1
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "create_draft=${CREATE_DRAFT}"
+            echo "win_zip_name=ChorusCut-${VERSION}-windows-x64.zip"
+            echo "setup_name=ChorusCut-${VERSION}-windows-x64-setup.exe"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Release tag: ${TAG} | version: ${VERSION} | create_draft: ${CREATE_DRAFT}"
+
+      - name: Install MSYS2 UCRT64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            zip
+            unzip
+          pacboy: >-
+            toolchain:p
+            cmake:p
+            ninja:p
+            pkgconf:p
+            python:p
+            ntldd:p
+            qt6-base:p
+            qt6-declarative:p
+            qt6-tools:p
+            qt6-multimedia:p
+            qt6-multimedia-ffmpeg:p
+            qt6-imageformats:p
+            qt6-svg:p
+            qt6-5compat:p
+            qt6-websockets:p
+            qtkeychain-qt6:p
+            mlt:p
+            ffmpeg:p
+            sdl2:p
+            fftw:p
+            libebur128:p
+            lilv:p
+            rnnoise:p
+            rtaudio:p
+            rubberband:p
+            libsamplerate:p
+            sox:p
+            vid.stab:p
+
+      - name: Configure and build ChorusCut and headless test targets
+        shell: msys2 {0}
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCHORUSCUT_VERSION="${VERSION}"
+          cmake --build build --parallel --target \
+            ChorusCut \
+            choruscut-mcp \
+            ChorusCutImportCheck \
+            ChorusCutPlaybackCheck \
+            ChorusCutProjectsCheck \
+            ChorusCutTimelineCheck \
+            ChorusCutPlanCheck \
+            ChorusCutMcpCheck \
+            ChorusCutRenderCheck \
+            ChorusCutComfyCheck \
+            ChorusCutGenerateCheck
+
+      - name: Run headless test suite and disk-output audio regression
+        # Every audio check routes through SDL's disk driver; Windows Credential
+        # Manager needs no unlock equivalent of the macOS keychain dance.
+        # ChorusCutGenerateCheck runs here: MSYS2 ffmpeg ships libwebp_anim
+        # (Homebrew's omits it, so macOS CI skips this check).
+        # ChorusCutLyricsCheck stays skipped (local PyTorch + ~5.5 GB weights).
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export QT_QPA_PLATFORM=offscreen
+          export QT_FORCE_STDERR_LOGGING=1   # GUI-subsystem exes log to stderr this way
+          export SDL_AUDIODRIVER=disk
+          export SDL_AUDIO_DRIVER=disk
+
+          WORK="$(mktemp -d "${RUNNER_TEMP}/choruscut-tests.XXXXXX")"
+          export CHORUS_TRASH_DIR="${WORK}/trash"
+          export CHORUS_AGENT_SOCKET="choruscut-ci-$$"
+          export CHORUS_WORKFLOWS_DIR="${WORK}/workflows"
+          export CHORUS_NOTIFY_LOG="${WORK}/notify.log"
+          mkdir -p "$CHORUS_TRASH_DIR" "$CHORUS_WORKFLOWS_DIR"
+          w() { cygpath -w "$1"; }
+
+          # 1. Core media, frame boundaries, trim, undo/redo, and XML export on temp Example copy
+          echo "=== [1/11] ChorusCut --check ==="
+          mkdir -p "${WORK}/example-check"
+          cp -R Example/Media "${WORK}/example-check/Media"
+          SDL_AUDIO_DISK_OUTPUT_FILE="${WORK}/check.raw" \
+            build/bin/ChorusCut.exe --project "$(w "${WORK}/example-check")" --check
+
+          # 2. Disk-output playback audio regression (mute, launch default, -24 dB, unity)
+          echo "=== [2/11] tests/monitor_output.py ==="
+          python tests/monitor_output.py build/bin/ChorusCut.exe
+
+          # 3. Media import, relocation, XML export, disk monitor mix, and legacy migration
+          echo "=== [3/11] tests/import_project.py ==="
+          python tests/import_project.py --build build
+
+          # 4. Playback picture sharpness and frame-exact decode check on temp Example copy
+          echo "=== [4/11] ChorusCutPlaybackCheck (Example) ==="
+          mkdir -p "${WORK}/example-playback"
+          cp -R Example/Media "${WORK}/example-playback/Media"
+          build/bin/ChorusCutPlaybackCheck.exe "$(w "${WORK}/example-playback")" 60 96
+
+          # 5. Project Manager real-input UI check
+          echo "=== [5/11] ChorusCutProjectsCheck ==="
+          mkdir -p "${WORK}/projects-check"
+          build/bin/ChorusCutProjectsCheck.exe "$(w "${WORK}/projects-check")" \
+            "$(w "$PWD")/Example/Media/Master.wav" "$(w "$PWD")/Example/Media/Performance.mp4" \
+            "$(w "$PWD")/Example/Media/Cutaway.mp4"
+
+          ffmpeg -v error -f lavfi -i "sine=f=220:r=48000:d=205" -ac 2 -af "volume=0.05" \
+            "${WORK}/Song.wav"
+          ffmpeg -v error -f lavfi -i "sine=f=220:r=48000:d=205" -ac 2 -af "volume=0.05" \
+            -c:a libmp3lame -b:a 64k "${WORK}/Song.mp3"
+
+          make_synth_project() {
+            local dest="$1" song_file="$2" aligned="${3:-}" song_name
+            song_name="$(basename "$song_file")"
+            mkdir -p "${dest}/Media/Master"
+            cp "$song_file" "${dest}/Media/Master/${song_name}"
+            python - "$(w "${dest}/project.sqlite")" "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json" \
+              "Media/Master/${song_name}" "$aligned" <<'PY'
+          import json, sqlite3, sys
+          db_path, align_path, master_rel, aligned = sys.argv[1], sys.argv[2], sys.argv[3], \
+              len(sys.argv) > 4 and sys.argv[4] or ""
+          words = json.load(open(align_path, encoding="utf-8"))["words"]
+          by_line = {}
+          for w in words:
+              by_line.setdefault(w["line"], []).append(w["word"])
+          max_line = max(by_line)
+          draft_lines, sec = [], 0
+          for n in range(max_line + 1):
+              if n in by_line:
+                  draft_lines.append(" ".join(by_line[n]))
+              elif (n + 1) in by_line and (n == 0 or (n - 1) not in by_line):
+                  sec += 1
+                  draft_lines.append(f"[Section {sec}]")
+              else:
+                  draft_lines.append("")
+          draft = "\n".join(draft_lines)
+          # GenerateCheck reads lyrics()->lines() straight away, so its project is
+          # seeded already aligned (aligned==draft + words); the rest keep the
+          # upstream unaligned seed.
+          aligned_text, words_json = (draft, json.dumps(words)) if aligned == "aligned" else ("", "[]")
+          con = sqlite3.connect(db_path)
+          con.execute("CREATE TABLE media(role TEXT PRIMARY KEY, path TEXT NOT NULL)")
+          con.execute("INSERT INTO media VALUES('master', ?)", (master_rel,))
+          con.execute("CREATE TABLE cutaway(id INTEGER PRIMARY KEY CHECK(id=1), start INTEGER NOT NULL, end INTEGER NOT NULL, source INTEGER NOT NULL)")
+          con.execute("INSERT INTO cutaway VALUES(1, 0, 0, 0)")
+          con.execute("CREATE TABLE lyrics(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, draft TEXT NOT NULL, aligned TEXT NOT NULL, words TEXT NOT NULL, sections TEXT NOT NULL DEFAULT '[]')")
+          con.execute("INSERT INTO lyrics VALUES(1, 0, ?, ?, ?, '[]')", (draft, aligned_text, words_json))
+          con.execute("PRAGMA user_version=1")
+          con.commit()
+          con.close()
+          PY
+          }
+
+          # 6. Timeline editing with real input
+          echo "=== [6/11] ChorusCutTimelineCheck ==="
+          make_synth_project "${WORK}/p-timeline" "${WORK}/Song.wav"
+          build/bin/ChorusCutTimelineCheck.exe "$(w "${WORK}/p-timeline")" \
+            "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json" "$(w "${WORK}/timeline.raw")"
+
+          # 7. Pre-production planning commands and UI with real input
+          echo "=== [7/11] ChorusCutPlanCheck ==="
+          make_synth_project "${WORK}/p-plan" "${WORK}/Song.wav"
+          build/bin/ChorusCutPlanCheck.exe "$(w "${WORK}/p-plan")" \
+            "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json"
+
+          # 8. End-to-end MCP agent bridge (choruscut-mcp over stdio)
+          echo "=== [8/11] ChorusCutMcpCheck ==="
+          make_synth_project "${WORK}/p-mcp" "${WORK}/Song.wav"
+          build/bin/ChorusCutMcpCheck.exe "$(w "${WORK}/p-mcp")" \
+            "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json" \
+            "$(w "$PWD")/build/bin/choruscut-mcp.exe"
+
+          # 9. Render dialog (H.264/AAC, Fit/Stretch/Fill, CRF, Cancel) & FCP7 XML export
+          echo "=== [9/11] ChorusCutRenderCheck ==="
+          make_synth_project "${WORK}/p-render" "${WORK}/Song.wav"
+          build/bin/ChorusCutRenderCheck.exe "$(w "${WORK}/p-render")" \
+            "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json"
+
+          # 10. ComfyUI alignment jobs against tests/comfy_stub.py (compact MP3 for fast upload)
+          echo "=== [10/11] ChorusCutComfyCheck ==="
+          make_synth_project "${WORK}/p-comfy" "${WORK}/Song.mp3"
+          build/bin/ChorusCutComfyCheck.exe "$(w "${WORK}/p-comfy")" \
+            "$(w "$PWD")/tests/fixtures/cherry_static_alignment.json" \
+            "$(w "$PWD")/tests/comfy_stub.py"
+
+          # 11. Full generate flow — runnable on Windows (libwebp_anim present)
+          echo "=== [11/11] ChorusCutGenerateCheck ==="
+          make_synth_project "${WORK}/p-generate" "${WORK}/Song.wav" aligned
+          build/bin/ChorusCutGenerateCheck.exe "$(w "${WORK}/p-generate")" \
+            "$(w "$PWD")/tests/comfy_stub.py" "$(w "$PWD")/tests/fixtures"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Package self-contained zip and installer
+        shell: msys2 {0}
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/package_windows.sh --build-dir build --version "${VERSION}" --out dist
+
+      - name: Smoke-test the packaged zip
+        shell: msys2 {0}
+        env:
+          WIN_ZIP: dist/${{ steps.meta.outputs.win_zip_name }}
+        run: |
+          set -euo pipefail
+          export QT_QPA_PLATFORM=offscreen
+          export SDL_AUDIODRIVER=disk
+          export SDL_AUDIO_DRIVER=disk
+
+          SMOKE="$(mktemp -d "${RUNNER_TEMP}/choruscut-smoke.XXXXXX")"
+          trap 'rm -rf "$SMOKE"' EXIT
+
+          echo "=== Verify SHA256SUMS.txt ==="
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+
+          echo "=== Unzip into a clean PATH (no toolchain DLLs reachable) ==="
+          unzip -q "$WIN_ZIP" -d "$SMOKE"
+          mkdir -p "$SMOKE/Example"
+          cp -R Example/Media "$SMOKE/Example/Media"
+
+          echo "=== Smoke-test packaged ChorusCut --check ==="
+          PATH=/usr/bin "$SMOKE/ChorusCut/bin/ChorusCut.exe" \
+            --project "$(cygpath -w "$SMOKE/Example")" --check
+
+          echo "=== Smoke-test packaged choruscut-mcp initialize handshake ==="
+          MCP_REPLY="$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"1.0"}}}' \
+            | PATH=/usr/bin "$SMOKE/ChorusCut/bin/choruscut-mcp.exe")"
+          echo "MCP reply: ${MCP_REPLY}"
+          python - "$MCP_REPLY" <<'PY'
+          import json, sys
+          msg = json.loads(sys.argv[1].splitlines()[0])
+          res = msg["result"]
+          assert res["protocolVersion"] == "2025-06-18", res
+          assert res["serverInfo"]["title"] == "ChorusCut", res
+          assert "tools" in res["capabilities"], res
+          PY
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: choruscut-${{ steps.meta.outputs.version }}-windows-x64
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
+
+  finalize-release:
+    name: Create Draft GitHub Release
+    needs: [release-macos-arm64, release-windows-x64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Resolve release version and mode
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CREATE_DRAFT: ${{ inputs.create_draft_release }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            TAG="$REF_NAME"
+            VERSION="${TAG#v}"
+            CREATE_DRAFT="true"
+          else
+            if [[ -n "$INPUT_VERSION" ]]; then
+              VERSION="${INPUT_VERSION#v}"
+            else
+              SHORT_SHA="${GITHUB_SHA:0:7}"
+              VERSION="0.1.0-dev.${SHORT_SHA}"
+            fi
+            TAG="v${VERSION}"
+            if [[ "$INPUT_CREATE_DRAFT" == "true" ]]; then
+              CREATE_DRAFT="true"
+            else
+              CREATE_DRAFT="false"
+            fi
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release version '${VERSION}'. Expected semver like 0.1.0 or 0.1.0-dev.abc1234."
+            exit 1
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "create_draft=${CREATE_DRAFT}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Release tag: ${TAG} | version: ${VERSION} | create_draft: ${CREATE_DRAFT}"
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: choruscut-${{ steps.meta.outputs.version }}-*
+          merge-multiple: false
+          path: artifacts
+
+      - name: Merge artifacts and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cat artifacts/choruscut-${{ steps.meta.outputs.version }}-macos-arm64/SHA256SUMS.txt \
+              artifacts/choruscut-${{ steps.meta.outputs.version }}-windows-x64/SHA256SUMS.txt \
+              > dist/SHA256SUMS.txt
+          # Flatten the artifacts beside the merged sums, excluding the per-platform files.
+          find artifacts -mindepth 2 -maxdepth 2 -type f ! -name SHA256SUMS.txt \
+            -exec cp -t dist {} +
+
       - name: Create Draft GitHub Release
         if: steps.meta.outputs.create_draft == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
-          DMG_NAME: ${{ steps.meta.outputs.dmg_name }}
-          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
-          SIGNED: ${{ steps.signing_mode.outputs.signed }}
-          NOTARIZED: ${{ steps.signing_mode.outputs.notarize }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           NOTES="${RUNNER_TEMP}/release-notes.md"
+          DMG_NAME="ChorusCut-${VERSION}-macos-arm64.dmg"
+          COMFY_ZIP="ComfyUI-ChorusCut-${VERSION}.zip"
+          WIN_ZIP="ChorusCut-${VERSION}-windows-x64.zip"
+          SETUP_EXE="ChorusCut-${VERSION}-windows-x64-setup.exe"
 
           {
             echo "## ChorusCut ${VERSION}"
@@ -527,23 +900,24 @@ jobs:
             echo "| Artifact | Platform / Purpose |"
             echo "|---|---|"
             echo "| \`${DMG_NAME}\` | Self-contained macOS app (Apple Silicon \`arm64\`) — no Homebrew required |"
-            echo "| \`${ZIP_NAME}\` | \`ComfyUI-ChorusCut\` GPU lyric alignment node pack |"
+            echo "| \`${WIN_ZIP}\` | Portable Windows app (\`x64\`) — extract anywhere, run \`bin\\ChorusCut.exe\` |"
+            echo "| \`${SETUP_EXE}\` | Windows installer (\`x64\`) — Start-menu shortcut |"
+            echo "| \`${COMFY_ZIP}\` | \`ComfyUI-ChorusCut\` GPU lyric alignment node pack |"
             echo "| \`SHA256SUMS.txt\` | SHA-256 checksums for all release files |"
             echo ""
             echo "### Install ChorusCut on macOS (Apple Silicon)"
             echo ""
             echo "1. Download \`${DMG_NAME}\`, open it, and drag **ChorusCut.app** into **Applications**."
-            if [[ "$NOTARIZED" == "true" ]]; then
-              echo "2. Launch **ChorusCut** from Applications (signed with Apple Developer ID and notarized)."
-            elif [[ "$SIGNED" == "true" ]]; then
-              echo "2. **First-launch note (un-notarized build):** If macOS Gatekeeper blocks the first launch, open **System Settings ▸ Privacy & Security** and click **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/ChorusCut.app\`."
-            else
-              echo "2. **First-launch note (ad-hoc signed build):** If macOS Gatekeeper blocks the first launch, open **System Settings ▸ Privacy & Security** and click **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/ChorusCut.app\`."
-            fi
+            echo "2. If macOS Gatekeeper blocks the first launch, open **System Settings ▸ Privacy & Security** and click **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/ChorusCut.app\`."
+            echo ""
+            echo "### Install ChorusCut on Windows (x64)"
+            echo ""
+            echo "1. Easiest: run \`${SETUP_EXE}\`. Portable: extract \`${WIN_ZIP}\` anywhere and run \`ChorusCut\\bin\\ChorusCut.exe\`."
+            echo "2. **SmartScreen note (unsigned build):** click **More info → Run anyway** on the first launch."
             echo ""
             echo "### Install the ComfyUI Alignment Node Pack"
             echo ""
-            echo "1. Unzip \`${ZIP_NAME}\` into your ComfyUI \`custom_nodes/\` folder so it creates \`custom_nodes/ComfyUI-ChorusCut/\`."
+            echo "1. Unzip \`${COMFY_ZIP}\` into your ComfyUI \`custom_nodes/\` folder so it creates \`custom_nodes/ComfyUI-ChorusCut/\`."
             echo "2. Install its Python requirement in ComfyUI's environment:"
             echo "   \`\`\`sh"
             echo "   pip install -r /path/to/ComfyUI/custom_nodes/ComfyUI-ChorusCut/requirements.txt"
@@ -558,7 +932,7 @@ jobs:
             echo ""
             echo "### License"
             echo ""
-            echo "Copyright © 2026 drphero. Licensed under **GNU GPL-3.0-or-later** (\`LICENSE\` and \`THIRD_PARTY_LICENSES.txt\` are included in the repository and inside \`ChorusCut.app/Contents/Resources/\`)."
+            echo "Copyright © 2026 drphero. Licensed under **GNU GPL-3.0-or-later** (\`LICENSE\` and \`THIRD_PARTY_LICENSES.txt\` ship inside every package)."
           } > "$NOTES"
 
           gh release create "$TAG" \
@@ -566,6 +940,4 @@ jobs:
             --target "$COMMIT_SHA" \
             --title "ChorusCut ${VERSION}" \
             --notes-file "$NOTES" \
-            "dist/${DMG_NAME}" \
-            "dist/${ZIP_NAME}" \
-            "dist/SHA256SUMS.txt"
+            dist/*

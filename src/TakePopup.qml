@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "keys.js" as Kbd
 
 // Generate takes for a shot with options: the workflow for its route (a take from reference
 // pictures, or one singing to the song), the shot's video prompt (editable here; Save keeps it on
@@ -300,7 +301,7 @@ Popup {
                         onTextChanged: if (text !== tp.prompt) tp.prompt = text
                     }
                 }
-                Text { text: "⌘Return generates · Save keeps it on the shot"; color: "#6f8085"; font.pixelSize: 10 }
+                Text { text: Kbd.mod() + "Return generates · Save keeps it on the shot"; color: "#6f8085"; font.pixelSize: 10 }
             }
         ScrollView {
             id: body

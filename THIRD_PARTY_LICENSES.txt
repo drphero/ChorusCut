@@ -11,9 +11,10 @@ terms of the GNU General Public License as published by the Free Software
 Foundation, either version 3 of the License, or (at your option) any later
 version. See the accompanying LICENSE file for the full license text.
 
-Self-contained macOS release bundles (`ChorusCut.app` / `.dmg`) include the
-following third-party open-source libraries, built unmodified from Homebrew
-formulae and distributed together under GPL-3.0-or-later:
+Self-contained release bundles (macOS `ChorusCut.app` / `.dmg`; Windows `.zip`
+and `setup.exe`) include the following third-party open-source libraries, built
+unmodified from Homebrew formulae (macOS) or MSYS2 mingw-w64 UCRT64 packages
+(Windows) and distributed together under GPL-3.0-or-later:
 
 Core Application & Media Frameworks
 -----------------------------------
@@ -72,15 +73,136 @@ Bundled Transitive Libraries (macOS .dmg)
 - double-conversion   BSD-3-Clause                        https://github.com/google/double-conversion
 - MD4C                MIT                                 https://github.com/mity/md4c
 
+Bundled Transitive Libraries (Windows .zip / setup.exe)
+----------------------------------------------------------
+The Windows bundle ships the same core frameworks above (Qt 6, MLT 7, FFmpeg,
+QtKeychain, SDL2-compat & SDL3) plus the following libraries, as declared by
+their MSYS2 mingw-w64 packages:
+
+- GCC runtimes (libgcc_s_seh, libstdc++, libgomp)
+                        GPL-3.0-or-later WITH GCC-exception-3.1 https://gcc.gnu.org/
+- MinGW-w64 runtime (libwinpthread, CRT headers)
+                        MIT AND BSD-3-Clause                https://mingw-w64.org/
+- whisper.cpp + ggml    MIT                                 https://github.com/ggml-org/whisper.cpp
+- aom                   BSD-2-Clause                        https://aomedia.org/
+- SVT-AV1               BSD-3-Clause-Clear                  https://gitlab.com/AOMediaCodec/SVT-AV1
+- rav1e                 BSD-2-Clause                        https://github.com/xiph/rav1e
+- dav1d                 BSD-2-Clause                        https://code.videolan.org/videolan/dav1d
+- libvpx                BSD-3-Clause                        https://www.webmproject.org/code/
+- x264                  GPL-2.0-or-later                    https://www.videolan.org/developers/x264.html
+- x265                  GPL-2.0-or-later                    https://github.com/Multicorewareinc/x265
+- Xvid                  GPL-2.0-or-later                    https://www.xvid.com/
+- OpenJPEG              BSD-2-Clause                        https://github.com/uclouvain/openjpeg
+- libjxl + highway      BSD-3-Clause / Apache-2.0           https://github.com/libjxl/libjxl
+- libvpl (oneVPL)       MIT                                 https://github.com/intel/libvpl
+- libva                 MIT                                 https://github.com/intel/libva
+- libdovi               MIT                                 https://github.com/quietvoid/dovi_tool
+- zimg                  WTFPL                               https://github.com/sekrit-twc/zimg
+- vid.stab              GPL-2.0-or-later                    https://github.com/georgmartius/vid.stab
+- libplacebo            LGPL-2.1-or-later                   https://libplacebo.org/
+- shaderc               Apache-2.0                          https://github.com/google/shaderc
+- SPIRV-Cross           Apache-2.0                          https://github.com/KhronosGroup/SPIRV-Cross
+- liblc3                Apache-2.0                          https://github.com/google/liblc3
+- libzvbi               GPL-2.0-or-later AND BSD-2-Clause AND LGPL-2.1-or-later AND MIT
+                                                              https://zapping.sourceforge.net/
+- libass                ISC                                 https://github.com/libass/libass
+- libbluray             LGPL-2.1-or-later                   https://www.videolan.org/developers/libbluray.html
+- libcaca               LGPL                                http://caca.zoy.org/wiki/libcaca
+- libebur128            MIT                                 https://github.com/jiixyj/libebur128
+- rnnoise               BSD-3-Clause                        https://github.com/xiph/rnnoise
+- FLAC                  BSD-3-Clause                        https://xiph.org/flac/
+- libsndfile            LGPL-2.1-or-later                   https://github.com/libsndfile/libsndfile
+- mpg123                LGPL-2.1-or-later                   https://www.mpg123.de/
+- libmad                GPL-2.0-or-later                    https://www.underbit.com/products/mad/
+- libid3tag             GPL-2.0-or-later                    https://www.underbit.com/products/mad/
+- GSM                   custom (MIT-style)                  https://www.quut.com/gsm/
+- libgme                LGPL-2.1-or-later                   https://github.com/libgme/game-music-emu
+- libmodplug            Public domain                       http://modplug-xmms.sourceforge.net/
+- opencore-amr          Apache-2.0                          https://sourceforge.net/projects/opencore-amr/
+- vo-amrwbenc           Apache-2.0                          https://sourceforge.net/projects/opencore-amr/
+- twolame               LGPL-2.1-or-later                   https://www.twolame.org/
+- LAME                  LGPL-2.0-or-later                   https://lame.sourceforge.io/
+- Opus                  BSD-3-Clause                        https://www.opus-codec.org/
+- opusfile              BSD-3-Clause                        https://github.com/xiph/opusfile
+- Speex                 BSD-3-Clause                        https://www.speex.org/
+- Vorbis + Ogg          BSD-3-Clause                        https://xiph.org/vorbis/
+- Theora                BSD-3-Clause                        https://www.theora.org/
+- WavPack               BSD-3-Clause                        https://www.wavpack.com/
+- soxr                  LGPL-2.1-or-later                   https://sourceforge.net/projects/soxr/
+- rubberband            GPL-2.0-or-later                    https://breakfastquay.com/rubberband/
+- libsamplerate         BSD-2-Clause                        https://github.com/libsndfile/libsamplerate
+- OpenAL                GPL-2.0-or-later                    https://openal.org/
+- libao                 GPL-2.0-or-later                    https://xiph.org/ao/
+- RtAudio               MIT                                 https://github.com/thestk/rtaudio
+- SoX                   GPL-2.0-or-later AND LGPL-2.1-or-later https://sourceforge.net/projects/sox/
+- GLib                  LGPL-2.1-or-later                   https://docs.gtk.org/glib/
+- GDK-Pixbuf            LGPL-2.1-or-later                   https://docs.gtk.org/gdk-pixbuf/
+- cairo + pixman        LGPL-2.1-or-later OR MPL-1.1 / MIT  https://cairographics.org/
+- librsvg               LGPL-2.1-or-later                   https://wiki.gnome.org/Projects/LibRsvg
+- Pango                 LGPL-2.1-or-later                   https://pango.gnome.org/
+- libthai + libdatrie   LGPL-2.1-or-later                   https://linux.thai.net/~thep/
+- libunibreak           Zlib                                https://github.com/adah1972/libunibreak
+- fribidi               LGPL-2.1-or-later                   https://github.com/fribidi/fribidi
+- FreeType              FTL                                 https://www.freetype.org/
+- fontconfig            custom (MIT-style)                  https://www.freedesktop.org/wiki/Software/fontconfig/
+- HarfBuzz              MIT                                 https://github.com/harfbuzz/harfbuzz
+- Graphite2             LGPL-2.1-or-later                   https://graphite.sil.org/
+- ICU (icu4c)           ICU                                 https://icu.unicode.org/home
+- PCRE2                 BSD-3-Clause                        https://www.pcre.org/
+- MD4C                  MIT                                 https://github.com/mity/md4c
+- libxml2               MIT                                 https://gitlab.gnome.org/GNOME/libxml2
+- expat                 MIT                                 https://libexpat.github.io/
+- libiconv              LGPL-2.1-or-later                   https://www.gnu.org/software/libiconv/
+- gettext (libintl)     LGPL-2.1-or-later                   https://www.gnu.org/software/gettext/
+- libunistring          LGPL-3.0-or-later OR GPL-3.0-or-later https://www.gnu.org/software/libunistring/
+- lilv/serd/sord/sratom/zix (LV2 stack)
+                        0BSD OR ISC                         https://lv2plug.in/
+- libltdl (libtool)     LGPL-2.0-or-later WITH Libtool-exception https://www.gnu.org/software/libtool/
+- OpenSSL 3             Apache-2.0                          https://openssl-library.org/
+- GnuTLS                LGPL-2.1-or-later                   https://www.gnutls.org/
+- nettle                LGPL-3.0-or-later OR GPL-2.0-or-later https://www.lysator.liu.se/~nisse/nettle/
+- GMP                   LGPL-3.0-or-later OR GPL-2.0-or-later https://gmplib.org/
+- p11-kit               BSD-3-Clause                        https://p11-glue.github.io/p11-glue/p11-kit.html
+- libtasn1              LGPL-2.1-or-later                   https://www.gnu.org/software/libtasn1/
+- libidn2               LGPL-3.0-or-later                   https://www.gnu.org/software/libidn/
+- curl                  curl (MIT-style)                    https://curl.se/
+- nghttp2/nghttp3/ngtcp2 MIT                                https://nghttp2.org/  https://github.com/ngtcp2
+- libssh                LGPL-2.1-or-later                   https://www.libssh.org/
+- libssh2               BSD-3-Clause                        https://libssh2.org/
+- librtmp (rtmpdump)    LGPL-2.1-or-later                   https://rtmpdump.mplayerhq.hu/
+- SRT                   MPL-2.0                             https://github.com/Haivision/srt
+- libpsl                MIT                                 https://github.com/rockdaboot/libpsl
+- libpng                libpng-2.0                          https://www.libpng.org/pub/png/libpng.html
+- libjpeg-turbo         BSD-style                           https://www.libjpeg-turbo.org/
+- LibTIFF               libtiff                             https://libtiff.gitlab.io/libtiff/
+- libexif               LGPL-2.1-or-later                   https://libexif.github.io/
+- WebP                  BSD-3-Clause                        https://developers.google.com/speed/webp/
+- Lerc                  Apache-2.0                          https://github.com/Esri/lerc
+- jbigkit               GPL-2.0-only                        https://www.cl.cam.ac.uk/~mgk25/jbigkit/
+- libdeflate            MIT                                 https://github.com/ebiggers/libdeflate
+- lcms2                 MIT                                 https://www.littlecms.com/
+- Brotli                MIT                                 https://github.com/google/brotli
+- Zstandard (zstd)      BSD-3-Clause                        https://facebook.github.io/zstd/
+- XZ Utils (liblzma)    0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later https://tukaani.org/xz/
+- libb2                 CC0-1.0                             https://blake2.net/
+- zlib                  Zlib                                https://zlib.net/
+- bzip2                 BSD-style                           https://sourceware.org/bzip2/
+- double-conversion     BSD-3-Clause                        https://github.com/google/double-conversion
+- libffi                MIT                                 https://sourceware.org/libffi/
+- dlfcn-win32           MIT                                 https://github.com/dlfcn-win32/dlfcn-win32
+- SQLite                Public domain                       https://www.sqlite.org/
+- FFTW3                 GPL-2.0-or-later                    https://fftw.org/
+
 Corresponding Source Offer (GPL-3.0 / LGPL)
 -------------------------------------------
 Complete source code for ChorusCut is available at:
   https://github.com/drphero/ChorusCut
 
-All bundled third-party libraries in official macOS release binaries are built
-unmodified from the corresponding Homebrew core formulae
-(https://github.com/Homebrew/homebrew-core) and their upstream sources linked
-above.
+All bundled third-party libraries in official release binaries are built
+unmodified: on macOS from the corresponding Homebrew core formulae
+(https://github.com/Homebrew/homebrew-core), on Windows from the MSYS2
+mingw-w64 package sources (https://github.com/msys2/MINGW-packages), and from
+the upstream sources linked above.
 
 ComfyUI-ChorusCut Alignment Models (Downloaded at Runtime, Not Bundled)
 -----------------------------------------------------------------------

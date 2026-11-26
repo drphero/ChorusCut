@@ -2,7 +2,11 @@
 #include "waveform.h"
 #include "library.h"
 #include <QQuickWindow>
+#ifdef Q_OS_WIN
+#include <QApplication>
+#else
 #include <QGuiApplication>
+#endif
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QTimer>
@@ -50,14 +54,18 @@ static void carryOverTwoWordName() {
     }
 }
 
-// Packaged .app bundles carry their own MLT plugins and data so they stay isolated
-// from any Homebrew MLT installation (or lack of one) on the user's Mac.
+// Packaged builds carry their own MLT plugins and data so they stay isolated from any
+// system MLT installation (or lack of one) on the user's machine: PlugIns/Resources in the
+// macOS bundle, lib/mlt and share/mlt one level up from the exe on Windows.
 static void configureBundledMlt() {
     const QDir binDir(QCoreApplication::applicationDirPath());
-    const QString plugins = QDir::cleanPath(binDir.absoluteFilePath("../PlugIns/mlt-7"));
-    const QString data = QDir::cleanPath(binDir.absoluteFilePath("../Resources/mlt-7"));
-    if (QFileInfo(plugins).isDir()) qputenv("MLT_REPOSITORY", plugins.toUtf8());
-    if (QFileInfo(data).isDir()) {
+    QString plugins, data;
+    for (const char* rel : {"mlt", "mlt-7", "../lib/mlt", "../lib/mlt-7", "../PlugIns/mlt-7"})
+        if (QFileInfo(binDir.absoluteFilePath(rel)).isDir()) { plugins = binDir.absoluteFilePath(rel); break; }
+    for (const char* rel : {"share/mlt", "share/mlt-7", "../share/mlt", "../share/mlt-7", "../Resources/mlt-7"})
+        if (QFileInfo(binDir.absoluteFilePath(rel)).isDir()) { data = binDir.absoluteFilePath(rel); break; }
+    if (!plugins.isEmpty()) qputenv("MLT_REPOSITORY", plugins.toUtf8());
+    if (!data.isEmpty()) {
         qputenv("MLT_DATA", data.toUtf8());
         const QString profiles = QDir(data).filePath("profiles");
         if (QFileInfo(profiles).isDir()) qputenv("MLT_PROFILES_PATH", profiles.toUtf8());
@@ -66,10 +74,29 @@ static void configureBundledMlt() {
     }
 }
 
+// The Example project beside a development build, however many directories deep the
+// executable is.
+static QString findExample() {
+    QDir dir(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 6; ++i) {
+        const QString candidate = dir.absoluteFilePath("Example");
+        if (QFileInfo::exists(QDir(candidate).filePath("Media/Master.wav"))) return candidate;
+        if (!dir.cdUp()) break;
+    }
+    return {};
+}
+
 int main(int argc,char** argv) {
+#ifdef Q_OS_WIN
+    QApplication app(argc,argv);   // notification-area icons need a QApplication
+#else
     QGuiApplication app(argc,argv);
+#endif
     app.setApplicationName("ChorusCut");
     app.setOrganizationName("ChorusCut");  // QSettings: remembered track heights
+#ifdef Q_OS_WIN
+    app.setWindowIcon(QIcon(":/resources/icon/ChorusCut.ico"));  // window, taskbar, tray
+#endif
     carryOverTwoWordName();
     QQuickStyle::setStyle("Basic");
     QStringList args=app.arguments();
@@ -84,7 +111,7 @@ int main(int argc,char** argv) {
     // --project PATH, or the Example beside a development build.
     const bool scripted = args.contains("--check") || args.contains("--export") || args.contains("--check-playback") ||
                           args.contains("--import-alignment");
-    QString project = scripted ? QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../../Example") : QString();
+    QString project = scripted ? findExample() : QString();
     for (int i=1;i+1<args.size();++i)
         if (args[i]=="--project") project=QFileInfo(args[i+1]).absoluteFilePath();
     Editor editor;

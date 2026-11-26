@@ -17,6 +17,7 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUuid>
 #include <QtConcurrentRun>
 #include <algorithm>
@@ -36,6 +37,24 @@ qint64 durationMs(const QString& file) {
     if (avformat_find_stream_info(raw, nullptr) >= 0 && raw->duration > 0) ms = raw->duration / 1000;
     avformat_close_input(&raw);
     return ms;
+}
+
+// Windows search indexers and antivirus briefly hold files open, which blocks
+// renaming the folder above them; give them a moment to let go.
+bool renameRetry(QDir& dir, const QString& from, const QString& to) {
+    for (int tries = 0; tries < 20; ++tries) {
+        if (dir.rename(from, to)) return true;
+        QThread::msleep(100);
+    }
+    return false;
+}
+
+QString trashName() {
+#ifdef Q_OS_WIN
+    return "the Recycle Bin";
+#else
+    return "the Trash";
+#endif
 }
 
 QString when(const QDateTime& time) {
@@ -217,6 +236,16 @@ QString ProjectLibrary::checkName(const QString& raw, const QString& except) con
     if (name.isEmpty()) return "Enter a project name";
     if (name.startsWith('.') || name.contains('/') || name.contains(':')) return "Use a name without “/”, “:” or a leading dot";
     if (name.size() > 120) return "Use a shorter name";
+#ifdef Q_OS_WIN
+    // Windows forbids these outright (raw is trimmed already, so no trailing space).
+    static const QSet<QString> reserved{"con","prn","aux","nul","com1","com2","com3","com4","com5","com6","com7","com8","com9",
+                                        "lpt1","lpt2","lpt3","lpt4","lpt5","lpt6","lpt7","lpt8","lpt9"};
+    for (const QChar c : QStringLiteral("\\*?\"<>|"))
+        if (name.contains(c)) return "Use a name without “\\”, “*”, “?”, “\"”, “<”, “>” or “|”";
+    if (name.endsWith('.')) return "Use a name without a trailing dot";
+    if (reserved.contains(name.toLower()) || reserved.contains(name.section('.', 0, 0).toLower()))
+        return "That name is reserved by Windows";
+#endif
     const QDir dir(folders.value(index));
     if (name.compare(except, Qt::CaseInsensitive) != 0 && QFileInfo::exists(dir.filePath(name)))
         return "A project or folder with that name is already in this library";
@@ -243,8 +272,8 @@ bool ProjectLibrary::rename(const QString& path, const QString& raw) {
     bool ok;
     if (name.compare(from, Qt::CaseInsensitive) == 0) {
         const QString step = parent.filePath(".chorus-rename-" + QUuid::createUuid().toString(QUuid::Id128));
-        ok = parent.rename(path, step) && parent.rename(step, target);
-    } else ok = parent.rename(path, target);
+        ok = renameRetry(parent, path, step) && renameRetry(parent, step, target);
+    } else ok = renameRetry(parent, path, target);
     if (wasOpen) editor->openProject(QUrl::fromLocalFile(ok ? target : path));
     say(ok ? QString("Renamed “%1” to “%2”.").arg(from, name) : QString("Could not rename “%1”.").arg(from));
     refresh();
@@ -277,7 +306,8 @@ void ProjectLibrary::duplicate(const QString& path) {
         if (!stage.isValid()) return false;
         const QString inner = QDir(stage.path()).filePath("project");
         if (!copyTree(path, inner)) return false;
-        return QDir().rename(inner, target);
+        QDir parent;
+        return renameRetry(parent, inner, target);
     }));
 }
 
@@ -287,9 +317,9 @@ bool ProjectLibrary::moveToTrash(const QString& path) {
     bool ok;
     // Tests redirect the Trash so they never fill the user's.
     const QString testTrash = qEnvironmentVariable("CHORUS_TRASH_DIR");
-    if (!testTrash.isEmpty()) ok = QDir().rename(path, QDir(testTrash).filePath(name + "-" + QUuid::createUuid().toString(QUuid::Id128)));
+    if (!testTrash.isEmpty()) { QDir parent; ok = renameRetry(parent, path, QDir(testTrash).filePath(name + "-" + QUuid::createUuid().toString(QUuid::Id128))); }
     else ok = QFile::moveToTrash(path);
-    say(ok ? QString("Moved “%1” to the Trash.").arg(name) : QString("Could not move “%1” to the Trash.").arg(name));
+    say(ok ? QString("Moved “%1” to %2.").arg(name, trashName()) : QString("Could not move “%1” to %2.").arg(name, trashName()));
     refresh();
     return ok;
 }

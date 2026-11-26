@@ -5,12 +5,12 @@
 
 class Editor;
 
-// Tells the user when generation finishes: a banner in the app, and, as chosen, a macOS
-// notification (with or without a sound) and a bounce of the Dock icon. The choices are the
-// user's, kept in QSettings under "notify/". Clicking a macOS notification brings the app forward
-// and emits activated() with what the job was for.
+// Tells the user when generation finishes: a banner in the app, and, as chosen, an OS
+// notification (with or without a sound) and an attention signal on the Dock or taskbar. The
+// choices are the user's, kept in QSettings under "notify/". Clicking a notification brings the
+// app forward and emits activated() with what the job was for.
 //
-// With CHORUS_NOTIFY_LOG set, nothing reaches macOS: each notification and Dock bounce is
+// With CHORUS_NOTIFY_LOG set, nothing reaches the OS: each notification and attention signal is
 // appended to that file as a JSON line instead (for tests).
 class Notifier : public QObject {
     Q_OBJECT
@@ -21,9 +21,9 @@ class Notifier : public QObject {
     Q_PROPERTY(bool sound READ sound WRITE setSound NOTIFY optionsChanged)
     Q_PROPERTY(bool dock READ dock WRITE setDock NOTIFY optionsChanged)
     Q_PROPERTY(bool onlyInBackground READ onlyInBackground WRITE setOnlyInBackground NOTIFY optionsChanged)
-    // macOS's answer for this app: "allowed", "denied", "notAsked" or "unavailable" (not an app bundle).
+    // The OS's answer for this app: "allowed", "denied", "notAsked" or "unavailable" (no way to post).
     Q_PROPERTY(QString permission READ permission NOTIFY permissionChanged)
-    // Why the last request for permission got no answer from macOS; empty when it answered.
+    // Why the last request for permission got no answer from the OS; empty when it answered.
     Q_PROPERTY(QString refusal READ refusalText NOTIFY permissionChanged)
     // The latest in-app banner: {title, body, owner, ownerId, ok}; empty when dismissed. owner is
     // "takes" when several new takes are waiting.
@@ -48,13 +48,13 @@ public:
     QString refusalText() const { return refusal; }
     QVariantMap latest() const { return banner; }
     Q_INVOKABLE void dismissLatest();
-    // Asks macOS for permission (it asks the user the first time), then refreshes permission.
+    // Asks the OS for permission (it asks the user the first time), then refreshes permission.
     Q_INVOKABLE void requestPermission();
-    // Opens System Settings at Notifications, where a denied permission is changed.
+    // Opens the OS notification settings, where a denied permission is changed.
     Q_INVOKABLE void openSystemSettings();
     // A sample, to try the choices.
     Q_INVOKABLE void test();
-    // What a click on a notification does: the same as activated() from macOS.
+    // What a click on a notification does: the same as a real notification click.
     Q_INVOKABLE void activate(const QString& owner, int ownerId) { emit activated(owner, ownerId); }
 public slots:
     void jobFinished(const QString& owner, int ownerId, const QString& use, bool ok, const QString& text, int count);

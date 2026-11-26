@@ -1,5 +1,6 @@
 #include "render.h"
 #include "editor.h"
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -9,6 +10,7 @@
 #include <QProcess>
 #include <QSet>
 #include <QSettings>
+#include <QUrl>
 #include <cmath>
 #include <mlt++/Mlt.h>
 
@@ -290,5 +292,13 @@ void Renderer::cancel() {
 }
 
 void Renderer::reveal() const {
-    if (!finishedFile.isEmpty()) QProcess::startDetached("open", {"-R", finishedFile});
+    if (finishedFile.isEmpty()) return;
+#if defined(Q_OS_MACOS)
+    QProcess::startDetached("/usr/bin/open", {"-R", finishedFile});
+#elif defined(Q_OS_WIN)
+    QProcess::startDetached("explorer.exe", {"/select," + QDir::toNativeSeparators(finishedFile)});
+#else
+    // File managers differ on Linux; open the folder that contains it.
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(finishedFile).absolutePath()));
+#endif
 }

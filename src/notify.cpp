@@ -1,80 +1,14 @@
 #include "notify.h"
+#include "notify_platform.h"
 #include "editor.h"
-#include <QDesktopServices>
 #include <QFile>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
 #include <QSettings>
-#include <QUrl>
 #include <QWindow>
-#include <functional>
-#import <Foundation/Foundation.h>
-#import <UserNotifications/UserNotifications.h>
 
-// ---------------------------------------------------------------- macOS side
-static std::function<void(const QString&, int)> clickHandler;
-
-@interface ChorusNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
-@end
-@implementation ChorusNotificationDelegate
-// The app only posts while the user wants it to, so show it even while the app is in front.
-- (void)userNotificationCenter:(UNUserNotificationCenter*)center willPresentNotification:(UNNotification*)notification
-         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
-    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
-}
-- (void)userNotificationCenter:(UNUserNotificationCenter*)center didReceiveNotificationResponse:(UNNotificationResponse*)response
-         withCompletionHandler:(void (^)(void))completionHandler {
-    NSDictionary* info = response.notification.request.content.userInfo;
-    const QString owner = QString::fromNSString(info[@"owner"] ?: @"");
-    const int ownerId = [info[@"ownerId"] intValue];
-    dispatch_async(dispatch_get_main_queue(), ^{ if (clickHandler) clickHandler(owner, ownerId); });
-    completionHandler();
-}
-@end
-
-// UNUserNotificationCenter needs an app bundle with an identifier; anything else (the test
-// binaries) must never touch it.
-static bool macAvailable() { return NSBundle.mainBundle.bundleIdentifier.length > 0; }
-static UNUserNotificationCenter* center() {
-    static ChorusNotificationDelegate* delegate = nil;
-    UNUserNotificationCenter* c = UNUserNotificationCenter.currentNotificationCenter;
-    if (!delegate) { delegate = [ChorusNotificationDelegate new]; c.delegate = delegate; }
-    return c;
-}
-static void macStatus(std::function<void(QString)> done) {
-    [center() getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* s) {
-        QString state = s.authorizationStatus == UNAuthorizationStatusNotDetermined ? "notAsked"
-                      : s.authorizationStatus == UNAuthorizationStatusDenied ? "denied" : "allowed";
-        dispatch_async(dispatch_get_main_queue(), ^{ done(state); });
-    }];
-}
-// done(state, why): why is macOS's refusal, empty when it answered.
-static void macRequest(std::function<void(QString, QString)> done) {
-    [center() requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-                            completionHandler:^(BOOL, NSError* error) {
-        QString why;
-        if (error) why = error.domain.length && [error.domain isEqualToString:UNErrorDomain] && error.code == UNErrorCodeNotificationsNotAllowed
-                ? QStringLiteral("macOS won't let this copy of ChorusCut ask: it isn't signed as an app. Rebuild it (the build signs it), then try again.")
-                : QString::fromNSString(error.localizedDescription);
-        macStatus([done, why](QString state) { done(state, why); });
-    }];
-}
-// A notification with a tag replaces the last one with that tag, so takes finishing while the user
-// is away add up to one notification instead of a pile.
-static void macPost(const QString& title, const QString& body, bool sound, const QString& owner, int ownerId, const QString& tag) {
-    UNMutableNotificationContent* content = [UNMutableNotificationContent new];
-    content.title = title.toNSString();
-    content.body = body.toNSString();
-    if (sound) content.sound = UNNotificationSound.defaultSound;
-    content.userInfo = @{@"owner": owner.toNSString(), @"ownerId": @(ownerId)};
-    NSString* identifier = tag.isEmpty() ? NSUUID.UUID.UUIDString : tag.toNSString();
-    UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil];
-    [center() addNotificationRequest:request withCompletionHandler:nil];
-}
-
-// ---------------------------------------------------------------- Notifier
 Notifier::Notifier(Editor* e) : QObject(e), editor(e) {
     logPath = qEnvironmentVariable("CHORUS_NOTIFY_LOG");
     QSettings s;
@@ -86,7 +20,8 @@ Notifier::Notifier(Editor* e) : QObject(e), editor(e) {
     useDock = s.value("notify/dock", true).toBool();
     backgroundOnly = s.value("notify/onlyInBackground", true).toBool();
     QPointer<Notifier> self(this);
-    if (logPath.isEmpty() && macAvailable()) clickHandler = [self](const QString& owner, int id) { if (self) self->activate(owner, id); };
+    if (logPath.isEmpty() && NotifyPlatform::available())
+        NotifyPlatform::onActivated([self](const QString& owner, int id) { if (self) self->activate(owner, id); });
     refreshPermission();
 }
 
@@ -104,15 +39,15 @@ void Notifier::setSystem(bool on) {
 
 void Notifier::refreshPermission() {
     if (!logPath.isEmpty()) { allowed = "allowed"; emit permissionChanged(); return; }
-    if (!macAvailable()) { allowed = "unavailable"; emit permissionChanged(); return; }
+    if (!NotifyPlatform::available()) { allowed = "unavailable"; emit permissionChanged(); return; }
     QPointer<Notifier> self(this);
-    macStatus([self](QString state) { if (self && self->allowed != state) { self->allowed = state; emit self->permissionChanged(); } });
+    NotifyPlatform::status([self](QString state) { if (self && self->allowed != state) { self->allowed = state; emit self->permissionChanged(); } });
 }
 
 void Notifier::requestPermission() {
-    if (!logPath.isEmpty() || !macAvailable()) { refreshPermission(); return; }
+    if (!logPath.isEmpty() || !NotifyPlatform::available()) { refreshPermission(); return; }
     QPointer<Notifier> self(this);
-    macRequest([self](QString state, QString why) {
+    NotifyPlatform::request([self](QString state, QString why) {
         if (!self || (self->allowed == state && self->refusal == why)) return;
         self->allowed = state;
         self->refusal = why;
@@ -121,7 +56,7 @@ void Notifier::requestPermission() {
 }
 
 void Notifier::openSystemSettings() {
-    QDesktopServices::openUrl(QUrl("x-apple.systempreferences:com.apple.Notifications-Settings.extension"));
+    NotifyPlatform::openSettings();
 }
 
 void Notifier::dismissLatest() {
@@ -154,7 +89,7 @@ void Notifier::jobFinished(const QString& owner, int ownerId, const QString& use
     QString title, body, tag, about = owner;
     int aboutId = ownerId;
     if (ok && use == "take-upscale") {
-        // Upscales add up until the notice is dismissed: one notice, one macOS notification.
+        // Upscales add up until the notice is dismissed: one notice, one OS notification.
         ++upscales;
         upscaleShots.insert(ownerId);
         tag = "chorus-upscale";
@@ -206,9 +141,9 @@ void Notifier::deliver(const QString& title, const QString& body, const QString&
     if (backgroundOnly && !away) return;
     if (useSystem) {
         if (!logPath.isEmpty()) log({{"kind", "notification"}, {"title", title}, {"body", body}, {"sound", useSound}, {"owner", owner}, {"ownerId", ownerId}, {"tag", tag}});
-        else if (macAvailable() && allowed != "denied") {
+        else if (NotifyPlatform::available() && allowed != "denied") {
             if (allowed == "notAsked") requestPermission();
-            macPost(title, body, useSound, owner, ownerId, tag);
+            NotifyPlatform::post(title, body, useSound, owner, ownerId, tag);
         }
     }
     if (useDock) {

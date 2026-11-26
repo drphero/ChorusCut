@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  macOS (Apple Silicon) today &middot; Windows and Linux planned
+  macOS (Apple Silicon) and Windows x64 today &middot; Linux planned
 </p>
 
 <p align="center">
@@ -195,8 +195,8 @@ Choose **Upscale…** on any take to redraw the whole take (handles preserved) u
 
 Before final delivery, **Upscale the cut…** inside the Render dialog lists every chosen take that still lacks an HD version, estimates total GPU time (roughly 2 minutes per second of video at 2 MP on an RTX 4090), and queues the batch in one click.
 
-#### Jobs Queue and macOS Notifications
-The toolbar **Jobs** button shows **`Generating · n`** while work is in flight and **`Jobs · n failed`** if anything errors. Opening it displays every active or failed job across takes, refines, upscales, and reference pictures with elapsed times, live moving preview thumbnails, **Show**, **Cancel**, **Try again**, and **Dismiss**. Below the list, pick which events notify you (take ready, pictures ready, failure) and how: macOS Notification Center alerts, sound, Dock icon bounce, and whether to notify only while ChorusCut is in the background. When several takes finish while you are away, they collapse into a single notification whose click walks through them in song order.
+#### Jobs Queue and System Notifications
+The toolbar **Jobs** button shows **`Generating · n`** while work is in flight and **`Jobs · n failed`** if anything errors. Opening it displays every active or failed job across takes, refines, upscales, and reference pictures with elapsed times, live moving preview thumbnails, **Show**, **Cancel**, **Try again**, and **Dismiss**. Below the list, pick which events notify you (take ready, pictures ready, failure) and how: system notifications (macOS Notification Center alerts; Windows tray-area balloon toasts), sound, Dock icon bounce (taskbar flash on Windows), and whether to notify only while ChorusCut is in the background. When several takes finish while you are away, they collapse into a single notification whose click walks through them in song order.
 
 ---
 
@@ -224,8 +224,8 @@ Choose **Export timeline…** to write a Final Cut Pro 7 XML (`xmeml` v5) sequen
 
 | Platform | Status | Notes |
 |---|---|---|
-| **macOS (Apple Silicon)** | **Supported** | Primary build target today (`.app` bundle / `.dmg`, Homebrew Qt 6, MLT 7, FFmpeg, QtKeychain). |
-| **Windows** | **Planned** | Core C++17, Qt 6/QML, MLT 7, FFmpeg, SQLite, QtKeychain (Credential Manager), MCP shim, and `ComfyUI-ChorusCut` (CUDA) are already cross-platform. Remaining work: native notification backend (replacing `src/notify.mm`), file-reveal parity in `src/render.cpp`, and Windows packaging. |
+| **macOS (Apple Silicon)** | **Supported** | `.app` bundle / `.dmg`, Homebrew Qt 6, MLT 7, FFmpeg, QtKeychain (Keychain). |
+| **Windows x64** | **Supported** | Portable `.zip` and Inno Setup installer, MSYS2 UCRT64 Qt 6, MLT 7, FFmpeg, QtKeychain (Credential Manager), tray-area notifications. |
 | **Linux** | **Planned** | Same cross-platform core + QtKeychain (Secret Service) and CUDA ComfyUI node pack. Remaining work: D-Bus desktop notifications (replacing `src/notify.mm`), file-reveal parity in `src/render.cpp`, and Linux packaging. |
 
 ---
@@ -241,9 +241,18 @@ Download `ChorusCut-<version>-macos-arm64.dmg` from the repository's **GitHub Re
 > xattr -dr com.apple.quarantine /Applications/ChorusCut.app
 > ```
 
-If you prefer to build locally from source, jump to [Build from Source (macOS)](#build-from-source-macos).
+If you prefer to build locally from source, jump to [Build from Source (macOS)](#build-from-source-macos) or [Build from Source (Windows)](#build-from-source-windows).
 
-### 2. Install the `ComfyUI-ChorusCut` Alignment Node Pack
+### 2. Download ChorusCut for Windows (x64)
+
+Download either Windows artifact from **GitHub Releases** (alongside `SHA256SUMS.txt`):
+
+- **`ChorusCut-<version>-windows-x64-setup.exe`** — the installer. Run it and it drops ChorusCut into Program Files with a Start-menu shortcut.
+- **`ChorusCut-<version>-windows-x64.zip`** — the portable build. Extract it anywhere and run `ChorusCut\bin\ChorusCut.exe` inside.
+
+> **First launch (unsigned builds):** Windows SmartScreen may flag the download since it is not code-signed. Click **More info → Run anyway** once; the app starts normally after that.
+
+### 3. Install the `ComfyUI-ChorusCut` Alignment Node Pack
 
 ChorusCut offloads lyric alignment to your ComfyUI server (local Apple Silicon/CUDA machine, LAN host, or rented GPU such as Vast.ai). A GPU (NVIDIA CUDA or Apple Silicon MPS) is required.
 
@@ -279,13 +288,17 @@ On the first alignment run, the node pack downloads roughly **5.5 GB** of weight
 
 On an RTX 3090, aligning a 3½-minute song takes about **30 seconds** (~96% word-level benchmark accuracy).
 
-### 3. Connect an AI Agent (Optional)
+### 4. Connect an AI Agent (Optional)
 
 Open a project, click **Agent** in the toolbar, and connect whichever client you use:
 
 - **Claude Code:**
   ```sh
   claude mcp add --scope user ChorusCut -- "/Applications/ChorusCut.app/Contents/MacOS/choruscut-mcp"
+  ```
+  On Windows (installed to the default location):
+  ```bat
+  claude mcp add --scope user ChorusCut -- "C:\Program Files\ChorusCut\bin\choruscut-mcp.exe"
   ```
   Keep ChorusCut open on your project, then ask Claude Code to plan the video (or run `/mcp__ChorusCut__plan`). For live push notifications whenever you click `ask` on a field in ChorusCut, launch Claude Code with:
   ```sh
@@ -295,12 +308,16 @@ Open a project, click **Agent** in the toolbar, and connect whichever client you
   ```sh
   codex mcp add ChorusCut -- "/Applications/ChorusCut.app/Contents/MacOS/choruscut-mcp"
   ```
+  On Windows (installed to the default location):
+  ```bat
+  codex mcp add ChorusCut -- "C:\Program Files\ChorusCut\bin\choruscut-mcp.exe"
+  ```
 - **Google Antigravity:** Click **Add** in ChorusCut's **Agent** sheet. ChorusCut merges its entry cleanly into `~/.gemini/config/mcp_config.json` without disturbing your other MCP servers (restart Antigravity if it was already open).
-- **Other MCP clients:** Copy the direct stdio path to `ChorusCut.app/Contents/MacOS/choruscut-mcp` shown in the **Agent** sheet.
+- **Other MCP clients:** Copy the direct stdio path to `choruscut-mcp` shown in the **Agent** sheet (`ChorusCut.app/Contents/MacOS/` on macOS, `bin\` beside `ChorusCut.exe` on Windows).
 
-*(If you run a local build from `build/ChorusCut.app`, the Agent sheet automatically fills in that build's exact path.)*
+*(If you run a local build, the Agent sheet automatically fills in that build's exact path.)*
 
-### 4. Try the Bundled Example Project
+### 5. Try the Bundled Example Project
 
 The repository includes an 8-second timing study in [`Example/`](Example/) (`640 × 360`, 24 fps) with a performance clip on V1 and a cutaway on V2 so you can test timeline trimming, slipping, undo/redo, and XML export without setting up a GPU first. Open `Example` via **Open other…** in the Project Manager, or launch directly from the terminal:
 
@@ -308,9 +325,17 @@ The repository includes an 8-second timing study in [`Example/`](Example/) (`640
 /Applications/ChorusCut.app/Contents/MacOS/ChorusCut --project Example
 ```
 
+On Windows:
+
+```bat
+"C:\Program Files\ChorusCut\bin\ChorusCut.exe" --project Example
+```
+
 ---
 
 ## Keyboard Shortcuts
+
+*On Windows the same bindings map `⌘`→`Ctrl`, `⌥`→`Alt`, `⇧`→`Shift`, `⌫`→`Backspace`/`Delete`, and `⌘⌫`→`Ctrl+Backspace`/`Ctrl+Delete`.*
 
 ### Edit Workspace & Transport
 
@@ -387,10 +412,46 @@ To regenerate the macOS app icon (`resources/icon/ChorusCut.icns`) after editing
 
 ---
 
+## Build from Source (Windows)
+
+ChorusCut builds on Windows 10+ (x64) with the **MSYS2 UCRT64** toolchain. Install [MSYS2](https://www.msys2.org/), open the **UCRT64** shell, and install dependencies (CMake ≥ 3.21):
+
+```sh
+pacman -S --needed mingw-w64-ucrt-x86_64-{toolchain,cmake,ninja,pkgconf,python,ntldd} \
+    mingw-w64-ucrt-x86_64-{qt6-base,qt6-declarative,qt6-tools,qt6-multimedia,qt6-multimedia-ffmpeg,qt6-imageformats,qt6-svg,qt6-5compat,qt6-websockets,qtkeychain-qt6,mlt,ffmpeg,sdl2} \
+    git zip
+```
+
+Configure and build from the repository root:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+This builds `build/bin/ChorusCut.exe` plus the `choruscut-mcp.exe` helper and the headless check targets (`cmake --build build --target ChorusCut<Name>Check`).
+
+Launch the built app (it needs the UCRT64 `bin` on `PATH` when run from the build tree):
+
+```sh
+build/bin/ChorusCut.exe --project Example
+```
+
+To package a self-contained distribution (all DLLs, MLT modules, QML imports, licenses):
+
+```sh
+scripts/package_windows.sh --build-dir build --version 0.1.0
+# → dist/ChorusCut-<version>-windows-x64.zip + -setup.exe (when Inno Setup is installed)
+```
+
+The installer step uses Inno Setup 6 (`winget install JRSoftware.InnoSetup`); it is skipped automatically when `iscc` is absent. To regenerate the Windows icon (`resources/icon/ChorusCut.ico` + `.rc`) after editing the vector sources, run `python resources/logo/make_icon.py` (requires `rsvg-convert`) and rebuild.
+
+---
+
 ## License
 
 Copyright © 2026 drphero.
 
-ChorusCut — including the desktop application and the bundled [`comfyui/ComfyUI-ChorusCut`](comfyui/ComfyUI-ChorusCut) node pack — is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [`LICENSE`](LICENSE) for the full license text and [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) for notices and source links covering the libraries bundled in macOS releases (Qt 6, MLT 7, FFmpeg, x264, x265, FFTW3, OpenSSL 3, QtKeychain, SDL2/SDL3, and transitive dependencies).
+ChorusCut — including the desktop application and the bundled [`comfyui/ComfyUI-ChorusCut`](comfyui/ComfyUI-ChorusCut) node pack — is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [`LICENSE`](LICENSE) for the full license text and [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) for notices and source links covering the libraries bundled in macOS and Windows releases (Qt 6, MLT 7, FFmpeg, x264, x265, FFTW3, OpenSSL 3, QtKeychain, SDL2/SDL3, and transitive dependencies).
 
 This license covers the ChorusCut software only — videos, XML timelines, and projects you create with ChorusCut are yours with no license restrictions. All default alignment models downloaded by `comfyui/ComfyUI-ChorusCut` are licensed for commercial use (MIT, CC-BY-4.0, and Apache-2.0).

@@ -157,25 +157,25 @@ Popup {
         Toggle { objectName: "notifyPictures"; text: "Pictures are ready"; checked: jp.notifier.pictures; onToggled: jp.notifier.pictures = !checked }
         Toggle { objectName: "notifyFailures"; text: "Something fails"; checked: jp.notifier.failures; onToggled: jp.notifier.failures = !checked }
         Text { text: "HOW"; color: "#6f8085"; font.pixelSize: 11; font.letterSpacing: 0.6; Layout.topMargin: 4 }
-        Toggle { objectName: "notifySystem"; text: "macOS notification"; checked: jp.notifier.system; onToggled: jp.notifier.system = !checked }
+        Toggle { objectName: "notifySystem"; text: Qt.platform.os === "osx" ? "macOS notification" : "Windows notification"; checked: jp.notifier.system; onToggled: jp.notifier.system = !checked }
         Text {
             objectName: "notifyPermission"
             visible: jp.notifier.system && jp.notifier.permission !== "allowed"
             Layout.fillWidth: true; Layout.leftMargin: 24; wrapMode: Text.Wrap; font.pixelSize: 11
             color: "#e7b75f"
             text: jp.notifier.refusal ? jp.notifier.refusal
-                : jp.notifier.permission === "denied" ? "macOS has notifications turned off for ChorusCut."
-                : jp.notifier.permission === "unavailable" ? "This build can't post macOS notifications; the banner and Dock still work."
-                : "macOS will ask you once to allow them."
+                : jp.notifier.permission === "denied" ? (Qt.platform.os === "osx" ? "macOS" : "Windows") + " has notifications turned off for ChorusCut."
+                : jp.notifier.permission === "unavailable" ? "This build can't post " + (Qt.platform.os === "osx" ? "macOS" : "Windows") + " notifications; the banner and " + (Qt.platform.os === "osx" ? "Dock" : "taskbar flash") + " still work."
+                : Qt.platform.os === "osx" ? "macOS will ask you once to allow them." : "ChorusCut posts them through the notification area."
         }
         RowLayout {
             visible: jp.notifier.system && (jp.notifier.permission === "denied" || jp.notifier.permission === "notAsked")
             Layout.leftMargin: 24
-            Small { objectName: "notifyAllow"; visible: jp.notifier.permission === "notAsked"; text: "Allow…"; onClicked: jp.notifier.requestPermission() }
-            Small { objectName: "notifySettings"; visible: jp.notifier.permission === "denied"; text: "Open System Settings…"; onClicked: jp.notifier.openSystemSettings() }
+            Small { objectName: "notifyAllow"; visible: jp.notifier.permission === "notAsked" && Qt.platform.os === "osx"; text: "Allow…"; onClicked: jp.notifier.requestPermission() }
+            Small { objectName: "notifySettings"; visible: jp.notifier.permission === "denied"; text: Qt.platform.os === "osx" ? "Open System Settings…" : "Open notification settings…"; onClicked: jp.notifier.openSystemSettings() }
         }
         Toggle { objectName: "notifySound"; Layout.leftMargin: 24; text: "With a sound"; enabled: jp.notifier.system; checked: jp.notifier.sound; onToggled: jp.notifier.sound = !checked }
-        Toggle { objectName: "notifyDock"; text: "Bounce the Dock icon"; checked: jp.notifier.dock; onToggled: jp.notifier.dock = !checked }
+        Toggle { objectName: "notifyDock"; text: Qt.platform.os === "osx" ? "Bounce the Dock icon" : "Flash the taskbar icon"; checked: jp.notifier.dock; onToggled: jp.notifier.dock = !checked }
         Toggle { objectName: "notifyBackground"; text: "Only while ChorusCut is in the background"; checked: jp.notifier.onlyInBackground
                  onToggled: jp.notifier.onlyInBackground = !checked }
         Text {
