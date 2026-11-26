@@ -1605,7 +1605,7 @@ int main(int argc, char** argv) {
             if (std::abs(side->width() - sideBefore - 100) > 4) return fail(146, QString("dragging the inspector's divider: %1 -> %2").arg(sideBefore).arg(side->width()));
             {
                 QSettings kept;
-                waitFor([&] { kept.sync(); return std::abs(kept.value("viewer/height").toInt() - pane->height()) <= 1; }, 3000);
+                waitFor([&] { kept.sync(); return std::abs(kept.value("viewer/height").toInt() - pane->height()) <= 1 && std::abs(kept.value("viewer/panelWidth").toInt() - side->width()) <= 1; });
                 if (std::abs(kept.value("viewer/height").toInt() - pane->height()) > 1 || std::abs(kept.value("viewer/panelWidth").toInt() - side->width()) > 1)
                     return fail(146, "the viewer's size was not kept: " + kept.value("viewer/height").toString() + " " + kept.value("viewer/panelWidth").toString());
             }
